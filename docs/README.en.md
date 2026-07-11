@@ -1,13 +1,13 @@
 # VPS Scope
 
-VPS Scope is a read-only security audit tool for Ubuntu and Debian servers. It collects the state of a host, points out things worth reviewing, and leaves the machine untouched.
+VPS Scope is a read-only security auditor for Ubuntu and Debian VPS hosts, with first-class attention to sing-box, Xray, Reality, Hysteria2, proxy panels, and Docker deployments. It collects the state of a host, points out things worth reviewing, and leaves the machine untouched.
 
 [![CI](https://github.com/sakkaku404/vps-scope/actions/workflows/ci.yml/badge.svg)](https://github.com/sakkaku404/vps-scope/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/sakkaku404/vps-scope/actions/workflows/codeql.yml/badge.svg)](https://github.com/sakkaku404/vps-scope/actions/workflows/codeql.yml)
 [![Release](https://img.shields.io/github/v/release/sakkaku404/vps-scope)](https://github.com/sakkaku404/vps-scope/releases)
 [![License](https://img.shields.io/github/license/sakkaku404/vps-scope)](../LICENSE)
 
-[中文](../README.md) · [Checks](CHECKS.md) · [Design notes](DESIGN.md) · [Testing](TESTING.md)
+[中文](../README.md) · [Proxy compatibility](PROXY-COMPATIBILITY.md) · [Privacy](PRIVACY.md) · [Checks](CHECKS.md) · [Design notes](DESIGN.md) · [Testing](TESTING.md)
 
 ## Why VPS Scope exists
 
@@ -20,6 +20,22 @@ Thanks to OpenAI Codex for writing most of the Go—it has currently written far
 ## What it looks at
 
 The audit covers the parts of a small VPS that are easy to overlook: system resources, account and password context, effective SSH settings, listeners and active connections, firewall rules, Fail2ban/CrowdSec, login activity, pending updates, systemd services, Docker isolation, TLS certificates, file permissions, and common persistence locations.
+
+Proxy hosts get additional context for:
+
+- sing-box, Xray, Hysteria2, TUIC, Trojan, and Shadowsocks cores and ingress
+- S-UI and 3x-ui/x-ui management planes, plus Hiddify, Marzban, and Outline container signals
+- native read-only configuration checks for sing-box and Xray
+- publicly bound Clash API, V2Ray API, and similar control endpoints
+- permissions on panel databases and proxy configuration
+- systemd identity, capabilities, isolation, and file-descriptor limits
+- UDP buffer and error-counter context for Hysteria2 and TUIC workloads
+- config-to-listener relations across TCP/UDP transport, process ownership, exposure scope, and UFW policy
+- Reality semantic completeness without exporting private keys, SNI values, targets, or short IDs
+- privacy-safe category counts for authentication, handshake, DNS, TLS, routing, and fatal log signals
+- WireGuard interface, UDP listener, firewall, and recent-handshake counts without peer keys or endpoints
+
+Detecting a product is not the same as proving which port is its management plane. Container networking, reverse proxies, and unknown panel layouts remain `UNKNOWN` when the evidence cannot support a safe conclusion. See [proxy compatibility](PROXY-COMPATIBILITY.md) for the tested scope.
 
 Results are based on the state the system is actually using where possible. For example, SSH settings come from `sshd -T`, not from grepping one configuration file. Network listeners are separated into public, private, loopback, IPv4, IPv6, and container-published endpoints.
 
@@ -83,6 +99,8 @@ sudo ./vps-scope audit --lang en --profile proxy
 sudo ./vps-scope audit --profile custom --expect-public 22/tcp,443/tcp
 ```
 
+The standard audit is suitable for routine use and avoids recursive filesystem scans. Use `sudo vps-scope audit --deep` to add SUID/SGID, file-capability, and installed-package integrity checks. Deep-only checks that were not run are shown as skipped, never as `PASS`.
+
 Profiles give the audit some context about the server's job. Built-in choices include `general`, `web`, `proxy`, `docker`, and `mixed`. Custom public listeners can be declared as `PORT/tcp` or `PORT/udp`; this affects exposure checks, not the rest of the audit.
 
 ## Reports
@@ -101,7 +119,7 @@ Reports can also be written to an explicit location as JSON, plain text, Markdow
 sudo ./vps-scope audit --format bundle --output ./reports/sgp
 ```
 
-A bundle contains the canonical JSON report, human-readable formats, and a SHA-256 manifest. Report files are created with restrictive permissions on Linux.
+A bundle contains the canonical JSON report, human-readable formats, and a SHA-256 manifest. The HTML report is a self-contained offline page with status filters, search, and collapsible evidence; it loads no external scripts or fonts. Report files are created with restrictive permissions on Linux.
 
 JSON reports can be rendered again without reconnecting to the server:
 
@@ -116,7 +134,7 @@ The `redact` command replaces hostnames, addresses, domains, usernames, and key 
 vps-scope redact report.json --format markdown --output public.md
 ```
 
-VPS Scope does not copy passwords, tokens, private keys, subscription paths, or application blobs that may contain private key material into a report.
+VPS Scope does not copy passwords, tokens, private keys, subscription paths, SSH key comments, or full process arguments into a report. It also refuses to export application blobs that may combine certificates with private keys. See the [privacy notes](PRIVACY.md) for the complete boundary.
 
 ## Comparing runs
 

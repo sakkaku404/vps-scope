@@ -32,6 +32,7 @@ type Options struct {
 	Profile        string
 	ExpectedPublic map[string]bool
 	LogSince       time.Duration
+	Deep           bool
 	Commander      Commander
 	Build          Build
 	Progress       ProgressFunc
@@ -42,6 +43,7 @@ type Context struct {
 	Options
 	Host    model.Host
 	Profile model.Profile
+	Facts   *FactStore
 }
 
 type CheckFunc func(*Context) []model.Finding
@@ -78,8 +80,9 @@ func Run(opts Options) (model.Report, error) {
 	if host.OS != "ubuntu" && host.OS != "debian" {
 		return model.Report{}, fmt.Errorf("unsupported distribution %q; v1 supports Ubuntu and Debian only", host.OS)
 	}
-	profile := detectProfile(opts.Commander, opts.Profile)
-	ctx := &Context{Options: opts, Host: host, Profile: profile}
+	facts := NewFactStore(opts.Commander)
+	profile := detectProfile(opts.Commander, facts, opts.Profile)
+	ctx := &Context{Options: opts, Host: host, Profile: profile, Facts: facts}
 	findings := make([]model.Finding, 0, 64)
 	for i, category := range CategoryOrder {
 		if opts.Progress != nil {
@@ -105,6 +108,7 @@ func Run(opts Options) (model.Report, error) {
 		Metadata: map[string]string{
 			"mutation_policy": "never-modify-system",
 			"network_checks":  "disabled-by-default",
+			"audit_depth":     map[bool]string{true: "deep", false: "standard"}[opts.Deep],
 		},
 	}
 	report.Recount()
@@ -146,11 +150,31 @@ func collectHost(cmd Commander) (model.Host, error) {
 	}, nil
 }
 
-func detectProfile(cmd Commander, requested string) model.Profile {
-	result := cmd.Run(8*time.Second, "ps", "-eo", "comm=")
-	processes := strings.ToLower(result.Stdout)
-	hasProxy := containsAny(processes, "sing-box", "x-ui", "s-ui", "\nsui\n", "hysteria")
-	hasWeb := containsAny(processes, "nginx", "caddy", "apache2")
+func detectProfile(cmd Commander, facts *FactStore, requested string) model.Profile {
+	processList, _ := facts.Processes()
+	var processText strings.Builder
+	for _, process := range processList {
+		processText.WriteString(processLine(process))
+		processText.WriteByte('\n')
+	}
+	processes := strings.ToLower(processText.String())
+	hasProxy := containsAny(processes,
+		"sing-box", "xray", "x-ui", "s-ui", "\nsui\n", "hysteria", "tuic",
+		"trojan", "ss-server", "sslocal", "marzban", "hiddify", "outline-ss-server", "wg-quick",
+		"openvpn",
+	)
+	if !hasProxy {
+		for _, path := range []string{
+			"/etc/sing-box", "/usr/local/etc/sing-box", "/etc/xray", "/usr/local/etc/xray",
+			"/etc/hysteria", "/usr/local/x-ui", "/usr/local/s-ui", "/opt/marzban", "/opt/hiddify-manager",
+		} {
+			if info, err := os.Stat(path); err == nil && info.IsDir() {
+				hasProxy = true
+				break
+			}
+		}
+	}
+	hasWeb := containsAny(processes, "nginx", "caddy", "haproxy", "apache2")
 	hasDocker := containsAny(processes, "dockerd", "containerd") || cmd.Exists("docker")
 	reasons := []string{}
 	if hasProxy {

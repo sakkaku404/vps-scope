@@ -6,9 +6,34 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 0.5.0 - 2026-07-11
+
 ### Changed
 
+- Added a shared fact snapshot so process, listener, UFW, and Docker evidence is collected once and reused consistently.
+- Split routine and expensive checks: the standard audit remains fast, while `--deep` enables recursive privileged-file and package-integrity verification.
 - Refined the Chinese and English project-origin wording and synchronized README examples, commands, and support details.
+- Repositioned the proxy profile around sing-box, Xray, Hysteria2, management panels, control APIs, and containerized proxy workloads.
+- Rebuilt the offline HTML report with status filters, search, collapsible evidence, responsive layout, print styles, and light/dark themes.
+- Reduced duplicate privileged-file scanning and stopped classifying DHCP and ordinary time-daemon listeners as unexpected public applications.
+
+### Added
+
+- Proxy endpoint relations covering configured protocol, TCP/UDP transport, live listener/process, exposure scope, and UFW disposition (`WORK-009`).
+- Privacy-safe proxy journal signal counts (`WORK-010`) and WireGuard interface/listener/handshake context (`WORK-011`).
+- Reality semantic checks that retain only presence/count facts, plus native Trojan, Shadowsocks, OpenVPN, and S-UI database ingress parsing.
+- Network congestion-control and queue state (`SYS-004`), temporary-directory executables (`PERSIST-002`), and inode/journal/Docker storage context (`REL-002`).
+- Renewal scheduling and last-service-result evidence for file-backed TLS certificates.
+- Proxy ingress inventory, native sing-box/Xray configuration self-tests, control API exposure, proxy secret-file permissions, systemd isolation context, and UDP runtime context (`WORK-003` through `WORK-008`).
+- Privacy-safe SSH authorized-key fingerprints with weak-key detection (`SSH-005`).
+- Container-panel discovery for Hiddify, Marzban, Outline, and containerized x-ui/S-UI; ambiguous management exposure remains `UNKNOWN`.
+- Real-host regression coverage across Debian 12/13 and Ubuntu 22.04/26.04.
+
+### Fixed
+
+- The one-command runner executable is no longer reported as a suspicious process merely because it runs from `/tmp`.
+- Full process arguments, authorized-key comments, suspicious startup commands, and credential-bearing APT URLs can no longer leak into reports.
+- Empty cloud-image `authorized_keys` placeholder files no longer cause a false `UNKNOWN`.
 
 ## 0.4.0 - 2026-07-11
 
@@ -60,7 +85,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Report comparison, fleet summaries, re-rendering, and redaction.
 - Linux amd64 and arm64 release builds.
 
-[Unreleased]: https://github.com/sakkaku404/vps-scope/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/sakkaku404/vps-scope/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/sakkaku404/vps-scope/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/sakkaku404/vps-scope/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/sakkaku404/vps-scope/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/sakkaku404/vps-scope/compare/v0.1.2...v0.2.0

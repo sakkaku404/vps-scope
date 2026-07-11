@@ -13,18 +13,10 @@ import (
 )
 
 func checkNetwork(ctx *Context) []model.Finding {
-	if !ctx.Commander.Exists("ss") {
-		return []model.Finding{unknown("NET-001", "network", "ss", "command not found"), unknown("NET-002", "network", "ss", "command not found")}
+	listeners, err := ctx.Facts.Listeners()
+	if err != nil {
+		return []model.Finding{unknown("NET-001", "network", "ss -H -lntu[p]", err.Error()), unknown("NET-002", "network", "ss -H -lntu[p]", err.Error())}
 	}
-	r := ctx.Commander.Run(15*time.Second, "ss", "-H", "-lntup")
-	if r.Err != nil && r.Stdout == "" {
-		// Process metadata may need root, but listeners usually remain available without -p.
-		r = ctx.Commander.Run(15*time.Second, "ss", "-H", "-lntu")
-	}
-	if r.Err != nil {
-		return []model.Finding{unknown("NET-001", "network", "ss -H -lntu[p]", commandError(r)), unknown("NET-002", "network", "ss -H -lntu[p]", commandError(r))}
-	}
-	listeners := parseListeners(r.Stdout)
 	f := model.Finding{ID: "NET-001", Category: "network", Status: model.Info, Facts: map[string]string{}}
 	counts := map[string]int{}
 	for _, listener := range listeners {
@@ -77,7 +69,14 @@ func expectedListener(ctx *Context, listener Listener, key string) bool {
 	}
 	process := strings.ToLower(listener.Process)
 	port, _ := strconv.Atoi(listener.Port)
-	if (port == 68 || port == 546) && containsAny(process, "dhcp", "dhcpcd", "systemd-network") {
+	if (port == 68 || port == 546) && containsAny(process, "dhcp", "dhclient", "dhcpcd", "systemd-network") {
+		return true
+	}
+	// Time daemons commonly bind UDP/123 on every local address while their
+	// own access policy controls whether they serve remote clients. Treat the
+	// listener as expected infrastructure; firewall and daemon configuration
+	// remain independent evidence instead of a generic port-count alarm.
+	if port == 123 && strings.HasPrefix(strings.ToLower(listener.Protocol), "udp") && containsAny(process, "ntpd", "chronyd", "systemd-timesyncd") {
 		return true
 	}
 	if strings.Contains(process, "sshd") {
@@ -87,9 +86,9 @@ func expectedListener(ctx *Context, listener Listener, key string) bool {
 	case "web":
 		return containsAny(process, "nginx", "caddy", "apache2")
 	case "proxy":
-		return containsAny(process, "sing-box", "sui", "s-ui", "x-ui", "hysteria")
+		return containsAny(process, "sing-box", "xray", "sui", "s-ui", "x-ui", "hysteria", "tuic", "trojan", "ss-server", "outline-ss-server", "marzban", "hiddify")
 	case "mixed":
-		return containsAny(process, "nginx", "caddy", "apache2", "sing-box", "sui", "s-ui", "x-ui", "hysteria")
+		return containsAny(process, "nginx", "caddy", "apache2", "sing-box", "xray", "sui", "s-ui", "x-ui", "hysteria", "tuic", "trojan", "ss-server", "outline-ss-server", "marzban", "hiddify")
 	}
 	return false
 }

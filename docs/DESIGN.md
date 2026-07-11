@@ -20,7 +20,7 @@ Resource use and active connections are point-in-time inventory. They do not bec
 
 ## Privacy
 
-Local reports retain host evidence but never intentionally collect secret values. Redaction uses stable placeholders so relationships remain readable. Private keys, passwords, tokens, subscription paths, and private-key-bearing application blobs are outside the evidence boundary.
+Local reports retain host evidence but never intentionally collect secret values. Redaction uses stable placeholders so relationships remain readable. Private keys, passwords, tokens, subscription paths, SSH key comments, full process arguments, command-bearing persistence lines, credential-bearing repository URLs, and private-key-bearing application blobs are outside the evidence boundary. Authorized SSH keys are represented only by algorithm, size, account, and SHA-256 fingerprint.
 
 ## Known limitations
 
