@@ -65,6 +65,7 @@ func Text(w io.Writer, r model.Report, opts Options) error {
 		fmt.Fprintf(w, "Completed %d   Unavailable %d   Not applicable %d\n\n", r.Summary.Completed, r.Summary.Unavailable, r.Summary.NotApplicable)
 	}
 	writeExposureText(w, r, zh, line)
+	writeResourceText(w, r, zh, line)
 
 	if r.Summary.Risk > 0 {
 		if zh {
@@ -205,6 +206,47 @@ func networkInventory(r model.Report) (model.Finding, bool) {
 		}
 	}
 	return model.Finding{}, false
+}
+
+func findingByID(r model.Report, id string) (model.Finding, bool) {
+	for _, f := range r.Findings {
+		if f.ID == id {
+			return f, true
+		}
+	}
+	return model.Finding{}, false
+}
+
+func writeResourceText(w io.Writer, r model.Report, zh bool, line string) {
+	resource, ok := findingByID(r, "SYS-003")
+	if !ok {
+		return
+	}
+	fmt.Fprintln(w, choose(zh, "系统资源概览", "System resource overview"))
+	fmt.Fprintln(w, line)
+	labelsZH := map[string]string{"logical_cpu_cores": "CPU 核心", "model": "CPU 型号", "cpu_used_sample": "CPU 即时占用", "memory": "内存", "swap": "交换分区", "uptime": "运行时间", "load_1m_5m_15m": "负载 1/5/15m", "root_disk": "根分区"}
+	labelsEN := map[string]string{"logical_cpu_cores": "CPU cores", "model": "CPU model", "cpu_used_sample": "CPU sample", "memory": "Memory", "swap": "Swap", "uptime": "Uptime", "load_1m_5m_15m": "Load 1/5/15m", "root_disk": "Root disk"}
+	for _, key := range []string{"logical_cpu_cores", "model", "cpu_used_sample", "memory", "swap", "uptime", "load_1m_5m_15m", "root_disk"} {
+		for _, evidence := range resource.Evidence {
+			if evidence.Key == key {
+				label := labelsEN[key]
+				if zh {
+					label = labelsZH[key]
+				}
+				fmt.Fprintf(w, "  %s: %s\n", label, evidence.Value)
+			}
+		}
+	}
+	if connections, ok := findingByID(r, "NET-003"); ok {
+		fmt.Fprintf(w, "  %s %s", choose(zh, "活动连接:", "Active connections:"), strconvOrZero(connections.Facts["total"]))
+		for _, scope := range []string{"public", "private", "loopback", "unknown"} {
+			if count := connections.Facts["peer_"+scope]; count != "" {
+				fmt.Fprintf(w, "  %s=%s", scope, count)
+			}
+		}
+		fmt.Fprintln(w)
+	}
+	fmt.Fprintln(w)
 }
 
 func writeExposureText(w io.Writer, r model.Report, zh bool, line string) {

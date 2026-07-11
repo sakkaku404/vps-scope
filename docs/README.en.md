@@ -17,7 +17,7 @@ VPS Scope is an independent implementation rather than a fork. It starts from ef
 
 ## What it looks at
 
-The audit covers the parts of a small VPS that are easy to overlook: effective SSH settings, listening sockets, firewall rules, login activity, pending updates, systemd services, Docker isolation, TLS certificates, file permissions, and common persistence locations.
+The audit covers the parts of a small VPS that are easy to overlook: system resources, account and password context, effective SSH settings, listeners and active connections, firewall rules, Fail2ban/CrowdSec, login activity, pending updates, systemd services, Docker isolation, TLS certificates, file permissions, and common persistence locations.
 
 Results are based on the state the system is actually using where possible. For example, SSH settings come from `sshd -T`, not from grepping one configuration file. Network listeners are separated into public, private, loopback, IPv4, IPv6, and container-published endpoints.
 

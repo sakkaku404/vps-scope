@@ -408,7 +408,7 @@ func (e environment) doctor(args []string) error {
 	zh := locale == "zh-CN"
 	fmt.Fprintf(e.out, "VPS Scope doctor\nOS=%s ARCH=%s GO=%s\n", runtime.GOOS, runtime.GOARCH, runtime.Version())
 	fmt.Fprintf(e.out, "%s=%t\n", choose(zh, "支持完整审计", "full_audit_supported"), runtime.GOOS == "linux")
-	for _, name := range []string{"sshd", "ss", "journalctl", "ufw", "nft", "iptables", "fail2ban-client", "apt-get", "dpkg", "systemctl", "docker", "coredumpctl", "getcap"} {
+	for _, name := range []string{"sshd", "ss", "journalctl", "ufw", "firewall-cmd", "nft", "iptables", "fail2ban-client", "cscli", "apt-get", "dpkg", "systemctl", "docker", "coredumpctl", "getcap"} {
 		_, err := findCommand(name)
 		fmt.Fprintf(e.out, "%-18s %s\n", name, map[bool]string{true: "FOUND", false: "MISSING"}[err == nil])
 	}

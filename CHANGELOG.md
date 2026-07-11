@@ -6,9 +6,13 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 0.4.0 - 2026-07-11
+
 ### Added
 
 - A GitHub Pages one-command audit entry point at `https://sakkaku404.github.io/vps-scope/run.sh`.
+- Evidence-only CPU, memory, disk, load, uptime, and established-connection inventory.
+- Contextual password-policy analysis, CrowdSec enforcement checks, and firewalld zone/rule analysis.
 
 ### Changed
 
@@ -52,7 +56,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Report comparison, fleet summaries, re-rendering, and redaction.
 - Linux amd64 and arm64 release builds.
 
-[Unreleased]: https://github.com/sakkaku404/vps-scope/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/sakkaku404/vps-scope/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/sakkaku404/vps-scope/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/sakkaku404/vps-scope/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/sakkaku404/vps-scope/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/sakkaku404/vps-scope/compare/v0.1.1...v0.1.2

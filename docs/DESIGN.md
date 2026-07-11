@@ -16,6 +16,8 @@ Built-in profiles are `general`, `proxy`, `web`, `docker`, `mixed`, and `custom`
 
 Explicit listener intent uses `--expect-public PORT/protocol`. Supported proxy-panel management exposure remains independent even when its port is explicitly expected.
 
+Resource use and active connections are point-in-time inventory. They do not become risks merely because a percentage or count crosses a generic threshold; event evidence such as OOM kills, core dumps, failed services, and low disk headroom drives reliability findings.
+
 ## Privacy
 
 Local reports retain host evidence but never intentionally collect secret values. Redaction uses stable placeholders so relationships remain readable. Private keys, passwords, tokens, subscription paths, and private-key-bearing application blobs are outside the evidence boundary.

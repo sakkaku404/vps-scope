@@ -116,3 +116,69 @@ func TestPanelListenerScopePrefersPublicBinding(t *testing.T) {
 		t.Fatalf("got (%q,%t), want public-wildcard", got, found)
 	}
 }
+
+func TestResourceParsers(t *testing.T) {
+	mem := parseMemInfo("MemTotal:       1024000 kB\nMemAvailable:    512000 kB\nSwapTotal:       128 kB\n")
+	if mem["MemTotal"] != 1024000*1024 || mem["MemAvailable"] != 512000*1024 {
+		t.Fatalf("unexpected meminfo: %#v", mem)
+	}
+	if model := parseCPUModel("processor: 0\nmodel name: Example CPU 2.0 GHz\n"); model != "Example CPU 2.0 GHz" {
+		t.Fatalf("unexpected CPU model %q", model)
+	}
+	ticks, ok := parseCPUStat("cpu  100 10 20 400 20 0 0 0 0 0\ncpu0 50 5 10 200 10\n")
+	if !ok || ticks.total != 550 || ticks.idle != 420 {
+		t.Fatalf("unexpected CPU ticks: %+v ok=%t", ticks, ok)
+	}
+	disk, ok := parseDF("1B-blocks Used Available Use%\n10737418240 2147483648 8589934592 20%\n")
+	if !ok || disk.total != 10737418240 || disk.available != 8589934592 || disk.usedPercent != 20 {
+		t.Fatalf("unexpected disk result: %+v ok=%t", disk, ok)
+	}
+}
+
+func TestContextualPasswordPolicyParsers(t *testing.T) {
+	login := map[string]bool{"root": true, "alice": true, "daemon": false}
+	users := parseShadowPasswordUsers("root:!:1:2:3\nalice:$y$hash:1:2:3\ndaemon:$6$hash:1:2:3\n", login)
+	if len(users) != 1 || users[0] != "alice" {
+		t.Fatalf("unexpected password-bearing users: %#v", users)
+	}
+	if !hasPasswordQualityPolicy("password requisite pam_pwquality.so retry=3\n") {
+		t.Fatal("active pam_pwquality was not detected")
+	}
+	if hasPasswordQualityPolicy("# password requisite pam_pwquality.so\npassword sufficient pam_unix.so\n") {
+		t.Fatal("commented pam_pwquality was detected")
+	}
+}
+
+func TestParseEstablishedConnections(t *testing.T) {
+	input := `tcp ESTAB 0 0 10.0.0.2:22 203.0.113.5:50123 users:(("sshd",pid=9,fd=3))
+tcp 0 0 127.0.0.1:3001 127.0.0.1:44220 users:(("node",pid=8,fd=4))`
+	connections := parseEstablishedConnections(input)
+	if len(connections) != 2 || connections[0].scope != "public" || connections[1].scope != "loopback" {
+		t.Fatalf("unexpected connections: %#v", connections)
+	}
+}
+
+func TestFirewalldParsers(t *testing.T) {
+	zones := parseFirewalldActiveZones("public (default, active)\n  interfaces: eth0\ntrusted\n  sources: 10.8.0.0/24\n")
+	if len(zones) != 2 || zones[0] != "public" || zones[1] != "trusted" {
+		t.Fatalf("unexpected active zones: %#v", zones)
+	}
+	zone := parseFirewalldZone("public (active)\n  target: default\n  services: ssh https\n  ports: 8443/tcp\n  rich rules:\n")
+	if zone.unrestricted || len(zone.services) != 2 || len(zone.ports) != 1 {
+		t.Fatalf("unexpected zone: %+v", zone)
+	}
+	accept := parseFirewalldZone("trusted\n  target: ACCEPT\n")
+	if !accept.unrestricted {
+		t.Fatal("ACCEPT zone was not classified as unrestricted")
+	}
+	richAccept := parseFirewalldZone("public\n  rich rules:\n    rule family=ipv4 source address=0.0.0.0/0 accept\n")
+	if !richAccept.unrestricted {
+		t.Fatal("unrestricted rich rule was not classified")
+	}
+}
+
+func TestCrowdSecBouncerDetection(t *testing.T) {
+	if crowdSecHasBouncer("[]") || crowdSecHasBouncer("null") || !crowdSecHasBouncer(`[{"name":"firewall"}]`) {
+		t.Fatal("unexpected CrowdSec bouncer detection")
+	}
+}
