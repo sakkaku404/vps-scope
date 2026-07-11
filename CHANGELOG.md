@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 0.5.0 - 2026-07-11
+
 ### Changed
 
 - Added a shared fact snapshot so process, listener, UFW, and Docker evidence is collected once and reused consistently.
@@ -83,7 +85,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Report comparison, fleet summaries, re-rendering, and redaction.
 - Linux amd64 and arm64 release builds.
 
-[Unreleased]: https://github.com/sakkaku404/vps-scope/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/sakkaku404/vps-scope/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/sakkaku404/vps-scope/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/sakkaku404/vps-scope/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/sakkaku404/vps-scope/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/sakkaku404/vps-scope/compare/v0.1.2...v0.2.0
