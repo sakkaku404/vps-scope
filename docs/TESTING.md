@@ -33,6 +33,7 @@ Regression review should verify:
 - masked systemd symlinks are not treated as world-writable unit files.
 - Docker loopback publication remains loopback.
 - S-UI, 3x-ui, and x-ui management listeners are distinguished from proxy ingress.
+- Resource, password-context, active-connection, firewalld, and CrowdSec parsers have deterministic fixtures.
 - file-backed TLS and embedded TLS visibility are reported separately.
 - JSON, text, Markdown, HTML, manifest verification, `diff`, and `fleet` agree.
 

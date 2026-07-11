@@ -41,7 +41,7 @@ func checkNetwork(ctx *Context) []model.Finding {
 		f.Facts[key] = strconv.Itoa(count)
 	}
 	f.Facts["total"] = strconv.Itoa(len(listeners))
-	return []model.Finding{f, checkUnexpectedListeners(ctx, listeners)}
+	return []model.Finding{f, checkUnexpectedListeners(ctx, listeners), checkActiveConnections(ctx)}
 }
 
 func checkUnexpectedListeners(ctx *Context, listeners []Listener) model.Finding {
@@ -112,16 +112,45 @@ func checkFirewallBase(ctx *Context) []model.Finding {
 		f.Facts["backend"] = "ufw"
 		f.Facts["active"] = strconv.FormatBool(active)
 		f.Facts["default_deny_incoming"] = strconv.FormatBool(defaultDeny)
-		if !active || !defaultDeny {
+		useActiveFirewalld := !active && firewalldRunning(ctx)
+		if useActiveFirewalld {
+			// UFW may be installed but intentionally unused. Prefer the active backend.
+			f = model.Finding{ID: "FW-001", Category: "firewall", Facts: map[string]string{}}
+		} else if !active || !defaultDeny {
 			f.Status, f.Severity = model.Risk, model.High
 		} else {
 			f.Status = model.Pass
 		}
-		for i, line := range lines(text) {
-			if i >= 60 {
-				break
+		if !useActiveFirewalld {
+			for i, line := range lines(text) {
+				if i >= 60 {
+					break
+				}
+				f.Evidence = append(f.Evidence, model.Evidence{Source: "ufw status verbose", Value: line})
 			}
-			f.Evidence = append(f.Evidence, model.Evidence{Source: "ufw status verbose", Value: line})
+			return []model.Finding{f}
+		}
+	}
+	if ctx.Commander.Exists("firewall-cmd") {
+		state := ctx.Commander.Run(10*time.Second, "firewall-cmd", "--state")
+		f.Facts["backend"] = "firewalld"
+		f.Facts["active"] = strconv.FormatBool(strings.TrimSpace(state.Stdout) == "running")
+		f.Evidence = append(f.Evidence, model.Evidence{Source: "firewall-cmd --state", Value: strings.TrimSpace(state.Stdout + " " + state.Stderr)})
+		if strings.TrimSpace(state.Stdout) != "running" {
+			f.Status, f.Severity = model.Risk, model.High
+			return []model.Finding{f}
+		}
+		zones := ctx.Commander.Run(12*time.Second, "firewall-cmd", "--get-active-zones")
+		if zones.Err != nil {
+			return []model.Finding{unknown("FW-001", "firewall", "firewall-cmd --get-active-zones", commandError(zones))}
+		}
+		activeZones := parseFirewalldActiveZones(zones.Stdout)
+		f.Facts["active_zones"] = strconv.Itoa(len(activeZones))
+		f.Evidence = append(f.Evidence, model.Evidence{Source: "firewall-cmd --get-active-zones", Value: truncate(zones.Stdout, 1200)})
+		if len(activeZones) == 0 {
+			f.Status = model.Info
+		} else {
+			f.Status = model.Pass
 		}
 		return []model.Finding{f}
 	}
@@ -162,13 +191,16 @@ func checkFirewallBase(ctx *Context) []model.Finding {
 		return []model.Finding{f}
 	}
 	f.Status, f.Severity = model.Risk, model.High
-	f.Evidence = []model.Evidence{{Source: "command lookup", Value: "ufw, nft, and iptables not found"}}
+	f.Evidence = []model.Evidence{{Source: "command lookup", Value: "ufw, firewalld, nft, and iptables not found"}}
 	return []model.Finding{f}
 }
 
 func checkFirewallExposure(ctx *Context) model.Finding {
-	if !ctx.Commander.Exists("ufw") {
-		return notApplicable("FW-002", "firewall", "backend", "detailed exposure parser currently supports UFW")
+	if !ctx.Commander.Exists("ufw") || !ufwRunning(ctx) {
+		if ctx.Commander.Exists("firewall-cmd") {
+			return checkFirewalldExposure(ctx)
+		}
+		return notApplicable("FW-002", "firewall", "backend", "detailed exposure parser currently supports UFW and firewalld")
 	}
 	r := ctx.Commander.Run(15*time.Second, "ufw", "status", "verbose")
 	if r.Err != nil {
@@ -216,8 +248,110 @@ func checkFirewallExposure(ctx *Context) model.Finding {
 	return f
 }
 
+func ufwRunning(ctx *Context) bool {
+	if !ctx.Commander.Exists("ufw") {
+		return false
+	}
+	r := ctx.Commander.Run(10*time.Second, "ufw", "status")
+	return regexp.MustCompile(`(?mi)^Status:\s+active\s*$`).MatchString(r.Stdout)
+}
+
+func firewalldRunning(ctx *Context) bool {
+	if !ctx.Commander.Exists("firewall-cmd") {
+		return false
+	}
+	r := ctx.Commander.Run(10*time.Second, "firewall-cmd", "--state")
+	return strings.TrimSpace(r.Stdout) == "running"
+}
+
+func checkFirewalldExposure(ctx *Context) model.Finding {
+	state := ctx.Commander.Run(10*time.Second, "firewall-cmd", "--state")
+	if strings.TrimSpace(state.Stdout) != "running" {
+		return model.Finding{ID: "FW-002", Category: "firewall", Status: model.Risk, Severity: model.High, Evidence: []model.Evidence{{Source: "firewall-cmd --state", Value: strings.TrimSpace(state.Stdout + " " + state.Stderr)}}}
+	}
+	zonesResult := ctx.Commander.Run(12*time.Second, "firewall-cmd", "--get-active-zones")
+	if zonesResult.Err != nil {
+		return unknown("FW-002", "firewall", "firewall-cmd --get-active-zones", commandError(zonesResult))
+	}
+	zones := parseFirewalldActiveZones(zonesResult.Stdout)
+	f := model.Finding{ID: "FW-002", Category: "firewall", Status: model.Pass, Facts: map[string]string{"active_zones": strconv.Itoa(len(zones))}}
+	unrestricted, exposedItems := 0, 0
+	for _, zone := range zones {
+		detail := ctx.Commander.Run(12*time.Second, "firewall-cmd", "--zone="+zone, "--list-all")
+		if detail.Err != nil {
+			return unknown("FW-002", "firewall", "firewall-cmd --zone="+zone+" --list-all", commandError(detail))
+		}
+		analysis := parseFirewalldZone(detail.Stdout)
+		exposedItems += len(analysis.services) + len(analysis.ports)
+		if analysis.unrestricted {
+			unrestricted++
+		}
+		for _, line := range lines(detail.Stdout) {
+			if len(f.Evidence) >= 80 {
+				break
+			}
+			f.Evidence = append(f.Evidence, model.Evidence{Source: "firewall-cmd --zone=" + zone + " --list-all", Value: line})
+		}
+	}
+	f.Facts["allowed_services_and_ports"] = strconv.Itoa(exposedItems)
+	f.Facts["unrestricted_accept_zones_or_rules"] = strconv.Itoa(unrestricted)
+	if unrestricted > 0 {
+		f.Status, f.Severity = model.Risk, model.High
+	}
+	return f
+}
+
+func parseFirewalldActiveZones(output string) []string {
+	var zones []string
+	for _, line := range strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n") {
+		if strings.TrimSpace(line) == "" || strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+			continue
+		}
+		zone := strings.Fields(line)
+		if len(zone) > 0 {
+			zones = append(zones, zone[0])
+		}
+	}
+	sort.Strings(zones)
+	return zones
+}
+
+type firewalldZone struct {
+	services, ports []string
+	unrestricted    bool
+}
+
+func parseFirewalldZone(output string) firewalldZone {
+	var zone firewalldZone
+	for _, line := range lines(output) {
+		lowerLine := strings.ToLower(strings.TrimSpace(line))
+		if strings.HasPrefix(lowerLine, "rule ") && strings.Contains(lowerLine, "accept") && !strings.Contains(lowerLine, " service ") && !strings.Contains(lowerLine, " port ") && !strings.Contains(lowerLine, " protocol ") {
+			zone.unrestricted = true
+		}
+		key, value, ok := strings.Cut(strings.TrimSpace(line), ":")
+		if !ok {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		switch strings.TrimSpace(key) {
+		case "target":
+			zone.unrestricted = strings.EqualFold(value, "ACCEPT")
+		case "services":
+			zone.services = strings.Fields(value)
+		case "ports":
+			zone.ports = strings.Fields(value)
+		case "rich rules":
+			lower := strings.ToLower(value)
+			if strings.Contains(lower, "accept") && !strings.Contains(lower, " service ") && !strings.Contains(lower, " port ") && !strings.Contains(lower, " protocol ") {
+				zone.unrestricted = true
+			}
+		}
+	}
+	return zone
+}
+
 func checkAuth(ctx *Context) []model.Finding {
-	return []model.Finding{checkFailedLogins(ctx), checkSudoAudit(ctx), checkFail2ban(ctx)}
+	return []model.Finding{checkFailedLogins(ctx), checkSudoAudit(ctx), checkIntrusionPrevention(ctx)}
 }
 
 func checkFailedLogins(ctx *Context) model.Finding {
@@ -344,27 +478,64 @@ func checkSudoAudit(ctx *Context) model.Finding {
 		Evidence: []model.Evidence{{Source: "journalctl _COMM=sudo", Key: "lines", Value: strconv.Itoa(count)}}}
 }
 
-func checkFail2ban(ctx *Context) model.Finding {
-	if !ctx.Commander.Exists("fail2ban-client") {
-		return model.Finding{ID: "AUTH-003", Category: "auth", Status: model.Info, NotApplicable: true,
-			Evidence: []model.Evidence{{Source: "command lookup", Value: "fail2ban-client not installed"}}}
+func checkIntrusionPrevention(ctx *Context) model.Finding {
+	f := model.Finding{ID: "AUTH-003", Category: "auth", Status: model.Info, Facts: map[string]string{}}
+	fail2banInstalled := ctx.Commander.Exists("fail2ban-client")
+	crowdSecInstalled := ctx.Commander.Exists("cscli")
+	f.Facts["fail2ban_installed"] = strconv.FormatBool(fail2banInstalled)
+	f.Facts["crowdsec_installed"] = strconv.FormatBool(crowdSecInstalled)
+	if !fail2banInstalled && !crowdSecInstalled {
+		f.NotApplicable = true
+		f.Evidence = []model.Evidence{{Source: "command lookup", Value: "neither fail2ban-client nor cscli is installed"}}
+		return f
 	}
-	active := ctx.Commander.Run(8*time.Second, "systemctl", "is-active", "fail2ban")
-	if strings.TrimSpace(active.Stdout) != "active" {
-		return model.Finding{ID: "AUTH-003", Category: "auth", Status: model.Risk, Severity: model.Medium,
-			Evidence: []model.Evidence{{Source: "systemctl is-active fail2ban", Value: strings.TrimSpace(active.Stdout + " " + active.Stderr)}}}
+
+	protected := false
+	if fail2banInstalled {
+		active := ctx.Commander.Run(8*time.Second, "systemctl", "is-active", "fail2ban")
+		isActive := strings.TrimSpace(active.Stdout) == "active"
+		f.Facts["fail2ban_active"] = strconv.FormatBool(isActive)
+		f.Evidence = append(f.Evidence, model.Evidence{Source: "systemctl is-active", Key: "fail2ban", Value: strings.TrimSpace(active.Stdout + " " + active.Stderr)})
+		if isActive {
+			status := ctx.Commander.Run(12*time.Second, "fail2ban-client", "status")
+			if status.Err == nil {
+				hasSSHD := regexp.MustCompile(`(?i)jail list:.*\bsshd\b`).MatchString(status.Stdout)
+				f.Facts["fail2ban_sshd_jail"] = strconv.FormatBool(hasSSHD)
+				f.Evidence = append(f.Evidence, model.Evidence{Source: "fail2ban-client status", Value: truncate(status.Stdout, 600)})
+				protected = protected || hasSSHD
+			} else {
+				f.Evidence = append(f.Evidence, model.Evidence{Source: "fail2ban-client status", Key: "unavailable", Value: commandError(status)})
+			}
+		}
 	}
-	status := ctx.Commander.Run(12*time.Second, "fail2ban-client", "status")
-	if status.Err != nil {
-		return unknown("AUTH-003", "auth", "fail2ban-client status", commandError(status))
+	if crowdSecInstalled {
+		active := ctx.Commander.Run(8*time.Second, "systemctl", "is-active", "crowdsec")
+		isActive := strings.TrimSpace(active.Stdout) == "active"
+		f.Facts["crowdsec_active"] = strconv.FormatBool(isActive)
+		f.Evidence = append(f.Evidence, model.Evidence{Source: "systemctl is-active", Key: "crowdsec", Value: strings.TrimSpace(active.Stdout + " " + active.Stderr)})
+		if isActive {
+			bouncers := ctx.Commander.Run(12*time.Second, "cscli", "bouncers", "list", "-o", "json")
+			hasBouncer := bouncers.Err == nil && crowdSecHasBouncer(bouncers.Stdout)
+			f.Facts["crowdsec_bouncer_configured"] = strconv.FormatBool(hasBouncer)
+			if bouncers.Err == nil {
+				f.Evidence = append(f.Evidence, model.Evidence{Source: "cscli bouncers list", Key: "configured", Value: strconv.FormatBool(hasBouncer)})
+			} else {
+				f.Evidence = append(f.Evidence, model.Evidence{Source: "cscli bouncers list", Key: "unavailable", Value: commandError(bouncers)})
+			}
+			protected = protected || hasBouncer
+		}
 	}
-	hasSSHD := regexp.MustCompile(`(?i)jail list:.*\bsshd\b`).MatchString(status.Stdout)
-	f := model.Finding{ID: "AUTH-003", Category: "auth", Status: model.Pass,
-		Evidence: []model.Evidence{{Source: "systemctl", Key: "fail2ban", Value: "active"}, {Source: "fail2ban-client status", Value: truncate(status.Stdout, 600)}}}
-	if !hasSSHD {
+	if protected {
+		f.Status = model.Pass
+	} else {
 		f.Status, f.Severity = model.Risk, model.Medium
 	}
 	return f
+}
+
+func crowdSecHasBouncer(output string) bool {
+	trimmed := strings.TrimSpace(output)
+	return trimmed != "" && trimmed != "[]" && trimmed != "null"
 }
 
 func checkUpdates(ctx *Context) []model.Finding {

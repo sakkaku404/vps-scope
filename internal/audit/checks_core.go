@@ -35,13 +35,13 @@ func checkSystem(ctx *Context) []model.Finding {
 		}
 		timeFinding.Evidence = []model.Evidence{{Source: "timedatectl", Key: "NTPSynchronized", Value: r.Stdout}}
 	}
-	return []model.Finding{priv, timeFinding}
+	return []model.Finding{priv, timeFinding, checkResourceOverview(ctx)}
 }
 
 func checkAccounts(ctx *Context) []model.Finding {
 	entries, err := readPasswd()
 	if err != nil {
-		return []model.Finding{unknown("ACC-001", "accounts", "/etc/passwd", err.Error()), unknown("ACC-002", "accounts", "/etc/passwd", err.Error())}
+		return []model.Finding{unknown("ACC-001", "accounts", "/etc/passwd", err.Error()), unknown("ACC-002", "accounts", "/etc/passwd", err.Error()), unknown("ACC-003", "accounts", "/etc/passwd", err.Error())}
 	}
 	var uid0, login []string
 	for _, e := range entries {
@@ -70,7 +70,7 @@ func checkAccounts(ctx *Context) []model.Finding {
 		}
 		loginFinding.Evidence = append(loginFinding.Evidence, model.Evidence{Source: "/etc/passwd", Value: value})
 	}
-	return []model.Finding{uidFinding, loginFinding}
+	return []model.Finding{uidFinding, loginFinding, checkPasswordPolicy(ctx, entries)}
 }
 
 func checkSSH(ctx *Context) []model.Finding {
