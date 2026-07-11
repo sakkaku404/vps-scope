@@ -101,7 +101,7 @@ func (e environment) interactive() error {
 		fmt.Fprintln(e.out, "This tool never changes system configuration. It reads evidence and writes only to a report path you choose.")
 	}
 	fmt.Fprintln(e.out, "\nProfile: 1. auto  2. general  3. proxy  4. web  5. docker  6. mixed  7. custom")
-	fmt.Print(e.out, choose(zh, "选择 [1]: ", "Select [1]: "))
+	fmt.Fprint(e.out, choose(zh, "选择 [1]: ", "Select [1]: "))
 	profileChoice, _ := reader.ReadString('\n')
 	profiles := map[string]string{"1": "auto", "2": "general", "3": "proxy", "4": "web", "5": "docker", "6": "mixed"}
 	profiles["7"] = "custom"
