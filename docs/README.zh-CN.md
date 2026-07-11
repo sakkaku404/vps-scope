@@ -1,0 +1,127 @@
+# VPS Scope
+
+VPS Scope 是一个给 Ubuntu、Debian 服务器用的只读安全检查工具。它负责把服务器现在的状态查清楚，指出值得留意的地方，但不会替你修改任何配置。
+
+[![CI](https://github.com/sakkaku404/vps-scope/actions/workflows/ci.yml/badge.svg)](https://github.com/sakkaku404/vps-scope/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/sakkaku404/vps-scope/actions/workflows/codeql.yml/badge.svg)](https://github.com/sakkaku404/vps-scope/actions/workflows/codeql.yml)
+[![Release](https://img.shields.io/github/v/release/sakkaku404/vps-scope)](https://github.com/sakkaku404/vps-scope/releases)
+[![License](https://img.shields.io/github/license/sakkaku404/vps-scope)](../LICENSE)
+
+[English](../README.md) · [检查项目](CHECKS.md) · [设计说明](DESIGN.md) · [测试说明](TESTING.md)
+
+## 它会检查什么
+
+一台小型 VPS 最容易出问题的地方，基本都在检查范围内：SSH、防火墙、监听端口、登录日志、系统更新、systemd 服务、Docker、TLS 证书、文件权限和常见启动项。
+
+工具会尽量读取真正生效的状态。SSH 使用 `sshd -T`，不会只搜一遍配置文件；网络部分会把公网、私网、回环、IPv4、IPv6 和 Docker 发布端口分开，不会把 `127.0.0.1:3001` 之类的本地服务算成公网暴露。
+
+报告里有四种结果：
+
+- `PASS`：检查正常完成，结果符合预期
+- `RISK`：有明确证据表明这项值得处理
+- `INFO`：有用的状态或清单，本身不代表有问题
+- `UNKNOWN`：缺少权限、命令或可靠证据，暂时无法判断
+
+VPS Scope 不打安全分，也没有自动修复功能。
+
+## 安装
+
+从 [Releases](https://github.com/sakkaku404/vps-scope/releases) 下载服务器架构对应的文件。amd64 服务器可以直接运行：
+
+```bash
+curl -LO https://github.com/sakkaku404/vps-scope/releases/latest/download/vps-scope_linux_amd64
+curl -LO https://github.com/sakkaku404/vps-scope/releases/latest/download/SHA256SUMS
+grep 'vps-scope_linux_amd64$' SHA256SUMS | sha256sum -c -
+chmod +x vps-scope_linux_amd64
+sudo ./vps-scope_linux_amd64
+```
+
+arm64 服务器把文件名换成 `vps-scope_linux_arm64`。
+
+## 从源码编译
+
+项目只使用 Go 标准库：
+
+```bash
+go build -trimpath -o vps-scope ./cmd/vps-scope
+sudo ./vps-scope
+```
+
+直接运行会进入简短的引导，可以选择中文或英文。熟悉参数后也可以直接执行：
+
+```bash
+sudo ./vps-scope audit --lang zh-CN --profile general
+sudo ./vps-scope audit --lang zh-CN --profile proxy
+sudo ./vps-scope audit --profile custom --expect-public 22/tcp,443/tcp
+```
+
+`profile` 用来告诉工具这台服务器大致是做什么的，目前有 `general`、`web`、`proxy`、`docker` 和 `mixed`。如果某个公网端口是你明确需要的，可以用 `--expect-public` 声明；这只影响端口是否符合用途预期，不会跳过其他安全检查。
+
+## 报告
+
+默认输出适合直接在终端阅读，也可以生成 JSON、纯文本、Markdown 和离线 HTML：
+
+```bash
+sudo ./vps-scope audit --format bundle --output ./reports/sgp
+```
+
+完整报告包里包含一份 JSON 原始报告、几种阅读格式和 SHA-256 清单。Linux 下生成的报告默认使用较严格的文件权限。
+
+有了 JSON 以后，不用再次连接服务器就能切换语言或格式：
+
+```bash
+vps-scope render report.json --lang zh-CN --format html --output report.zh-CN.html
+vps-scope render report.json --lang en --format markdown --output report.en.md
+```
+
+准备把报告发到公开场合时，可以先脱敏：
+
+```bash
+vps-scope redact report.json --format markdown --output public.md
+```
+
+脱敏后的同一地址或用户名会一直使用同一个代号，方便看懂它们之间的关系。密码、token、私钥、订阅路径，以及可能同时装有证书和私钥的应用数据不会写进报告。
+
+## 对比服务器状态
+
+`diff` 用来比较同一台服务器的两次检查，`fleet` 可以把多台服务器放在一起看：
+
+```bash
+vps-scope diff old.json new.json
+vps-scope fleet west.json sgp.json tw.json japan.json
+```
+
+检查 ID 不随语言变化，所以中文报告和英文报告也能正常比较。
+
+## 其他命令
+
+```text
+doctor      看当前系统能执行哪些检查
+checks      列出检查项目和 ID
+explain     查看某项检查的说明
+render      重新生成语言或格式
+redact      生成适合分享的脱敏报告
+verify      校验报告包有没有被改动
+version     显示版本和构建信息
+```
+
+## 当前支持范围
+
+首个版本支持 Ubuntu、Debian，以及 Linux `amd64`、`arm64`。部分检查会调用系统自带的 `ss`、`journalctl`、`ufw`、`nft`、`dpkg`、`docker` 或 `sqlite3`；缺少某个命令时，只会影响相关项目，并在报告中明确显示，不会被当成安全。
+
+它能帮你更快地检查服务器，但不能证明服务器一定没有被入侵，也无法从 VPS 内部读取云厂商的安全组。更具体的边界见[设计说明](DESIGN.md)。
+
+## 参与开发
+
+```bash
+go test ./...
+go vet ./...
+```
+
+欢迎提交问题、代码和可复现的 Ubuntu/Debian 测试样本。公开 issue 里请不要附上未经脱敏的服务器报告。
+
+如果发现 VPS Scope 本身存在安全问题，请使用 GitHub 的私密漏洞报告，不要公开提交 issue。具体方式见 [SECURITY.md](../SECURITY.md)。
+
+## 许可证
+
+MIT

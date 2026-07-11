@@ -1,0 +1,54 @@
+name: Bug report
+description: Report a crash, parsing problem, or incorrect command behavior
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for taking the time to report a problem. Do not paste an unredacted server report.
+
+  - type: input
+    id: version
+    attributes:
+      label: VPS Scope version
+      placeholder: Output of vps-scope version
+    validations:
+      required: true
+
+  - type: input
+    id: system
+    attributes:
+      label: Operating system and architecture
+      placeholder: Ubuntu 24.04, linux/amd64
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Include the command you ran and the result you expected.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Redacted output
+      description: Use `vps-scope redact` first. Remove anything else that identifies your host.
+      render: text
+
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: I have removed IP addresses, domains, usernames, tokens, keys, and subscription paths.
+          required: true

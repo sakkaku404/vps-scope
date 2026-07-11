@@ -1,0 +1,37 @@
+name: Feature request
+description: Suggest a check, report format, or supported environment
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: What evidence source should be used?
+      description: Prefer an effective system command or stable system interface.
+
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Suggested behavior
+      description: Explain when this should be PASS, RISK, INFO, or UNKNOWN.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: distribution
+    attributes:
+      label: Distribution
+      options:
+        - Ubuntu
+        - Debian
+        - Both
+        - Other
+    validations:
+      required: true

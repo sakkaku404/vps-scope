@@ -1,0 +1,60 @@
+name: False positive
+description: Report a finding that does not match the effective system state
+title: "[False positive]: "
+labels: [false-positive]
+body:
+  - type: input
+    id: check
+    attributes:
+      label: Check ID
+      placeholder: SSH-001
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: VPS Scope version
+    validations:
+      required: true
+
+  - type: input
+    id: system
+    attributes:
+      label: Operating system and version
+      placeholder: Debian 13
+    validations:
+      required: true
+
+  - type: textarea
+    id: finding
+    attributes:
+      label: Finding and redacted evidence
+      description: Paste only the relevant finding after removing host-specific data.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: effective
+    attributes:
+      label: Effective system state
+      description: Show the authoritative command or file that contradicts the finding.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: explanation
+    attributes:
+      label: Why is the finding incorrect?
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: I have removed secrets and identifying server information.
+          required: true

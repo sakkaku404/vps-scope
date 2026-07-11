@@ -1,0 +1,9 @@
+/bin/
+/dist/
+/reports/
+/test-reports/
+/.agents/
+/.codex/
+*.exe
+*.test
+coverage.out
