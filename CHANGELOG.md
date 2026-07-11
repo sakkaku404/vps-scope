@@ -6,6 +6,12 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 0.1.1 - 2026-07-11
+
+### Added
+
+- Checksum-verified one-command installer and temporary runner for Linux amd64 and arm64.
+
 ## 0.1.0 - 2026-07-11
 
 ### Added
@@ -16,5 +22,6 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Report comparison, fleet summaries, re-rendering, and redaction.
 - Linux amd64 and arm64 release builds.
 
-[Unreleased]: https://github.com/sakkaku404/vps-scope/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/sakkaku404/vps-scope/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/sakkaku404/vps-scope/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/sakkaku404/vps-scope/releases/tag/v0.1.0
