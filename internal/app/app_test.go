@@ -2,9 +2,21 @@ package app
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestInteractiveProfilePromptUsesConfiguredWriter(t *testing.T) {
+	var out bytes.Buffer
+	_ = Run(nil, strings.NewReader("1\n1\n1\n"), &out, &out, BuildInfo{Version: "test"})
+	if strings.Contains(out.String(), "&{") {
+		t.Fatalf("interactive output contains a formatted writer pointer: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "选择 [1]: ") {
+		t.Fatalf("interactive output is missing the profile prompt: %q", out.String())
+	}
+}
 
 func TestParseDurationDays(t *testing.T) {
 	got, err := parseDuration("7d")

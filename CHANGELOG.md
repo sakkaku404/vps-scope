@@ -6,6 +6,10 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Fixed
+
+- Interactive profile selection no longer prints an internal Go writer pointer before the prompt.
+
 ## 0.1.1 - 2026-07-11
 
 ### Added
