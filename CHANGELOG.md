@@ -9,6 +9,21 @@ The project follows [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - Refined the Chinese and English project-origin wording and synchronized README examples, commands, and support details.
+- Repositioned the proxy profile around sing-box, Xray, Hysteria2, management panels, control APIs, and containerized proxy workloads.
+- Rebuilt the offline HTML report with status filters, search, collapsible evidence, responsive layout, print styles, and light/dark themes.
+- Reduced duplicate privileged-file scanning and stopped classifying DHCP and ordinary time-daemon listeners as unexpected public applications.
+
+### Added
+
+- Proxy ingress inventory, native sing-box/Xray configuration self-tests, control API exposure, proxy secret-file permissions, systemd isolation context, and UDP runtime context (`WORK-003` through `WORK-008`).
+- Privacy-safe SSH authorized-key fingerprints with weak-key detection (`SSH-005`).
+- Container-panel discovery for Hiddify, Marzban, Outline, and containerized x-ui/S-UI; ambiguous management exposure remains `UNKNOWN`.
+- Real-host regression coverage across Debian 12/13 and Ubuntu 22.04/26.04.
+
+### Fixed
+
+- Full process arguments, authorized-key comments, suspicious startup commands, and credential-bearing APT URLs can no longer leak into reports.
+- Empty cloud-image `authorized_keys` placeholder files no longer cause a false `UNKNOWN`.
 
 ## 0.4.0 - 2026-07-11
 

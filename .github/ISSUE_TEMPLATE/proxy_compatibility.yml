@@ -1,0 +1,53 @@
+name: Proxy compatibility report
+description: Report an unsupported proxy core, panel, container layout, or false conclusion
+title: "[Proxy compatibility]: "
+labels:
+  - compatibility
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve proxy-host detection. Do not attach a panel database, private key, raw configuration, or unredacted report.
+  - type: input
+    id: product
+    attributes:
+      label: Product and version
+      placeholder: "For example: 3x-ui 3.4.2 / sing-box 1.13.14"
+    validations:
+      required: true
+  - type: dropdown
+    id: installation
+    attributes:
+      label: Installation method
+      options:
+        - Native systemd service
+        - Docker or Docker Compose
+        - Panel-managed core
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "Ubuntu 24.04 / Debian 12"
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What did VPS Scope report, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: safe_evidence
+    attributes:
+      label: Redacted evidence
+      description: Include service/container names and sanitized listener evidence. Use `vps-scope redact` before sharing a report.
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy confirmation
+      options:
+        - label: I removed passwords, tokens, UUIDs, subscription paths, private keys, panel databases, and other secrets.
+          required: true

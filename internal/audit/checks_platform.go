@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -41,7 +42,7 @@ func checkAPTRepositories() model.Finding {
 			isOfficial := containsAny(lower, "ubuntu.com", "debian.org")
 			if !isOfficial {
 				thirdParty++
-				f.Evidence = append(f.Evidence, model.Evidence{Source: path, Key: fmt.Sprintf("line_%d", i+1), Value: truncate(trimmed, 400)})
+				f.Evidence = append(f.Evidence, model.Evidence{Source: path, Key: fmt.Sprintf("line_%d", i+1), Value: sanitizeAPTSourceLine(trimmed)})
 			}
 			if containsAny(lower, "trusted=yes", "allow-insecure=yes", "allow-unauthenticated") {
 				unsafe++
@@ -56,6 +57,35 @@ func checkAPTRepositories() model.Finding {
 		f.Status = model.Info
 	}
 	return f
+}
+
+var aptURLPattern = regexp.MustCompile(`(?i)https?://[^\s"']+`)
+
+func sanitizeAPTSourceLine(line string) string {
+	var origins []string
+	seen := map[string]bool{}
+	for _, raw := range aptURLPattern.FindAllString(line, -1) {
+		raw = strings.TrimRight(raw, ",;)]}")
+		parsed, err := url.Parse(raw)
+		if err != nil || parsed.Scheme == "" || parsed.Hostname() == "" {
+			continue
+		}
+		host := parsed.Hostname()
+		if port := parsed.Port(); port != "" {
+			host = host + ":" + port
+		}
+		origin := strings.ToLower(parsed.Scheme) + "://" + host
+		if !seen[origin] {
+			seen[origin] = true
+			origins = append(origins, origin)
+		}
+	}
+	sort.Strings(origins)
+	if len(origins) == 0 {
+		origins = []string{"<unparsed-third-party-source>"}
+	}
+	lower := strings.ToLower(line)
+	return fmt.Sprintf("origin=%s signed-by=%t unsafe-trust=%t; path, query, and credentials withheld", strings.Join(origins, ","), strings.Contains(lower, "signed-by"), containsAny(lower, "trusted=yes", "allow-insecure=yes", "allow-unauthenticated"))
 }
 
 func checkDPKGVerify(ctx *Context) model.Finding {
@@ -392,4 +422,4 @@ func discoverCertificatePaths(ctx *Context) []string {
 	return paths
 }
 
-var workloadProcesses = regexp.MustCompile(`(?i)\b(sing-box|x-ui|s-ui|sui|hysteria|nginx|caddy|apache2|dockerd|containerd)\b`)
+var workloadProcesses = regexp.MustCompile(`(?i)\b(sing-box|xray|x-ui|s-ui|sui|hysteria|tuic|trojan|ss-server|sslocal|marzban|hiddify|outline-ss-server|wg-quick|nginx|caddy|apache2|dockerd|containerd)\b`)

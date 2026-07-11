@@ -80,12 +80,13 @@ func checkSSH(ctx *Context) []model.Finding {
 			notApplicable("SSH-002", "ssh", "command", "sshd not installed"),
 			notApplicable("SSH-003", "ssh", "command", "sshd not installed"),
 			notApplicable("SSH-004", "ssh", "command", "sshd not installed"),
+			notApplicable("SSH-005", "ssh", "command", "sshd not installed"),
 		}
 	}
 	r := ctx.Commander.Run(12*time.Second, "sshd", "-T")
 	if r.Err != nil {
 		errText := commandError(r)
-		return []model.Finding{unknown("SSH-001", "ssh", "sshd -T", errText), unknown("SSH-002", "ssh", "sshd -T", errText), unknown("SSH-003", "ssh", "sshd -T", errText), checkSSHPermissions()}
+		return []model.Finding{unknown("SSH-001", "ssh", "sshd -T", errText), unknown("SSH-002", "ssh", "sshd -T", errText), unknown("SSH-003", "ssh", "sshd -T", errText), checkSSHPermissions(), checkSSHKeyInventory(ctx)}
 	}
 	effective := map[string]string{}
 	for _, line := range lines(r.Stdout) {
@@ -115,7 +116,7 @@ func checkSSH(ctx *Context) []model.Finding {
 	if pubkey != "yes" {
 		fPub.Status, fPub.Severity = model.Risk, model.High
 	}
-	return []model.Finding{fPassword, fRoot, fPub, checkSSHPermissions()}
+	return []model.Finding{fPassword, fRoot, fPub, checkSSHPermissions(), checkSSHKeyInventory(ctx)}
 }
 
 func checkSSHPermissions() model.Finding {
@@ -148,8 +149,8 @@ func checkSSHPermissions() model.Finding {
 						if strings.HasPrefix(strings.TrimSpace(line), "#") {
 							continue
 						}
-						if containsAny(line, "command=", "environment=", "from=") {
-							f.Evidence = append(f.Evidence, model.Evidence{Source: path, Key: "restricted_key_option", Value: truncate(line, 180)})
+						if options := authorizedKeyOptionNames(line); len(options) > 0 {
+							f.Evidence = append(f.Evidence, model.Evidence{Source: path, Key: "authorized_key_options", Value: strings.Join(options, ",")})
 						}
 					}
 				}
@@ -170,6 +171,190 @@ func checkSSHPermissions() model.Finding {
 	f.Facts["authorized_keys_files"] = strconv.Itoa(keyCount)
 	f.Facts["permission_problems"] = strconv.Itoa(len(problems))
 	return f
+}
+
+func checkSSHKeyInventory(ctx *Context) model.Finding {
+	if !ctx.Commander.Exists("ssh-keygen") {
+		return unknown("SSH-005", "ssh", "ssh-keygen", "command not found")
+	}
+	entries, err := readPasswd()
+	if err != nil {
+		return unknown("SSH-005", "ssh", "/etc/passwd", err.Error())
+	}
+	f := model.Finding{ID: "SSH-005", Category: "ssh", Status: model.Pass, Facts: map[string]string{}}
+	keys, weak, files, parseFailures := 0, 0, 0, 0
+	fingerprints := map[string]int{}
+	for _, entry := range entries {
+		if !loginShell(entry.Shell) || entry.Home == "" {
+			continue
+		}
+		for _, name := range []string{"authorized_keys", "authorized_keys2"} {
+			path := filepath.Join(entry.Home, ".ssh", name)
+			if !regularFile(path) {
+				continue
+			}
+			files++
+			data, readErr := readSmall(path, 2<<20)
+			if readErr != nil {
+				parseFailures++
+				f.Evidence = append(f.Evidence, model.Evidence{Source: "authorized_keys", Key: "unreadable", Value: path})
+				continue
+			}
+			entryCount := authorizedKeyEntryCount(data)
+			if entryCount == 0 {
+				continue
+			}
+			r := ctx.Commander.Run(8*time.Second, "ssh-keygen", "-l", "-E", "sha256", "-f", path)
+			if r.Err != nil && r.Stdout == "" {
+				parseFailures++
+				f.Evidence = append(f.Evidence, model.Evidence{Source: "ssh-keygen", Key: "unreadable_authorized_keys", Value: path})
+				continue
+			}
+			parsedForFile := 0
+			for _, line := range lines(r.Stdout) {
+				item, ok := parseSSHKeygenFingerprint(line)
+				if !ok {
+					parseFailures++
+					continue
+				}
+				keys++
+				parsedForFile++
+				fingerprints[item.fingerprint]++
+				value := fmt.Sprintf("user=%s bits=%d fingerprint=%s type=%s", entry.Name, item.bits, item.fingerprint, item.algorithm)
+				f.Evidence = append(f.Evidence, model.Evidence{Source: path, Key: "authorized_key", Value: value})
+				if item.algorithm == "DSA" || (item.algorithm == "RSA" && item.bits < 2048) {
+					weak++
+					f.Evidence = append(f.Evidence, model.Evidence{Source: path, Key: "weak_authorized_key", Value: value})
+				}
+			}
+			if r.Err != nil || parsedForFile < entryCount {
+				parseFailures++
+				f.Evidence = append(f.Evidence, model.Evidence{Source: "ssh-keygen", Key: "partially_unparsed_authorized_keys", Value: path})
+			}
+		}
+	}
+	duplicates := 0
+	for _, count := range fingerprints {
+		if count > 1 {
+			duplicates += count - 1
+		}
+	}
+	f.Facts["authorized_keys_files"] = strconv.Itoa(files)
+	f.Facts["authorized_keys"] = strconv.Itoa(keys)
+	f.Facts["weak_keys"] = strconv.Itoa(weak)
+	f.Facts["duplicate_fingerprints"] = strconv.Itoa(duplicates)
+	f.Facts["parse_failures"] = strconv.Itoa(parseFailures)
+	if weak > 0 {
+		f.Status, f.Severity = model.Risk, model.High
+	} else if parseFailures > 0 {
+		f.Status, f.Unavailable = model.Unknown, true
+		f.Error = "one or more authorized_keys files could not be fully fingerprinted"
+	} else if files == 0 {
+		f.Status = model.Info
+	}
+	return f
+}
+
+func authorizedKeyTextHasEntries(value string) bool {
+	return authorizedKeyEntryCount(value) > 0
+}
+
+func authorizedKeyEntryCount(value string) int {
+	count := 0
+	for _, line := range lines(value) {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "#") {
+			count++
+		}
+	}
+	return count
+}
+
+type sshKeyFingerprint struct {
+	bits        int
+	fingerprint string
+	algorithm   string
+}
+
+func parseSSHKeygenFingerprint(line string) (sshKeyFingerprint, bool) {
+	fields := strings.Fields(line)
+	if len(fields) < 3 {
+		return sshKeyFingerprint{}, false
+	}
+	bits, err := strconv.Atoi(fields[0])
+	if err != nil || !strings.HasPrefix(fields[1], "SHA256:") {
+		return sshKeyFingerprint{}, false
+	}
+	algorithm := strings.Trim(fields[len(fields)-1], "()")
+	if algorithm == "" {
+		return sshKeyFingerprint{}, false
+	}
+	return sshKeyFingerprint{bits: bits, fingerprint: fields[1], algorithm: strings.ToUpper(algorithm)}, true
+}
+
+func authorizedKeyOptionNames(line string) []string {
+	line = strings.TrimSpace(line)
+	if line == "" || strings.HasPrefix(line, "#") {
+		return nil
+	}
+	index := -1
+	for _, marker := range []string{" ssh-ed25519 ", " ssh-rsa ", " ssh-dss ", " ecdsa-sha2-", " sk-ssh-ed25519@", " sk-ecdsa-sha2-"} {
+		if found := strings.Index(" "+line, marker); found >= 0 && (index < 0 || found < index) {
+			index = found
+		}
+	}
+	if index <= 0 {
+		return nil
+	}
+	prefix := strings.TrimSpace((" " + line)[:index])
+	if prefix == "" {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, option := range splitAuthorizedKeyOptions(prefix) {
+		name, _, _ := strings.Cut(strings.TrimSpace(option), "=")
+		name = strings.TrimSpace(name)
+		if name != "" && !seen[name] {
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func splitAuthorizedKeyOptions(value string) []string {
+	var out []string
+	var current strings.Builder
+	quoted, escaped := false, false
+	for _, char := range value {
+		if escaped {
+			current.WriteRune(char)
+			escaped = false
+			continue
+		}
+		if char == '\\' && quoted {
+			current.WriteRune(char)
+			escaped = true
+			continue
+		}
+		if char == '"' {
+			quoted = !quoted
+			current.WriteRune(char)
+			continue
+		}
+		if char == ',' && !quoted {
+			out = append(out, current.String())
+			current.Reset()
+			continue
+		}
+		current.WriteRune(char)
+	}
+	if current.Len() > 0 {
+		out = append(out, current.String())
+	}
+	return out
 }
 
 func checkPrivileges(ctx *Context) []model.Finding {
@@ -207,7 +392,9 @@ func checkPrivileges(ctx *Context) []model.Finding {
 	if !ctx.Commander.Exists("find") {
 		privileged = unknown("PRIV-002", "privileges", "find", "command not found")
 	} else {
-		r := ctx.Commander.Run(35*time.Second, "find", "/usr", "/bin", "/sbin", "/opt", "/usr/local", "-xdev", "-type", "f", "-perm", "/6000", "-print")
+		// /bin, /sbin and /usr/local are normally links or descendants of /usr.
+		// Scanning them again can multiply runtime on small VPS disks.
+		r := ctx.Commander.Run(18*time.Second, "find", "/usr", "/opt", "-xdev", "-type", "f", "-perm", "/6000", "-print")
 		if r.Err != nil && r.Stdout == "" {
 			privileged = unknown("PRIV-002", "privileges", "find", commandError(r))
 		} else {
@@ -228,7 +415,7 @@ func checkPrivileges(ctx *Context) []model.Finding {
 		}
 	}
 	if ctx.Commander.Exists("getcap") {
-		r := ctx.Commander.Run(30*time.Second, "getcap", "-r", "/usr", "/bin", "/sbin", "/opt", "/usr/local")
+		r := ctx.Commander.Run(18*time.Second, "getcap", "-r", "/usr", "/opt")
 		caps := lines(r.Stdout)
 		if privileged.Facts == nil {
 			privileged.Facts = map[string]string{}

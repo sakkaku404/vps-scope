@@ -55,3 +55,31 @@ func TestBundleVerifyAndDetectTamper(t *testing.T) {
 		t.Fatalf("tamper err=%v failures=%v", err, failures)
 	}
 }
+
+func TestHTMLIsSelfContainedAndUsable(t *testing.T) {
+	var out bytes.Buffer
+	if err := HTML(&out, sampleReport(), Options{Locale: "zh-CN"}); err != nil {
+		t.Fatal(err)
+	}
+	html := out.String()
+	for _, required := range []string{`data-filter="RISK"`, `class="search"`, `data-status="UNKNOWN"`, "风险解释", "证据", "报告保存在本地"} {
+		if !strings.Contains(html, required) {
+			t.Errorf("HTML missing %q", required)
+		}
+	}
+	for _, external := range []string{"https://", "http://", "<link rel=", "<script src="} {
+		if strings.Contains(html, external) {
+			t.Errorf("HTML unexpectedly depends on external content %q", external)
+		}
+	}
+}
+
+func TestPriorityRiskShowsEvidenceWithoutVerbose(t *testing.T) {
+	var out bytes.Buffer
+	if err := Text(&out, sampleReport(), Options{Locale: "en", Verbose: false}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "[ufw] inactive") {
+		t.Fatalf("priority risk evidence was hidden: %s", out.String())
+	}
+}

@@ -104,7 +104,9 @@ func (e environment) interactive() error {
 	} else {
 		fmt.Fprintln(e.out, "This tool never changes system configuration. It reads evidence and writes only to a report path you choose.")
 	}
-	fmt.Fprintln(e.out, "\nProfile: 1. auto  2. general  3. proxy  4. web  5. docker  6. mixed  7. custom")
+	fmt.Fprintln(e.out, choose(zh,
+		"\n服务器用途（不确定就选 1）:\n  1. 自动识别（推荐）\n  2. 通用 VPS\n  3. 代理服务器\n  4. Web 服务器\n  5. Docker 主机\n  6. 混合用途\n  7. 自定义公网端口",
+		"\nServer role (choose 1 if unsure):\n  1. auto detect (recommended)\n  2. general VPS\n  3. proxy server\n  4. web server\n  5. Docker host\n  6. mixed workloads\n  7. custom public listeners"))
 	fmt.Fprint(e.out, choose(zh, "选择 [1]: ", "Select [1]: "))
 	profileChoice, _ := reader.ReadString('\n')
 	profiles := map[string]string{"1": "auto", "2": "general", "3": "proxy", "4": "web", "5": "docker", "6": "mixed"}

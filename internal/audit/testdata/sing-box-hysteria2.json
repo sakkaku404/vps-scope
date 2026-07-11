@@ -1,0 +1,36 @@
+{
+  "log": {
+    "level": "info"
+  },
+  "inbounds": [
+    {
+      "type": "hysteria2",
+      "tag": "lab-hysteria2",
+      "listen": "::",
+      "listen_port": 24443,
+      "users": [
+        {
+          "password": "fixture-only-not-a-real-secret"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "localhost",
+        "certificate_path": "/etc/sing-box/lab-cert.pem",
+        "key_path": "/etc/sing-box/lab-key.pem"
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ],
+  "experimental": {
+    "clash_api": {
+      "external_controller": "0.0.0.0:29090",
+      "secret": "fixture-only-control-secret"
+    }
+  }
+}

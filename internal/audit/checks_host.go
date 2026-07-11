@@ -23,12 +23,13 @@ func checkWorkloads(ctx *Context) []model.Finding {
 	if ctx.Commander.Exists("ps") {
 		r := ctx.Commander.Run(8*time.Second, "ps", "-eo", "pid=,user=,comm=,args=")
 		for _, line := range lines(r.Stdout) {
-			if workloadProcesses.MatchString(line) && len(f.Evidence) < 40 {
-				f.Evidence = append(f.Evidence, model.Evidence{Source: "ps", Value: truncate(line, 350)})
+			if workloadProcessLine(line) && len(f.Evidence) < 40 {
+				f.Evidence = append(f.Evidence, model.Evidence{Source: "ps", Value: sanitizeProcessEvidence(line)})
 			}
 		}
 	}
-	return []model.Finding{f, checkPanelManagement(ctx)}
+	findings := []model.Finding{f, checkPanelManagement(ctx)}
+	return append(findings, proxyChecks(ctx)...)
 }
 
 type panelInstall struct {
@@ -39,10 +40,11 @@ type panelInstall struct {
 
 func checkPanelManagement(ctx *Context) model.Finding {
 	panels := discoverPanels(ctx)
-	if len(panels) == 0 {
-		return notApplicable("WORK-002", "workloads", "binary discovery", "no supported S-UI, 3x-ui, or x-ui installation found")
+	containerPanels := discoverContainerPanels(ctx)
+	if len(panels) == 0 && len(containerPanels) == 0 {
+		return notApplicable("WORK-002", "workloads", "binary and container discovery", "no supported S-UI, 3x-ui, x-ui, Hiddify, Marzban, or Outline panel found")
 	}
-	f := model.Finding{ID: "WORK-002", Category: "workloads", Status: model.Pass, Facts: map[string]string{"panel_count": strconv.Itoa(len(panels))}}
+	f := model.Finding{ID: "WORK-002", Category: "workloads", Status: model.Pass, Facts: map[string]string{"panel_count": strconv.Itoa(len(panels) + len(containerPanels))}}
 
 	var listeners []Listener
 	ssAvailable := ctx.Commander.Exists("ss")
@@ -94,6 +96,19 @@ func checkPanelManagement(ctx *Context) model.Finding {
 			unknowns++
 		}
 	}
+	for _, panel := range containerPanels {
+		products = append(products, panel.product)
+		unknowns++
+		f.Evidence = append(f.Evidence, model.Evidence{Source: "docker ps", Key: "container_panel", Value: fmt.Sprintf("product=%s name=%s image=%s", panel.product, panel.name, panel.image)})
+		ports := ctx.Commander.Run(8*time.Second, "docker", "port", panel.name)
+		if ports.Stdout == "" {
+			f.Evidence = append(f.Evidence, model.Evidence{Source: "docker port", Key: panel.name, Value: "no directly published ports; management access may use host networking or a reverse-proxy network"})
+		} else {
+			for _, line := range lines(ports.Stdout) {
+				f.Evidence = append(f.Evidence, model.Evidence{Source: "docker port", Key: panel.name, Value: truncate(line, 180)})
+			}
+		}
+	}
 	sort.Strings(products)
 	f.Facts["products"] = strings.Join(products, ",")
 	f.Facts["ports_unavailable"] = strconv.Itoa(unknowns)
@@ -102,11 +117,59 @@ func checkPanelManagement(ctx *Context) model.Finding {
 		if unknowns > 0 {
 			f.Status, f.Unavailable = model.Unknown, true
 			f.Error = "management-panel exposure could not be determined from the available port, listener, and firewall evidence"
-		} else if inactive == len(panels) {
+		} else if inactive == len(panels) && len(containerPanels) == 0 {
 			f.Status = model.Info
 		}
 	}
 	return f
+}
+
+type containerPanelInstall struct {
+	product string
+	name    string
+	image   string
+}
+
+func discoverContainerPanels(ctx *Context) []containerPanelInstall {
+	if !ctx.Commander.Exists("docker") {
+		return nil
+	}
+	r := ctx.Commander.Run(10*time.Second, "docker", "ps", "--format", "{{.Names}}\t{{.Image}}")
+	if r.Err != nil {
+		return nil
+	}
+	var out []containerPanelInstall
+	for _, line := range lines(r.Stdout) {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		product, ok := panelProductFromContainer(fields[0] + " " + fields[1])
+		if !ok {
+			continue
+		}
+		out = append(out, containerPanelInstall{product: product, name: fields[0], image: fields[1]})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
+	return out
+}
+
+func panelProductFromContainer(value string) (string, bool) {
+	lower := strings.ToLower(value)
+	switch {
+	case strings.Contains(lower, "marzban"):
+		return "Marzban", true
+	case strings.Contains(lower, "hiddify"):
+		return "Hiddify", true
+	case strings.Contains(lower, "outline"):
+		return "Outline", true
+	case containsAny(lower, "3x-ui", "x-ui"):
+		return "containerized x-ui/3x-ui", true
+	case containsAny(lower, "s-ui", "/sui"):
+		return "containerized S-UI", true
+	default:
+		return "", false
+	}
 }
 
 func discoverPanels(ctx *Context) []panelInstall {
@@ -207,9 +270,11 @@ func panelFirewallDisposition(ufw panelUFW, port string, f *model.Finding) strin
 		return "allow-anywhere"
 	}
 	if restricted {
+		f.Evidence = append(f.Evidence, model.Evidence{Source: "ufw status verbose", Key: "panel_firewall", Value: "active; matching allow rule is source-restricted"})
 		return "restricted"
 	}
 	if ufw.defaultDeny {
+		f.Evidence = append(f.Evidence, model.Evidence{Source: "ufw status verbose", Key: "panel_firewall", Value: "active; default deny incoming; no matching allow rule"})
 		return "blocked-by-default"
 	}
 	return "unknown"
@@ -220,13 +285,10 @@ func checkFilesystem(ctx *Context) []model.Finding {
 	type target struct {
 		path      string
 		forbidden fs.FileMode
-		secret    bool
 	}
 	targets := []target{
-		{"/etc/passwd", 0o022, false}, {"/etc/shadow", 0o027, true}, {"/etc/sudoers", 0o022, true},
-		{"/etc/ssh/sshd_config", 0o022, false}, {"/etc/sing-box/config.json", 0o077, true},
-		{"/etc/hysteria/config.yaml", 0o077, true}, {"/etc/hysteria/config.yml", 0o077, true},
-		{"/etc/x-ui/x-ui.db", 0o077, true}, {"/etc/s-ui/s-ui.db", 0o077, true}, {"/usr/local/s-ui/db/s-ui.db", 0o077, true},
+		{"/etc/passwd", 0o022}, {"/etc/shadow", 0o027}, {"/etc/sudoers", 0o022},
+		{"/etc/ssh/sshd_config", 0o022},
 	}
 	problems := 0
 	checked := 0
@@ -262,10 +324,13 @@ func checkFilesystem(ctx *Context) []model.Finding {
 
 func checkPersistence(ctx *Context) []model.Finding {
 	f := model.Finding{ID: "PERSIST-001", Category: "persistence", Status: model.Pass, Facts: map[string]string{}}
-	patterns := []*regexp.Regexp{
-		regexp.MustCompile(`(?i)(/tmp/|/var/tmp/|/dev/shm/)`),
-		regexp.MustCompile(`(?i)(curl|wget).{0,160}(\||;|&&).{0,40}(sh|bash)`),
-		regexp.MustCompile(`(?i)base64\s+(-d|--decode).{0,120}(\||;).{0,40}(sh|bash)`),
+	patterns := []struct {
+		name string
+		re   *regexp.Regexp
+	}{
+		{"temporary-execution-path", regexp.MustCompile(`(?i)(/tmp/|/var/tmp/|/dev/shm/)`)},
+		{"remote-download-piped-to-shell", regexp.MustCompile(`(?i)(curl|wget).{0,160}(\||;|&&).{0,40}(sh|bash)`)},
+		{"base64-decoded-shell", regexp.MustCompile(`(?i)base64\s+(-d|--decode).{0,120}(\||;).{0,40}(sh|bash)`)},
 	}
 	paths := []string{"/etc/rc.local", "/etc/ld.so.preload", "/etc/crontab"}
 	paths = append(paths, existingFiles("/etc/cron.d/*", "/etc/systemd/system/*.service", "/etc/systemd/system/*.timer", "/etc/systemd/system/*/*.service")...)
@@ -283,9 +348,9 @@ func checkPersistence(ctx *Context) []model.Finding {
 				continue
 			}
 			for _, pattern := range patterns {
-				if pattern.MatchString(trimmed) {
+				if pattern.re.MatchString(trimmed) {
 					indicators++
-					f.Evidence = append(f.Evidence, model.Evidence{Source: path, Key: fmt.Sprintf("line_%d", i+1), Value: truncate(trimmed, 350)})
+					f.Evidence = append(f.Evidence, model.Evidence{Source: path, Key: fmt.Sprintf("line_%d", i+1), Value: "indicator=" + pattern.name + "; command content withheld by privacy policy"})
 					break
 				}
 			}

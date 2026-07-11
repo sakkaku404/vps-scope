@@ -1,13 +1,13 @@
 # VPS Scope
 
-VPS Scope 是一个给 Ubuntu、Debian 服务器用的只读安全检查工具。它负责把服务器现在的状态查清楚，指出值得留意的地方，但不会替你修改任何配置。
+VPS Scope 是一个给 Ubuntu、Debian VPS 用的只读安全检查工具，尤其关注 sing-box、Xray、Reality、Hysteria2、代理面板和 Docker 常见的部署方式。它负责把服务器现在的状态查清楚，指出值得留意的地方，但不会替你修改任何配置。
 
 [![CI](https://github.com/sakkaku404/vps-scope/actions/workflows/ci.yml/badge.svg)](https://github.com/sakkaku404/vps-scope/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/sakkaku404/vps-scope/actions/workflows/codeql.yml/badge.svg)](https://github.com/sakkaku404/vps-scope/actions/workflows/codeql.yml)
 [![Release](https://img.shields.io/github/v/release/sakkaku404/vps-scope)](https://github.com/sakkaku404/vps-scope/releases)
 [![License](https://img.shields.io/github/license/sakkaku404/vps-scope)](LICENSE)
 
-[English](docs/README.en.md) · [检查项目](docs/CHECKS.md) · [设计说明](docs/DESIGN.md) · [测试说明](docs/TESTING.md)
+[English](docs/README.en.md) · [代理兼容性](docs/PROXY-COMPATIBILITY.md) · [隐私说明](docs/PRIVACY.md) · [检查项目](docs/CHECKS.md) · [设计说明](docs/DESIGN.md) · [测试说明](docs/TESTING.md)
 
 ## 为什么做 VPS Scope
 
@@ -20,6 +20,18 @@ VPS Scope 不是该项目的分支，代码与检测实现均为独立实现。V
 ## 它会检查什么
 
 一台小型 VPS 最容易出问题的地方，基本都在检查范围内：系统资源、账户与密码上下文、SSH、防火墙、监听端口、活动连接、登录日志、Fail2ban/CrowdSec、系统更新、systemd 服务、Docker、TLS 证书、文件权限和常见启动项。
+
+代理服务器会额外检查：
+
+- sing-box、Xray、Hysteria2、TUIC、Trojan、Shadowsocks 等核心与入口
+- S-UI、3x-ui/x-ui 管理面，以及 Hiddify、Marzban、Outline 容器线索
+- sing-box 与 Xray 配置解析和原生只读自检
+- Clash API、V2Ray API 等控制接口是否公开监听、是否被主机防火墙限制
+- 面板数据库、代理配置和私钥相关文件的权限
+- 代理 systemd 服务的运行用户、capabilities、隔离选项和文件描述符限制
+- Hysteria2、TUIC 等 UDP 场景的缓冲区和错误计数上下文
+
+“识别到了软件”和“可以可靠判断管理端口”是两回事。遇到容器网络、反向代理或未知面板结构时，VPS Scope 会保留 `UNKNOWN`，不会为了显得支持得多而给出 `PASS`。当前实测范围见[代理兼容性](docs/PROXY-COMPATIBILITY.md)。
 
 工具会尽量读取真正生效的状态。SSH 使用 `sshd -T`，不会只搜一遍配置文件；网络部分会把公网、私网、回环、IPv4、IPv6 和 Docker 发布端口分开，不会把 `127.0.0.1:3001` 之类的本地服务算成公网暴露。
 
@@ -101,7 +113,7 @@ sudo vps-scope report path  # 显示最近报告的目录
 sudo ./vps-scope audit --format bundle --output ./reports/sgp
 ```
 
-完整报告包里包含一份 JSON 原始报告、几种阅读格式和 SHA-256 清单。Linux 下生成的报告默认使用较严格的文件权限。
+完整报告包里包含一份 JSON 原始报告、几种阅读格式和 SHA-256 清单。HTML 报告是一个完全离线的单文件页面，可以按状态筛选、搜索检查和折叠证据，不会加载外部脚本或字体。Linux 下生成的报告默认使用较严格的文件权限。
 
 有了 JSON 以后，不用再次连接服务器就能切换语言或格式：
 
@@ -116,7 +128,7 @@ vps-scope render report.json --lang en --format markdown --output report.en.md
 vps-scope redact report.json --format markdown --output public.md
 ```
 
-脱敏后的同一地址或用户名会一直使用同一个代号，方便看懂它们之间的关系。密码、token、私钥、订阅路径，以及可能同时装有证书和私钥的应用数据不会写进报告。
+脱敏后的同一地址或用户名会一直使用同一个代号，方便看懂它们之间的关系。密码、token、私钥、订阅路径、SSH key 注释和完整进程参数不会写进报告；可能同时装有证书和私钥的应用数据也不会为了检查而导出。完整边界见[隐私说明](docs/PRIVACY.md)。
 
 ## 对比服务器状态
 

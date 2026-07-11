@@ -149,7 +149,21 @@ func collectHost(cmd Commander) (model.Host, error) {
 func detectProfile(cmd Commander, requested string) model.Profile {
 	result := cmd.Run(8*time.Second, "ps", "-eo", "comm=")
 	processes := strings.ToLower(result.Stdout)
-	hasProxy := containsAny(processes, "sing-box", "x-ui", "s-ui", "\nsui\n", "hysteria")
+	hasProxy := containsAny(processes,
+		"sing-box", "xray", "x-ui", "s-ui", "\nsui\n", "hysteria", "tuic",
+		"trojan", "ss-server", "sslocal", "marzban", "hiddify", "outline-ss-server", "wg-quick",
+	)
+	if !hasProxy {
+		for _, path := range []string{
+			"/etc/sing-box", "/usr/local/etc/sing-box", "/etc/xray", "/usr/local/etc/xray",
+			"/etc/hysteria", "/usr/local/x-ui", "/usr/local/s-ui", "/opt/marzban", "/opt/hiddify-manager",
+		} {
+			if info, err := os.Stat(path); err == nil && info.IsDir() {
+				hasProxy = true
+				break
+			}
+		}
+	}
 	hasWeb := containsAny(processes, "nginx", "caddy", "apache2")
 	hasDocker := containsAny(processes, "dockerd", "containerd") || cmd.Exists("docker")
 	reasons := []string{}

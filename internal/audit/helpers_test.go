@@ -1,6 +1,9 @@
 package audit
 
 import (
+	"fmt"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/sakkaku404/vps-scope/internal/model"
@@ -62,6 +65,21 @@ func TestExpectedListenerUsesExplicitPort(t *testing.T) {
 	}
 }
 
+func TestExpectedInfrastructureListeners(t *testing.T) {
+	ctx := &Context{Options: Options{ExpectedPublic: map[string]bool{}}, Profile: model.Profile{Effective: "general"}}
+	tests := []Listener{
+		{Protocol: "udp", Port: "68", Process: `users:(("dhclient",pid=1))`},
+		{Protocol: "udp", Port: "123", Process: `users:(("ntpd",pid=2))`},
+		{Protocol: "tcp", Port: "22", Process: `users:(("sshd",pid=3))`},
+	}
+	for _, listener := range tests {
+		key := listener.Port + "/" + listener.Protocol
+		if !expectedListener(ctx, listener, key) {
+			t.Errorf("expected infrastructure listener was rejected: %+v", listener)
+		}
+	}
+}
+
 func TestParsePanelPort(t *testing.T) {
 	tests := []struct {
 		product, output, want string
@@ -114,6 +132,24 @@ func TestPanelListenerScopePrefersPublicBinding(t *testing.T) {
 	got, found := panelListenerScope(listeners, "2053", &finding)
 	if !found || got != "public-wildcard" {
 		t.Fatalf("got (%q,%t), want public-wildcard", got, found)
+	}
+}
+
+func TestContainerPanelDetection(t *testing.T) {
+	tests := map[string]string{
+		"marzban-app gozargah/marzban:latest": "Marzban",
+		"hiddify-manager hiddify/manager":     "Hiddify",
+		"outline shadowbox":                   "Outline",
+		"panel ghcr.io/mhsanaei/3x-ui":        "containerized x-ui/3x-ui",
+	}
+	for input, want := range tests {
+		got, ok := panelProductFromContainer(input)
+		if !ok || got != want {
+			t.Errorf("panelProductFromContainer(%q)=(%q,%t), want %q", input, got, ok, want)
+		}
+	}
+	if _, ok := panelProductFromContainer("nginx nginx:alpine"); ok {
+		t.Fatal("ordinary web container was classified as a proxy panel")
 	}
 }
 
@@ -180,5 +216,130 @@ func TestFirewalldParsers(t *testing.T) {
 func TestCrowdSecBouncerDetection(t *testing.T) {
 	if crowdSecHasBouncer("[]") || crowdSecHasBouncer("null") || !crowdSecHasBouncer(`[{"name":"firewall"}]`) {
 		t.Fatal("unexpected CrowdSec bouncer detection")
+	}
+}
+
+func TestParseSingBoxSummaryDoesNotExposeSecrets(t *testing.T) {
+	input := []byte(`{
+	  "inbounds": [{"type":"hysteria2","tag":"private-tag","listen":"::","listen_port":443,"users":[{"password":"do-not-export"}]}],
+	  "experimental": {
+	    "clash_api": {"external_controller":"127.0.0.1:9090","secret":"also-private"},
+	    "v2ray_api": {"listen":"0.0.0.0:8080"}
+	  }
+	}`)
+	got := parseSingBoxSummary("/etc/sing-box/config.json", input)
+	if got.Err != nil || len(got.Inbounds) != 1 || !got.UsesUDP || len(got.Controls) != 2 {
+		t.Fatalf("unexpected summary: %+v", got)
+	}
+	serialized := fmt.Sprintf("%+v", got)
+	for _, secret := range []string{"do-not-export", "also-private", "private-tag"} {
+		if strings.Contains(serialized, secret) {
+			t.Fatalf("secret %q leaked into summary: %s", secret, serialized)
+		}
+	}
+	if got.Controls[0].Port != "9090" || got.Inbounds[0].Port != "443" {
+		t.Fatalf("unexpected endpoint parsing: %+v", got)
+	}
+}
+
+func TestParseXrayAPIInbound(t *testing.T) {
+	input := []byte(`{"inbounds":[{"tag":"api","listen":"127.0.0.1","port":10085,"protocol":"dokodemo-door"},{"port":"443","protocol":"vless"}]}`)
+	got := parseXraySummary("/etc/xray/config.json", input)
+	if got.Err != nil || len(got.Inbounds) != 2 || len(got.Controls) != 1 {
+		t.Fatalf("unexpected summary: %+v", got)
+	}
+	if got.Controls[0].Listen != "127.0.0.1" || got.Controls[0].Port != "10085" {
+		t.Fatalf("unexpected API endpoint: %+v", got.Controls[0])
+	}
+}
+
+func TestSplitProxyEndpoint(t *testing.T) {
+	tests := []struct{ input, host, port string }{
+		{"127.0.0.1:9090", "127.0.0.1", "9090"},
+		{"[::]:443", "::", "443"},
+		{":8080", "::", "8080"},
+		{"8443", "::", "8443"},
+	}
+	for _, test := range tests {
+		host, port, ok := splitEndpoint(test.input)
+		if !ok || host != test.host || port != test.port {
+			t.Errorf("splitEndpoint(%q)=(%q,%q,%t), want (%q,%q,true)", test.input, host, port, ok, test.host, test.port)
+		}
+	}
+	if _, _, ok := splitEndpoint("127.0.0.1:99999"); ok {
+		t.Fatal("invalid port accepted")
+	}
+}
+
+func TestProxyProcessEvidenceNeverIncludesArguments(t *testing.T) {
+	line := `2970 root bash bash -c x-ui --password super-secret`
+	if _, ok := proxyProcessLine(line); ok {
+		t.Fatal("generic shell was misidentified as a proxy process")
+	}
+	line = `2877 root x-ui /usr/local/x-ui/x-ui --token super-secret`
+	product, ok := proxyProcessLine(line)
+	if !ok || product != "x-ui/3x-ui" {
+		t.Fatalf("proxy process not detected: product=%q ok=%t", product, ok)
+	}
+	evidence := sanitizeProcessEvidence(line)
+	if strings.Contains(evidence, "super-secret") || evidence != "2877 root x-ui" {
+		t.Fatalf("unsafe process evidence: %q", evidence)
+	}
+}
+
+func TestSingBoxFixturePrivacyBoundary(t *testing.T) {
+	data, err := os.ReadFile("testdata/sing-box-hysteria2.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := parseSingBoxSummary("/etc/sing-box/config.json", data)
+	if got.Err != nil || len(got.Inbounds) != 1 || len(got.Controls) != 1 || !got.UsesUDP {
+		t.Fatalf("unexpected fixture summary: %+v", got)
+	}
+	serialized := fmt.Sprintf("%+v", got)
+	for _, secret := range []string{"fixture-only-not-a-real-secret", "fixture-only-control-secret", "lab-hysteria2"} {
+		if strings.Contains(serialized, secret) {
+			t.Fatalf("fixture secret or tag leaked: %q", secret)
+		}
+	}
+}
+
+func TestSSHKeyFingerprintAndOptionsPrivacy(t *testing.T) {
+	item, ok := parseSSHKeygenFingerprint("256 SHA256:abc123 real-person@example.com (ED25519)")
+	if !ok || item.bits != 256 || item.fingerprint != "SHA256:abc123" || item.algorithm != "ED25519" {
+		t.Fatalf("unexpected fingerprint parse: %+v ok=%t", item, ok)
+	}
+	if strings.Contains(fmt.Sprintf("%+v", item), "example.com") {
+		t.Fatal("SSH key comment leaked into fingerprint model")
+	}
+	options := authorizedKeyOptionNames(`from="192.0.2.0/24",command="backup --token secret,still-secret",no-port-forwarding ssh-ed25519 AAAATEST private-email@example.com`)
+	want := []string{"command", "from", "no-port-forwarding"}
+	if fmt.Sprint(options) != fmt.Sprint(want) {
+		t.Fatalf("options=%v, want %v", options, want)
+	}
+	joined := strings.Join(options, ",")
+	for _, secret := range []string{"192.0.2.0", "backup", "secret", "still-secret", "private-email"} {
+		if strings.Contains(joined, secret) {
+			t.Fatalf("authorized-key option value leaked: %q", secret)
+		}
+	}
+	if authorizedKeyTextHasEntries("\n# cloud image placeholder\n") {
+		t.Fatal("empty/comment-only authorized_keys was treated as a parse failure candidate")
+	}
+	if !authorizedKeyTextHasEntries("# comment\nssh-ed25519 AAAATEST\n") {
+		t.Fatal("real authorized key entry was not detected")
+	}
+}
+
+func TestAPTSourceEvidenceRemovesCredentialsAndPathTokens(t *testing.T) {
+	input := `deb [signed-by=/etc/apt/keyrings/vendor.gpg] https://alice:password@example.com/private/token123 stable main`
+	got := sanitizeAPTSourceLine(input)
+	if !strings.Contains(got, "origin=https://example.com") || !strings.Contains(got, "signed-by=true") {
+		t.Fatalf("missing safe repository context: %q", got)
+	}
+	for _, secret := range []string{"alice", "password", "private", "token123"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("repository secret leaked: %q in %q", secret, got)
+		}
 	}
 }
