@@ -77,7 +77,15 @@ sudo ./vps-scope audit --profile custom --expect-public 22/tcp,443/tcp
 
 ## 报告
 
-默认输出适合直接在终端阅读，也可以生成 JSON、纯文本、Markdown 和离线 HTML：
+交互模式默认会在终端显示结果，同时保存一份完整报告。报告统一放在 `~/vps-scope-reports/主机名/时间/`，其中 `~/vps-scope-reports/latest` 始终指向最近一次报告。生成完成后会解释每个文件的用途，并给出可以复制的下载命令。
+
+```bash
+sudo vps-scope report show  # 再次显示最近一次报告
+sudo vps-scope report list  # 列出保存过的报告
+sudo vps-scope report path  # 显示最近报告的目录
+```
+
+也可以用参数把 JSON、纯文本、Markdown、HTML 或完整报告包写到指定位置：
 
 ```bash
 sudo ./vps-scope audit --format bundle --output ./reports/sgp
