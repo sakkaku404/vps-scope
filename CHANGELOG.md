@@ -10,6 +10,10 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 - A GitHub Pages one-command audit entry point at `https://sakkaku404.github.io/vps-scope/run.sh`.
 
+### Changed
+
+- Chinese is now the repository's default README; the English README lives under `docs/`.
+
 ## 0.3.0 - 2026-07-11
 
 ### Added

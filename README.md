@@ -1,52 +1,58 @@
 # VPS Scope
 
-VPS Scope is a read-only security audit tool for Ubuntu and Debian servers. It collects the state of a host, points out things worth reviewing, and leaves the machine untouched.
+VPS Scope 是一个给 Ubuntu、Debian 服务器用的只读安全检查工具。它负责把服务器现在的状态查清楚，指出值得留意的地方，但不会替你修改任何配置。
 
 [![CI](https://github.com/sakkaku404/vps-scope/actions/workflows/ci.yml/badge.svg)](https://github.com/sakkaku404/vps-scope/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/sakkaku404/vps-scope/actions/workflows/codeql.yml/badge.svg)](https://github.com/sakkaku404/vps-scope/actions/workflows/codeql.yml)
 [![Release](https://img.shields.io/github/v/release/sakkaku404/vps-scope)](https://github.com/sakkaku404/vps-scope/releases)
 [![License](https://img.shields.io/github/license/sakkaku404/vps-scope)](LICENSE)
 
-[中文](docs/README.zh-CN.md) · [Checks](docs/CHECKS.md) · [Design notes](docs/DESIGN.md) · [Testing](docs/TESTING.md)
+[English](docs/README.en.md) · [检查项目](docs/CHECKS.md) · [设计说明](docs/DESIGN.md) · [测试说明](docs/TESTING.md)
 
-## What it looks at
+## 为什么做 VPS Scope
 
-The audit covers the parts of a small VPS that are easy to overlook: effective SSH settings, listening sockets, firewall rules, login activity, pending updates, systemd services, Docker isolation, TLS certificates, file permissions, and common persistence locations.
+这个项目起于一次对 [vernu/vps-audit](https://github.com/vernu/vps-audit) 的实际复核。那份脚本让 VPS 自查变得很容易，但在真实服务器上，直接读取配置文件、按端口或服务数量设阈值，以及把取证失败当成安全，都可能产生误报或漏报。
 
-Results are based on the state the system is actually using where possible. For example, SSH settings come from `sshd -T`, not from grepping one configuration file. Network listeners are separated into public, private, loopback, IPv4, IPv6, and container-published endpoints.
+VPS Scope 不是它的分支，也没有照搬检查逻辑。它从实际生效配置和可复核证据重新实现：检查失败显示 `UNKNOWN`，监听地址按公网、私网、回环和容器发布分类，并根据服务器用途解释结果。项目最初对照的版本是提交 [`e39115f`](https://github.com/vernu/vps-audit/tree/e39115f85414073ee5cf96bea5e3b1b811375a2a)，对应脚本 SHA-256 为 `db1134574f3c8df30bc9ac10821d207dda13ae22b0905964e2c0bc7cc71192e6`。
 
-VPS Scope uses four result states:
+## 它会检查什么
 
-- `PASS` — the check ran and the expected condition was met
-- `RISK` — the collected evidence needs attention
-- `INFO` — useful context or inventory, but not a problem by itself
-- `UNKNOWN` — the check could not reach a reliable conclusion
+一台小型 VPS 最容易出问题的地方，基本都在检查范围内：SSH、防火墙、监听端口、登录日志、系统更新、systemd 服务、Docker、TLS 证书、文件权限和常见启动项。
 
-There is no security score, and the tool does not make changes or offer an automatic fix mode.
+工具会尽量读取真正生效的状态。SSH 使用 `sshd -T`，不会只搜一遍配置文件；网络部分会把公网、私网、回环、IPv4、IPv6 和 Docker 发布端口分开，不会把 `127.0.0.1:3001` 之类的本地服务算成公网暴露。
 
-## Install
+报告里有四种结果：
 
-Run one audit without installing anything:
+- `PASS`：检查正常完成，结果符合预期
+- `RISK`：有明确证据表明这项值得处理
+- `INFO`：有用的状态或清单，本身不代表有问题
+- `UNKNOWN`：缺少权限、命令或可靠证据，暂时无法判断
+
+VPS Scope 不打安全分，也没有自动修复功能。
+
+## 安装
+
+只检查一次、不安装任何东西，运行这一行就够了：
 
 ```bash
 curl -fsSL https://sakkaku404.github.io/vps-scope/run.sh | sudo bash
 ```
 
-That one command downloads the current release, verifies its SHA-256, runs the audit, and removes the temporary binary. There is no second command.
+这一行会下载当前 Release、核对 SHA-256、执行审计，然后删除临时程序，不需要再输入第二条命令。
 
-To install `vps-scope` for repeated use:
+如果准备经常使用，并希望保留 `vps-scope` 命令，再执行安装：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sakkaku404/vps-scope/main/install.sh | sudo bash
 ```
 
-Then run `sudo vps-scope`. The installer detects amd64 or arm64 automatically and verifies the release checksum before installing anything.
+装好后运行 `sudo vps-scope`。安装脚本会自动识别 amd64 或 arm64，并在安装前核对 Release 文件的 SHA-256。
 
-If you prefer to inspect scripts before running them, download them first or use the manual steps below.
+对 `curl | bash` 不放心的话，可以先把脚本下载下来查看；下面的手动安装方式也会保留。
 
-### Manual install
+### 手动安装
 
-Download the binary for your architecture from [Releases](https://github.com/sakkaku404/vps-scope/releases). For example, on an amd64 server:
+从 [Releases](https://github.com/sakkaku404/vps-scope/releases) 下载服务器架构对应的文件。amd64 服务器可以直接运行：
 
 ```bash
 curl -LO https://github.com/sakkaku404/vps-scope/releases/latest/download/vps-scope_linux_amd64
@@ -56,101 +62,100 @@ chmod +x vps-scope_linux_amd64
 sudo ./vps-scope_linux_amd64
 ```
 
-Use `vps-scope_linux_arm64` on an arm64 server.
+arm64 服务器把文件名换成 `vps-scope_linux_arm64`。
 
-## Build from source
+## 从源码编译
 
-VPS Scope has no third-party Go dependencies.
+项目只使用 Go 标准库：
 
 ```bash
 go build -trimpath -o vps-scope ./cmd/vps-scope
 sudo ./vps-scope
 ```
 
-Running it without arguments opens a short setup prompt with Chinese and English output. It can also run non-interactively:
+直接运行会进入简短的引导，可以选择中文或英文。熟悉参数后也可以直接执行：
 
 ```bash
-sudo ./vps-scope audit --lang en --profile general
+sudo ./vps-scope audit --lang zh-CN --profile general
 sudo ./vps-scope audit --lang zh-CN --profile proxy
 sudo ./vps-scope audit --profile custom --expect-public 22/tcp,443/tcp
 ```
 
-Profiles give the audit some context about the server's job. Built-in choices include `general`, `web`, `proxy`, `docker`, and `mixed`. Custom public listeners can be declared as `PORT/tcp` or `PORT/udp`; this affects exposure checks, not the rest of the audit.
+`profile` 用来告诉工具这台服务器大致是做什么的，目前有 `general`、`web`、`proxy`、`docker` 和 `mixed`。如果某个公网端口是你明确需要的，可以用 `--expect-public` 声明；这只影响端口是否符合用途预期，不会跳过其他安全检查。
 
-## Reports
+## 报告
 
-Interactive mode defaults to showing the result in the terminal and saving a full report bundle. Saved reports go to `~/vps-scope-reports/HOST/TIMESTAMP/`; `~/vps-scope-reports/latest` points to the newest one. The completion message explains each file and prints a copy-paste download command.
+交互模式默认会在终端显示结果，同时保存一份完整报告。报告统一放在 `~/vps-scope-reports/主机名/时间/`，其中 `~/vps-scope-reports/latest` 始终指向最近一次报告。生成完成后会解释每个文件的用途，并给出可以复制的下载命令。
 
 ```bash
-sudo vps-scope report show  # show the latest report again
-sudo vps-scope report list  # list saved reports
-sudo vps-scope report path  # print the latest report directory
+sudo vps-scope report show  # 再次显示最近一次报告
+sudo vps-scope report list  # 列出保存过的报告
+sudo vps-scope report path  # 显示最近报告的目录
 ```
 
-Reports can also be written to an explicit location as JSON, plain text, Markdown, HTML, or a full bundle:
+也可以用参数把 JSON、纯文本、Markdown、HTML 或完整报告包写到指定位置：
 
 ```bash
 sudo ./vps-scope audit --format bundle --output ./reports/sgp
 ```
 
-A bundle contains the canonical JSON report, human-readable formats, and a SHA-256 manifest. Report files are created with restrictive permissions on Linux.
+完整报告包里包含一份 JSON 原始报告、几种阅读格式和 SHA-256 清单。Linux 下生成的报告默认使用较严格的文件权限。
 
-JSON reports can be rendered again without reconnecting to the server:
+有了 JSON 以后，不用再次连接服务器就能切换语言或格式：
 
 ```bash
 vps-scope render report.json --lang zh-CN --format html --output report.zh-CN.html
 vps-scope render report.json --lang en --format markdown --output report.en.md
 ```
 
-The `redact` command replaces hostnames, addresses, domains, usernames, and key fingerprints with stable placeholders before a report is shared:
+准备把报告发到公开场合时，可以先脱敏：
 
 ```bash
 vps-scope redact report.json --format markdown --output public.md
 ```
 
-VPS Scope does not copy passwords, tokens, private keys, subscription paths, or application blobs that may contain private key material into a report.
+脱敏后的同一地址或用户名会一直使用同一个代号，方便看懂它们之间的关系。密码、token、私钥、订阅路径，以及可能同时装有证书和私钥的应用数据不会写进报告。
 
-## Comparing runs
+## 对比服务器状态
 
-Use `diff` to see what changed on one server, or `fleet` for a quick comparison across several machines:
+`diff` 用来比较同一台服务器的两次检查，`fleet` 可以把多台服务器放在一起看：
 
 ```bash
 vps-scope diff old.json new.json
 vps-scope fleet west.json sgp.json tw.json japan.json
 ```
 
-Checks keep the same IDs in Chinese and English, so reports remain comparable regardless of display language.
+检查 ID 不随语言变化，所以中文报告和英文报告也能正常比较。
 
-## Other commands
+## 其他命令
 
 ```text
-doctor      show which audit sources are available on this host
-checks      list checks and their IDs
-explain     explain a check and its recommendation
-render      turn a JSON report into another language or format
-redact      make a report safer to share
-verify      verify the files in a report bundle
-version     show build information
+doctor      看当前系统能执行哪些检查
+checks      列出检查项目和 ID
+explain     查看某项检查的说明
+render      重新生成语言或格式
+redact      生成适合分享的脱敏报告
+verify      校验报告包有没有被改动
+version     显示版本和构建信息
 ```
 
-## Support
+## 当前支持范围
 
-The first release targets Ubuntu and Debian on Linux `amd64` and `arm64`. Some checks use system tools such as `ss`, `journalctl`, `ufw`, `nft`, `dpkg`, `docker`, or `sqlite3`. If one is unavailable, the affected result is reported as unavailable rather than silently treated as safe.
+首个版本支持 Ubuntu、Debian，以及 Linux `amd64`、`arm64`。部分检查会调用系统自带的 `ss`、`journalctl`、`ufw`、`nft`、`dpkg`、`docker` 或 `sqlite3`；缺少某个命令时，只会影响相关项目，并在报告中明确显示，不会被当成安全。
 
-VPS Scope is useful for reviewing a server, but it cannot prove that a machine is clean or see cloud firewall rules from inside the guest. See [the design notes](docs/DESIGN.md) for the current trust boundary and known limitations.
+它能帮你更快地检查服务器，但不能证明服务器一定没有被入侵，也无法从 VPS 内部读取云厂商的安全组。更具体的边界见[设计说明](docs/DESIGN.md)。
 
-## Development
+## 参与开发
 
 ```bash
 go test ./...
 go vet ./...
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ./cmd/vps-scope
 ```
 
-Contributions and reproducible Ubuntu/Debian fixtures are welcome. Please do not attach an unredacted server report to a public issue.
+欢迎提交问题、代码和可复现的 Ubuntu/Debian 测试样本。公开 issue 里请不要附上未经脱敏的服务器报告。
 
-Use GitHub's private vulnerability reporting for security problems in VPS Scope itself. See [SECURITY.md](SECURITY.md) for details.
+如果发现 VPS Scope 本身存在安全问题，请使用 GitHub 的私密漏洞报告，不要公开提交 issue。具体方式见 [SECURITY.md](SECURITY.md)。
 
-## License
+## 许可证
 
 MIT
