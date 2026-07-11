@@ -20,9 +20,9 @@ func checkWorkloads(ctx *Context) []model.Finding {
 	for _, reason := range ctx.Profile.Reasons {
 		f.Evidence = append(f.Evidence, model.Evidence{Source: "process and command detection", Key: "reason", Value: reason})
 	}
-	if ctx.Commander.Exists("ps") {
-		r := ctx.Commander.Run(8*time.Second, "ps", "-eo", "pid=,user=,comm=,args=")
-		for _, line := range lines(r.Stdout) {
+	if processes, err := ctx.Facts.Processes(); err == nil {
+		for _, process := range processes {
+			line := processLine(process)
 			if workloadProcessLine(line) && len(f.Evidence) < 40 {
 				f.Evidence = append(f.Evidence, model.Evidence{Source: "ps", Value: sanitizeProcessEvidence(line)})
 			}
@@ -230,6 +230,9 @@ type panelUFW struct {
 }
 
 func readPanelUFW(ctx *Context) panelUFW {
+	if ctx.Facts != nil {
+		return ctx.Facts.UFW()
+	}
 	if !ctx.Commander.Exists("ufw") {
 		return panelUFW{}
 	}
@@ -237,7 +240,11 @@ func readPanelUFW(ctx *Context) panelUFW {
 	if r.Err != nil {
 		return panelUFW{}
 	}
-	return panelUFW{available: true, active: regexp.MustCompile(`(?mi)^Status:\s+active\s*$`).MatchString(r.Stdout), defaultDeny: regexp.MustCompile(`(?mi)^Default:\s+deny \(incoming\)`).MatchString(r.Stdout), lines: lines(r.Stdout)}
+	return parsePanelUFW(r.Stdout)
+}
+
+func parsePanelUFW(output string) panelUFW {
+	return panelUFW{available: true, active: regexp.MustCompile(`(?mi)^Status:\s+active\s*$`).MatchString(output), defaultDeny: regexp.MustCompile(`(?mi)^Default:\s+deny \(incoming\)`).MatchString(output), lines: lines(output)}
 }
 
 func panelFirewallDisposition(ufw panelUFW, port string, f *model.Finding) string {
@@ -322,6 +329,44 @@ func checkFilesystem(ctx *Context) []model.Finding {
 	return []model.Finding{f}
 }
 
+func checkTemporaryExecutables() model.Finding {
+	f := model.Finding{ID: "PERSIST-002", Category: "persistence", Status: model.Pass, Facts: map[string]string{}}
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return unknown("PERSIST-002", "persistence", "/proc", err.Error())
+	}
+	seen := map[string]bool{}
+	self, _ := os.Executable()
+	self, _ = filepath.EvalSymlinks(self)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if _, err := strconv.Atoi(entry.Name()); err != nil {
+			continue
+		}
+		target, err := os.Readlink(filepath.Join("/proc", entry.Name(), "exe"))
+		if err != nil || !(strings.HasPrefix(target, "/tmp/") || strings.HasPrefix(target, "/var/tmp/") || strings.HasPrefix(target, "/dev/shm/")) {
+			continue
+		}
+		cleanTarget := strings.TrimSuffix(target, " (deleted)")
+		resolvedTarget, _ := filepath.EvalSymlinks(cleanTarget)
+		if self != "" && (cleanTarget == self || resolvedTarget == self) {
+			continue
+		}
+		key := entry.Name() + "\x00" + target
+		if !seen[key] {
+			seen[key] = true
+			f.Evidence = append(f.Evidence, model.Evidence{Source: "/proc/*/exe", Key: "temporary_executable", Value: "pid=" + entry.Name() + " path=" + target})
+		}
+	}
+	f.Facts["temporary_executables"] = strconv.Itoa(len(seen))
+	if len(seen) > 0 {
+		f.Status, f.Severity = model.Risk, model.High
+	}
+	return f
+}
+
 func checkPersistence(ctx *Context) []model.Finding {
 	f := model.Finding{ID: "PERSIST-001", Category: "persistence", Status: model.Pass, Facts: map[string]string{}}
 	patterns := []struct {
@@ -365,7 +410,40 @@ func checkPersistence(ctx *Context) []model.Finding {
 	if indicators > 0 {
 		f.Status, f.Severity = model.Risk, model.High
 	}
-	return []model.Finding{f}
+	return []model.Finding{f, checkTemporaryExecutables()}
+}
+
+func checkLogAndInodePressure(ctx *Context) model.Finding {
+	f := model.Finding{ID: "REL-002", Category: "reliability", Status: model.Info, Facts: map[string]string{}}
+	if ctx.Commander.Exists("df") {
+		r := ctx.Commander.Run(8*time.Second, "df", "-Pi", "/")
+		if r.Err == nil {
+			rows := lines(r.Stdout)
+			if len(rows) > 1 {
+				fields := strings.Fields(rows[len(rows)-1])
+				if len(fields) >= 5 {
+					f.Facts["root_inode_used_percent"] = strings.TrimSuffix(fields[4], "%")
+					f.Evidence = append(f.Evidence, model.Evidence{Source: "df -Pi /", Key: "inode_use", Value: fields[4]})
+				}
+			}
+		}
+	}
+	if ctx.Commander.Exists("journalctl") {
+		r := ctx.Commander.Run(10*time.Second, "journalctl", "--disk-usage", "--no-pager")
+		if r.Err == nil {
+			f.Evidence = append(f.Evidence, model.Evidence{Source: "journalctl --disk-usage", Key: "journal_size", Value: truncate(strings.TrimSpace(r.Stdout), 180)})
+		}
+	}
+	if ctx.Commander.Exists("docker") {
+		r := ctx.Commander.Run(15*time.Second, "docker", "system", "df", "--format", "{{json .}}")
+		if r.Err == nil {
+			f.Evidence = append(f.Evidence, model.Evidence{Source: "docker system df", Key: "docker_storage_rows", Value: strconv.Itoa(len(lines(r.Stdout)))})
+		}
+	}
+	if len(f.Evidence) == 0 {
+		return unknown("REL-002", "reliability", "df, journalctl, docker", "storage pressure evidence was unavailable")
+	}
+	return f
 }
 
 func checkReliability(ctx *Context) []model.Finding {
@@ -429,7 +507,7 @@ func checkReliability(ctx *Context) []model.Finding {
 		model.Evidence{Source: "/var/log/journal", Key: "persistent", Value: strconv.FormatBool(persistent)},
 		model.Evidence{Source: "statfs /", Key: "free_percent", Value: strconv.Itoa(diskFreePercent)},
 	)
-	return []model.Finding{f}
+	return []model.Finding{f, checkLogAndInodePressure(ctx)}
 }
 
 // Keep deterministic order when future file scans add map-backed evidence.

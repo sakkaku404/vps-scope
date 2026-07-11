@@ -153,6 +153,7 @@ func (e environment) audit(args []string) error {
 	quiet := fs.Bool("quiet", false, "suppress progress")
 	noColor := fs.Bool("no-color", false, "disable color output")
 	redacted := fs.Bool("redact", false, "redact public IPs, domains, and host identifiers")
+	deep := fs.Bool("deep", false, "run slower filesystem and package-integrity checks")
 	alsoTerminal := fs.Bool("also-terminal", false, "print terminal report before saving a bundle")
 	expectPublic := fs.String("expect-public", "", "expected public listeners, e.g. 22/tcp,443/tcp")
 	if err := fs.Parse(args); err != nil {
@@ -176,7 +177,7 @@ func (e environment) audit(args []string) error {
 	if err != nil {
 		return err
 	}
-	r, err := audit.Run(audit.Options{Locale: locale, Profile: *profile, ExpectedPublic: expected, LogSince: duration, Build: audit.Build{Version: e.build.Version, Commit: e.build.Commit}, Progress: progress})
+	r, err := audit.Run(audit.Options{Locale: locale, Profile: *profile, ExpectedPublic: expected, LogSince: duration, Deep: *deep, Build: audit.Build{Version: e.build.Version, Commit: e.build.Commit}, Progress: progress})
 	if err != nil {
 		return err
 	}

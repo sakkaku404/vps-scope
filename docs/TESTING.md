@@ -45,5 +45,10 @@ Regression review should verify:
 - invalid active proxy configuration is a risk even while the old process remains running.
 - a public control API blocked by UFW default-deny is distinguished from an unrestricted endpoint.
 - an identified container panel with an ambiguous management port remains `UNKNOWN`.
+- config-to-listener relations distinguish TCP and UDP and do not treat expected public proxy ingress as a vulnerability.
+- Reality, Trojan, Shadowsocks, OpenVPN, and WireGuard summaries retain semantic facts without secret-bearing values.
+- the audit executable itself is excluded from temporary-directory process findings when using the one-command runner.
+
+The latest four-host run completed the standard audit in 2.3–3.9 seconds. Deep mode completed in 27.3–36.6 seconds and ran full SUID/SGID, capability, and `dpkg --verify` checks. These timings are observations from 1 vCPU / 1 GB lab VPS instances, not performance guarantees.
 
 Never commit real host reports. They may contain IP addresses, domains, usernames, paths, and operational evidence.

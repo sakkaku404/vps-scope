@@ -253,6 +253,83 @@ func TestParseXrayAPIInbound(t *testing.T) {
 	}
 }
 
+func TestRealitySemanticsWithoutSecretRetention(t *testing.T) {
+	input := []byte(`{"inbounds":[{"listen":"0.0.0.0","port":443,"protocol":"vless","streamSettings":{"network":"tcp","security":"reality","realitySettings":{"target":"example.invalid:443","privateKey":"never-export-this-key","serverNames":["private.example"],"shortIds":["01234567"]}}}]}`)
+	got := parseXraySummary("/etc/xray/config.json", input)
+	if got.Err != nil || len(got.Inbounds) != 1 {
+		t.Fatalf("unexpected summary: %+v", got)
+	}
+	inbound := got.Inbounds[0]
+	if !inbound.RealityEnabled || !inbound.RealityKeySet || inbound.RealityTargets != 1 || inbound.RealityServerIDs != 2 || fmt.Sprint(inbound.Transports) != "[tcp]" {
+		t.Fatalf("unexpected Reality semantics: %+v", inbound)
+	}
+	serialized := fmt.Sprintf("%+v", got)
+	for _, secret := range []string{"never-export-this-key", "private.example", "01234567", "example.invalid"} {
+		if strings.Contains(serialized, secret) {
+			t.Fatalf("Reality secret-bearing value leaked: %q", secret)
+		}
+	}
+}
+
+func TestProxyTransportSemantics(t *testing.T) {
+	tests := map[string][]string{
+		"hysteria2": {"udp"},
+		"tuic":      {"udp"},
+		"vless":     {"tcp"},
+	}
+	for protocol, want := range tests {
+		if got := proxyTransports(protocol, ""); fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Errorf("proxyTransports(%q)=%v, want %v", protocol, got, want)
+		}
+	}
+	if got := proxyTransports("shadowsocks", ""); fmt.Sprint(got) != "[tcp udp]" {
+		t.Fatalf("shadowsocks transports=%v", got)
+	}
+}
+
+func TestNativeTrojanAndShadowsocksPrivacy(t *testing.T) {
+	trojan := parseTrojanSummary("/etc/trojan/config.json", []byte(`{"local_addr":"0.0.0.0","local_port":443,"password":["trojan-secret"],"ssl":{"key":"/private/key"}}`))
+	shadowsocks := parseShadowsocksSummary("/etc/shadowsocks-libev/config.json", []byte(`{"server":"::","server_port":8388,"password":"ss-secret","method":"aes-256-gcm","mode":"tcp_and_udp"}`))
+	if trojan.Err != nil || len(trojan.Inbounds) != 1 || trojan.Inbounds[0].Security != "tls" {
+		t.Fatalf("unexpected Trojan summary: %+v", trojan)
+	}
+	if shadowsocks.Err != nil || len(shadowsocks.Inbounds) != 1 || fmt.Sprint(shadowsocks.Inbounds[0].Transports) != "[tcp udp]" {
+		t.Fatalf("unexpected Shadowsocks summary: %+v", shadowsocks)
+	}
+	serialized := fmt.Sprintf("%+v %+v", trojan, shadowsocks)
+	for _, secret := range []string{"trojan-secret", "ss-secret", "/private/key", "aes-256-gcm"} {
+		if strings.Contains(serialized, secret) {
+			t.Fatalf("native proxy secret leaked: %q", secret)
+		}
+	}
+}
+
+func TestOpenVPNSummaryIgnoresSecretPaths(t *testing.T) {
+	got := parseOpenVPNSummary("/etc/openvpn/server/main.conf", "port 443\nproto tcp-server\nlocal 0.0.0.0\nkey /private/server.key\nauth-user-pass-verify /secret/script via-env\n")
+	if len(got.Inbounds) != 1 || got.Inbounds[0].Port != "443" || fmt.Sprint(got.Inbounds[0].Transports) != "[tcp]" {
+		t.Fatalf("unexpected OpenVPN summary: %+v", got)
+	}
+	serialized := fmt.Sprintf("%+v", got)
+	for _, secret := range []string{"/private/server.key", "/secret/script"} {
+		if strings.Contains(serialized, secret) {
+			t.Fatalf("OpenVPN secret path leaked: %q", secret)
+		}
+	}
+}
+
+func TestEndpointFirewallDispositionSeparatesTCPAndUDP(t *testing.T) {
+	ufw := panelUFW{available: true, active: true, defaultDeny: true, lines: []string{"443/tcp ALLOW IN Anywhere", "8443/udp ALLOW IN 10.0.0.0/8"}}
+	if got := endpointFirewallDisposition(ufw, "443", "tcp"); got != "allow-anywhere" {
+		t.Fatalf("tcp disposition=%q", got)
+	}
+	if got := endpointFirewallDisposition(ufw, "443", "udp"); got != "blocked-by-default" {
+		t.Fatalf("udp disposition=%q", got)
+	}
+	if got := endpointFirewallDisposition(ufw, "8443", "udp"); got != "allow-restricted" {
+		t.Fatalf("restricted udp disposition=%q", got)
+	}
+}
+
 func TestSplitProxyEndpoint(t *testing.T) {
 	tests := []struct{ input, host, port string }{
 		{"127.0.0.1:9090", "127.0.0.1", "9090"},

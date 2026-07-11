@@ -13,18 +13,10 @@ import (
 )
 
 func checkNetwork(ctx *Context) []model.Finding {
-	if !ctx.Commander.Exists("ss") {
-		return []model.Finding{unknown("NET-001", "network", "ss", "command not found"), unknown("NET-002", "network", "ss", "command not found")}
+	listeners, err := ctx.Facts.Listeners()
+	if err != nil {
+		return []model.Finding{unknown("NET-001", "network", "ss -H -lntu[p]", err.Error()), unknown("NET-002", "network", "ss -H -lntu[p]", err.Error())}
 	}
-	r := ctx.Commander.Run(15*time.Second, "ss", "-H", "-lntup")
-	if r.Err != nil && r.Stdout == "" {
-		// Process metadata may need root, but listeners usually remain available without -p.
-		r = ctx.Commander.Run(15*time.Second, "ss", "-H", "-lntu")
-	}
-	if r.Err != nil {
-		return []model.Finding{unknown("NET-001", "network", "ss -H -lntu[p]", commandError(r)), unknown("NET-002", "network", "ss -H -lntu[p]", commandError(r))}
-	}
-	listeners := parseListeners(r.Stdout)
 	f := model.Finding{ID: "NET-001", Category: "network", Status: model.Info, Facts: map[string]string{}}
 	counts := map[string]int{}
 	for _, listener := range listeners {

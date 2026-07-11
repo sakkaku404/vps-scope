@@ -4,22 +4,22 @@ Check IDs are stable across languages and report formats. A status is separate f
 
 | Domain | IDs | Primary evidence |
 |---|---|---|
-| System context | `SYS-001`–`SYS-003` | effective UID, `timedatectl`, `/proc`, `df` |
+| System context | `SYS-001`–`SYS-004` | effective UID, `timedatectl`, `/proc`, `df`, congestion control and queue discipline |
 | Accounts | `ACC-001`–`ACC-003` | `/etc/passwd`, `/etc/shadow`, effective SSH authentication, PAM |
 | SSH | `SSH-001`–`SSH-005` | `sshd -T`, filesystem ownership/modes, privacy-safe SHA-256 authorized-key fingerprints |
-| Privileges | `PRIV-001`–`PRIV-002` | sudoers, SUID/SGID, `getcap`, `dpkg-query -S` |
+| Privileges | `PRIV-001`–`PRIV-002` | sudoers; deep-mode SUID/SGID, `getcap`, `dpkg-query -S` |
 | Network | `NET-001`–`NET-003` | listeners and established connections from `ss`, address classification, profile intent |
 | Firewall | `FW-001`–`FW-002` | UFW and firewalld policy/rules; nftables and iptables inventory |
 | Authentication | `AUTH-001`–`AUTH-003` | journald/auth.log, sudo journal, Fail2ban and CrowdSec clients |
 | Updates | `UPD-001`–`UPD-002` | simulated APT upgrade, reboot marker, timers |
-| Packages | `PKG-001`–`PKG-002` | APT sources, `dpkg --verify` classification |
+| Packages | `PKG-001`–`PKG-002` | APT sources; deep-mode `dpkg --verify` classification |
 | Processes | `PROC-001`–`PROC-002` | failed systemd units, `/proc/*/exe` |
 | Docker | `DOCKER-001` | Docker inspect isolation and port bindings |
 | TLS | `TLS-001`–`TLS-002` | file-backed X.509 parsing; privacy-safe embedded-material detection |
-| Workloads | `WORK-001`–`WORK-008` | proxy processes and ingress, native config self-tests, management/control exposure, secret-bearing file modes, systemd isolation and UDP context |
+| Workloads | `WORK-001`–`WORK-011` | proxy processes/configs, management/control exposure, native self-tests, permissions, service isolation, UDP context, config-to-listener/firewall relations, privacy-safe log counts, WireGuard runtime relations |
 | Filesystem | `FS-001` | sensitive paths, modes, sticky bits |
-| Persistence | `PERSIST-001` | systemd units, timers, cron, rc.local, ld.so.preload |
-| Reliability | `REL-001` | kernel journal, coredumps, journal persistence, disk space |
+| Persistence | `PERSIST-001`–`PERSIST-002` | systemd, timers, cron, startup files, executables running from temporary directories |
+| Reliability | `REL-001`–`REL-002` | kernel journal, coredumps, journal persistence and size, disk and inode state |
 
 ## Interpretation rules
 
@@ -31,4 +31,10 @@ Check IDs are stable across languages and report formats. A status is separate f
 - Package-owned SUID files and capabilities remain inventory; unowned privileged files elevate the finding.
 - Missing documentation excluded by image minimization is separated from missing runtime package files.
 - Public S-UI, 3x-ui, and x-ui management access is evaluated separately from proxy ingress and subscription endpoints.
+- Public proxy ingress is expected when configuration, transport, listener, process, and firewall evidence agree.
+- Reality private keys, server names, targets, and short IDs are never exported; only presence and counts are retained.
 - Embedded S-UI TLS blobs are never exported merely to inspect expiry; validity remains `UNKNOWN` until a safe interface exists.
+
+## Standard and deep audit
+
+The standard audit avoids recursive filesystem and full package-integrity scans. `vps-scope audit --deep` additionally runs `PRIV-002` and `PKG-002`; skipped checks are reported as not applicable, never as `PASS`.

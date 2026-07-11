@@ -30,6 +30,10 @@ VPS Scope 不是该项目的分支，代码与检测实现均为独立实现。V
 - 面板数据库、代理配置和私钥相关文件的权限
 - 代理 systemd 服务的运行用户、capabilities、隔离选项和文件描述符限制
 - Hysteria2、TUIC 等 UDP 场景的缓冲区和错误计数上下文
+- 把配置入口、TCP/UDP 传输、实际监听进程、暴露范围和 UFW 规则关联到一起
+- Reality 关键字段是否齐全（只记录存在性和数量，不导出私钥、SNI、target 或 short ID）
+- 认证、握手、DNS、TLS、路由和致命错误的日志分类计数（不导出原始日志内容）
+- WireGuard 接口、UDP 监听、防火墙和近期握手数量（不导出 peer 公钥或 endpoint）
 
 “识别到了软件”和“可以可靠判断管理端口”是两回事。遇到容器网络、反向代理或未知面板结构时，VPS Scope 会保留 `UNKNOWN`，不会为了显得支持得多而给出 `PASS`。当前实测范围见[代理兼容性](docs/PROXY-COMPATIBILITY.md)。
 
@@ -96,6 +100,8 @@ sudo ./vps-scope audit --profile custom --expect-public 22/tcp,443/tcp
 ```
 
 `profile` 用来告诉工具这台服务器大致是做什么的，目前有 `general`、`web`、`proxy`、`docker` 和 `mixed`。如果某个公网端口是你明确需要的，可以用 `--expect-public` 声明；这只影响端口是否符合用途预期，不会跳过其他安全检查。
+
+默认检查适合日常运行，不会递归扫描整块磁盘。需要核对 SUID/SGID、文件 capabilities 和已安装软件包完整性时，使用 `sudo vps-scope audit --deep`；未运行的深度项目会明确标成未执行，不会冒充 `PASS`。
 
 ## 报告
 

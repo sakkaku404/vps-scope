@@ -18,7 +18,11 @@ import (
 )
 
 func checkPackages(ctx *Context) []model.Finding {
-	return []model.Finding{checkAPTRepositories(), checkDPKGVerify(ctx)}
+	verify := notApplicable("PKG-002", "packages", "audit mode", "standard audit skips full dpkg file verification; run with --deep")
+	if ctx.Deep {
+		verify = checkDPKGVerify(ctx)
+	}
+	return []model.Finding{checkAPTRepositories(), verify}
 }
 
 func checkAPTRepositories() model.Finding {
@@ -241,26 +245,23 @@ type dockerInspect struct {
 	} `json:"NetworkSettings"`
 }
 
+func decodeDockerInspect(input string, out *[]dockerInspect) error {
+	if err := json.Unmarshal([]byte(input), out); err != nil {
+		return fmt.Errorf("docker inspect JSON: %w", err)
+	}
+	return nil
+}
+
 func checkDocker(ctx *Context) []model.Finding {
 	if !ctx.Commander.Exists("docker") {
 		return []model.Finding{notApplicable("DOCKER-001", "docker", "command", "docker not installed")}
 	}
-	ps := ctx.Commander.Run(15*time.Second, "docker", "ps", "-q")
-	if ps.Err != nil {
-		return []model.Finding{unknown("DOCKER-001", "docker", "docker ps", commandError(ps))}
+	containers, err := ctx.Facts.DockerContainers()
+	if err != nil {
+		return []model.Finding{unknown("DOCKER-001", "docker", "docker inspect", err.Error())}
 	}
-	ids := lines(ps.Stdout)
-	if len(ids) == 0 {
+	if len(containers) == 0 {
 		return []model.Finding{{ID: "DOCKER-001", Category: "docker", Status: model.Info, Evidence: []model.Evidence{{Source: "docker ps", Value: "no running containers"}}}}
-	}
-	args := append([]string{"inspect"}, ids...)
-	inspect := ctx.Commander.Run(30*time.Second, "docker", args...)
-	if inspect.Err != nil {
-		return []model.Finding{unknown("DOCKER-001", "docker", "docker inspect", commandError(inspect))}
-	}
-	var containers []dockerInspect
-	if err := json.Unmarshal([]byte(inspect.Stdout), &containers); err != nil {
-		return []model.Finding{unknown("DOCKER-001", "docker", "docker inspect JSON", err.Error())}
 	}
 	f := model.Finding{ID: "DOCKER-001", Category: "docker", Status: model.Pass, Facts: map[string]string{"running_containers": strconv.Itoa(len(containers))}}
 	problems := 0
@@ -344,13 +345,48 @@ func checkFileTLS(ctx *Context) model.Finding {
 			f.Status, f.Severity = model.Risk, model.High
 		}
 	}
+	renewalEvidence, renewalFailures := 0, 0
 	if ctx.Commander.Exists("systemctl") {
 		for _, timer := range []string{"certbot.timer", "acme.timer"} {
 			r := ctx.Commander.Run(6*time.Second, "systemctl", "is-enabled", timer)
 			if strings.TrimSpace(r.Stdout) == "enabled" {
+				renewalEvidence++
 				f.Evidence = append(f.Evidence, model.Evidence{Source: "systemctl is-enabled", Key: timer, Value: "enabled"})
 			}
 		}
+		for _, service := range []string{"certbot.service", "acme.service", "acme-renew.service"} {
+			r := ctx.Commander.Run(6*time.Second, "systemctl", "show", service, "--property=LoadState,Result,ExecMainStatus,ActiveEnterTimestamp")
+			values := parseKeyValues(r.Stdout)
+			if values["LoadState"] != "loaded" {
+				continue
+			}
+			renewalEvidence++
+			result := values["Result"]
+			f.Evidence = append(f.Evidence, model.Evidence{Source: "systemctl show", Key: service, Value: fmt.Sprintf("result=%s exit_status=%s last_active=%s", result, values["ExecMainStatus"], values["ActiveEnterTimestamp"])})
+			if result != "" && result != "success" {
+				renewalFailures++
+			}
+		}
+	}
+	for _, path := range existingFiles("/etc/cron.d/*", "/etc/cron.daily/*") {
+		data, err := readSmall(path, 1<<20)
+		if err == nil && regexp.MustCompile(`(?i)\b(certbot|acme\.sh|lego)\b`).MatchString(data) {
+			renewalEvidence++
+			f.Evidence = append(f.Evidence, model.Evidence{Source: path, Key: "renewal_schedule", Value: "detected"})
+		}
+	}
+	f.Facts["renewal_evidence"] = strconv.Itoa(renewalEvidence)
+	f.Facts["renewal_failures"] = strconv.Itoa(renewalFailures)
+	if renewalFailures > 0 && f.Severity != model.Critical && f.Severity != model.High {
+		f.Status, f.Severity = model.Risk, model.Medium
+	}
+	usesLetsEncrypt := false
+	for _, path := range paths {
+		usesLetsEncrypt = usesLetsEncrypt || strings.HasPrefix(path, "/etc/letsencrypt/")
+	}
+	if usesLetsEncrypt && renewalEvidence == 0 && f.Status != model.Risk {
+		f.Status, f.Unavailable = model.Unknown, true
+		f.Error = "certificate renewal scheduling or recent execution could not be established"
 	}
 	return f
 }
@@ -422,4 +458,4 @@ func discoverCertificatePaths(ctx *Context) []string {
 	return paths
 }
 
-var workloadProcesses = regexp.MustCompile(`(?i)\b(sing-box|xray|x-ui|s-ui|sui|hysteria|tuic|trojan|ss-server|sslocal|marzban|hiddify|outline-ss-server|wg-quick|nginx|caddy|apache2|dockerd|containerd)\b`)
+var workloadProcesses = regexp.MustCompile(`(?i)\b(sing-box|xray|x-ui|s-ui|sui|hysteria|tuic|trojan|ss-server|sslocal|marzban|hiddify|outline-ss-server|wg-quick|openvpn|nginx|caddy|haproxy|apache2|dockerd|containerd)\b`)

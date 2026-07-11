@@ -35,7 +35,27 @@ func checkSystem(ctx *Context) []model.Finding {
 		}
 		timeFinding.Evidence = []model.Evidence{{Source: "timedatectl", Key: "NTPSynchronized", Value: r.Stdout}}
 	}
-	return []model.Finding{priv, timeFinding, checkResourceOverview(ctx)}
+	return []model.Finding{priv, timeFinding, checkResourceOverview(ctx), checkNetworkKernelContext(ctx)}
+}
+
+func checkNetworkKernelContext(ctx *Context) model.Finding {
+	f := model.Finding{ID: "SYS-004", Category: "system", Status: model.Info, Facts: map[string]string{}}
+	paths := map[string]string{
+		"tcp_congestion_control": "/proc/sys/net/ipv4/tcp_congestion_control",
+		"default_qdisc":          "/proc/sys/net/core/default_qdisc",
+		"tcp_available_controls": "/proc/sys/net/ipv4/tcp_available_congestion_control",
+	}
+	for key, path := range paths {
+		if value, err := readSmall(path, 4096); err == nil {
+			value = strings.TrimSpace(value)
+			f.Facts[key] = value
+			f.Evidence = append(f.Evidence, model.Evidence{Source: path, Key: key, Value: value})
+		}
+	}
+	if len(f.Evidence) == 0 {
+		return unknown("SYS-004", "system", "/proc/sys/net", "network kernel state was not readable")
+	}
+	return f
 }
 
 func checkAccounts(ctx *Context) []model.Finding {
@@ -388,6 +408,9 @@ func checkPrivileges(ctx *Context) []model.Finding {
 		sudo = unknown("PRIV-001", "privileges", "/etc/sudoers{,.d}", "no sudoers files were readable")
 	}
 
+	if !ctx.Deep {
+		return []model.Finding{sudo, notApplicable("PRIV-002", "privileges", "audit mode", "standard audit skips recursive SUID/SGID and capability discovery; run with --deep")}
+	}
 	privileged := model.Finding{ID: "PRIV-002", Category: "privileges", Status: model.Info, Facts: map[string]string{}}
 	if !ctx.Commander.Exists("find") {
 		privileged = unknown("PRIV-002", "privileges", "find", "command not found")

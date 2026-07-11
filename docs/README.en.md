@@ -30,6 +30,10 @@ Proxy hosts get additional context for:
 - permissions on panel databases and proxy configuration
 - systemd identity, capabilities, isolation, and file-descriptor limits
 - UDP buffer and error-counter context for Hysteria2 and TUIC workloads
+- config-to-listener relations across TCP/UDP transport, process ownership, exposure scope, and UFW policy
+- Reality semantic completeness without exporting private keys, SNI values, targets, or short IDs
+- privacy-safe category counts for authentication, handshake, DNS, TLS, routing, and fatal log signals
+- WireGuard interface, UDP listener, firewall, and recent-handshake counts without peer keys or endpoints
 
 Detecting a product is not the same as proving which port is its management plane. Container networking, reverse proxies, and unknown panel layouts remain `UNKNOWN` when the evidence cannot support a safe conclusion. See [proxy compatibility](PROXY-COMPATIBILITY.md) for the tested scope.
 
@@ -94,6 +98,8 @@ sudo ./vps-scope audit --lang en --profile general
 sudo ./vps-scope audit --lang en --profile proxy
 sudo ./vps-scope audit --profile custom --expect-public 22/tcp,443/tcp
 ```
+
+The standard audit is suitable for routine use and avoids recursive filesystem scans. Use `sudo vps-scope audit --deep` to add SUID/SGID, file-capability, and installed-package integrity checks. Deep-only checks that were not run are shown as skipped, never as `PASS`.
 
 Profiles give the audit some context about the server's job. Built-in choices include `general`, `web`, `proxy`, `docker`, and `mixed`. Custom public listeners can be declared as `PORT/tcp` or `PORT/udp`; this affects exposure checks, not the rest of the audit.
 
