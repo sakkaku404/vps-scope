@@ -14,7 +14,7 @@ Collectors obtain typed facts. Policy evaluates those facts under an effective p
 
 Built-in profiles are `general`, `proxy`, `web`, `docker`, `mixed`, and `custom`. `auto` detects a suggested profile. Profiles affect expected listeners; they never suppress SSH authentication, firewall, privilege, persistence, management-plane, or secret-permission checks.
 
-Explicit listener intent uses `--expect-public PORT/protocol`. S-UI management exposure remains independent even when its port is explicitly expected.
+Explicit listener intent uses `--expect-public PORT/protocol`. Supported proxy-panel management exposure remains independent even when its port is explicitly expected.
 
 ## Privacy
 

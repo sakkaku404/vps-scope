@@ -16,7 +16,7 @@ Check IDs are stable across languages and report formats. A status is separate f
 | Processes | `PROC-001`–`PROC-002` | failed systemd units, `/proc/*/exe` |
 | Docker | `DOCKER-001` | Docker inspect isolation and port bindings |
 | TLS | `TLS-001`–`TLS-002` | file-backed X.509 parsing; privacy-safe embedded-material detection |
-| Workloads | `WORK-001`–`WORK-002` | process inventory, S-UI settings, listeners and UFW |
+| Workloads | `WORK-001`–`WORK-002` | process inventory, supported proxy-panel settings, listeners and UFW |
 | Filesystem | `FS-001` | sensitive paths, modes, sticky bits |
 | Persistence | `PERSIST-001` | systemd units, timers, cron, rc.local, ld.so.preload |
 | Reliability | `REL-001` | kernel journal, coredumps, journal persistence, disk space |
@@ -28,5 +28,5 @@ Check IDs are stable across languages and report formats. A status is separate f
 - `PermitRootLogin prohibit-password` is contextual `INFO`, not equivalent to password-enabled root login.
 - Package-owned SUID files and capabilities remain inventory; unowned privileged files elevate the finding.
 - Missing documentation excluded by image minimization is separated from missing runtime package files.
-- Public S-UI management access is evaluated separately from proxy ingress and subscription endpoints.
+- Public S-UI, 3x-ui, and x-ui management access is evaluated separately from proxy ingress and subscription endpoints.
 - Embedded S-UI TLS blobs are never exported merely to inspect expiry; validity remains `UNKNOWN` until a safe interface exists.

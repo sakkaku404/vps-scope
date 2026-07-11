@@ -61,3 +61,58 @@ func TestExpectedListenerUsesExplicitPort(t *testing.T) {
 		t.Fatal("unexpected listener was accepted")
 	}
 }
+
+func TestParsePanelPort(t *testing.T) {
+	tests := []struct {
+		product, output, want string
+	}{
+		{"S-UI", "Panel port: 2095\nSing-box port: 443", "2095"},
+		{"3x-ui", "webBasePath: /secret/\nport: 2053", "2053"},
+		{"x-ui", "webPort: 54321", "54321"},
+	}
+	for _, test := range tests {
+		got, ok := parsePanelPort(test.product, test.output)
+		if !ok || got != test.want {
+			t.Errorf("parsePanelPort(%q)=(%q,%t), want %q", test.product, got, ok, test.want)
+		}
+	}
+	for _, output := range []string{"port: 0", "port: 65536", "username: 2053", ""} {
+		if got, ok := parsePanelPort("3x-ui", output); ok {
+			t.Errorf("invalid panel port %q accepted as %q", output, got)
+		}
+	}
+}
+
+func TestPanelFirewallDisposition(t *testing.T) {
+	tests := []struct {
+		name string
+		ufw  panelUFW
+		want string
+	}{
+		{"inactive", panelUFW{available: true}, "inactive"},
+		{"allow anywhere", panelUFW{available: true, active: true, defaultDeny: true, lines: []string{"2053/tcp ALLOW IN Anywhere"}}, "allow-anywhere"},
+		{"trusted source", panelUFW{available: true, active: true, defaultDeny: true, lines: []string{"2053/tcp ALLOW IN 10.8.0.0/24"}}, "restricted"},
+		{"default blocked", panelUFW{available: true, active: true, defaultDeny: true}, "blocked-by-default"},
+		{"unsupported firewall", panelUFW{}, "unknown"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			finding := model.Finding{}
+			if got := panelFirewallDisposition(test.ufw, "2053", &finding); got != test.want {
+				t.Fatalf("got %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestPanelListenerScopePrefersPublicBinding(t *testing.T) {
+	listeners := []Listener{
+		{Protocol: "tcp", Address: "127.0.0.1", Port: "2053", Scope: "loopback"},
+		{Protocol: "tcp", Address: "0.0.0.0", Port: "2053", Scope: "public-wildcard"},
+	}
+	finding := model.Finding{}
+	got, found := panelListenerScope(listeners, "2053", &finding)
+	if !found || got != "public-wildcard" {
+		t.Fatalf("got (%q,%t), want public-wildcard", got, found)
+	}
+}

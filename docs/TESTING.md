@@ -32,7 +32,7 @@ Regression review should verify:
 - normal `/etc/shadow` group-readable policy is accepted on Ubuntu/Debian.
 - masked systemd symlinks are not treated as world-writable unit files.
 - Docker loopback publication remains loopback.
-- S-UI management and proxy ingress are distinguished.
+- S-UI, 3x-ui, and x-ui management listeners are distinguished from proxy ingress.
 - file-backed TLS and embedded TLS visibility are reported separately.
 - JSON, text, Markdown, HTML, manifest verification, `diff`, and `fleet` agree.
 

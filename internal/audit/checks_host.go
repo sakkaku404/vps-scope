@@ -28,59 +28,191 @@ func checkWorkloads(ctx *Context) []model.Finding {
 			}
 		}
 	}
-	return []model.Finding{f, checkSUIManagement(ctx)}
+	return []model.Finding{f, checkPanelManagement(ctx)}
 }
 
-func checkSUIManagement(ctx *Context) model.Finding {
-	binary := "/usr/local/s-ui/sui"
-	if info, err := os.Stat(binary); err != nil || info.IsDir() {
-		return notApplicable("WORK-002", "workloads", "binary discovery", "S-UI not installed at the supported path")
+type panelInstall struct {
+	product string
+	binary  string
+	args    []string
+}
+
+func checkPanelManagement(ctx *Context) model.Finding {
+	panels := discoverPanels(ctx)
+	if len(panels) == 0 {
+		return notApplicable("WORK-002", "workloads", "binary discovery", "no supported S-UI, 3x-ui, or x-ui installation found")
 	}
-	settings := ctx.Commander.Run(10*time.Second, binary, "setting", "-show")
-	if settings.Err != nil {
-		return unknown("WORK-002", "workloads", "sui setting -show", commandError(settings))
-	}
-	portRE := regexp.MustCompile(`(?mi)^\s*Panel port:\s*([0-9]+)\s*$`)
-	match := portRE.FindStringSubmatch(settings.Stdout)
-	if len(match) < 2 {
-		return unknown("WORK-002", "workloads", "sui setting -show", "panel port was not present in command output")
-	}
-	port := match[1]
-	f := model.Finding{ID: "WORK-002", Category: "workloads", Status: model.Info, Facts: map[string]string{"panel_port": port}}
-	version := ctx.Commander.Run(8*time.Second, binary, "-v")
-	for _, line := range lines(version.Stdout) {
-		if containsAny(line, "S-UI Panel", "Sing-Box") {
-			f.Evidence = append(f.Evidence, model.Evidence{Source: "sui -v", Value: line})
+	f := model.Finding{ID: "WORK-002", Category: "workloads", Status: model.Pass, Facts: map[string]string{"panel_count": strconv.Itoa(len(panels))}}
+
+	var listeners []Listener
+	ssAvailable := ctx.Commander.Exists("ss")
+	if ssAvailable {
+		result := ctx.Commander.Run(12*time.Second, "ss", "-H", "-lntup")
+		if result.Err == nil {
+			listeners = parseListeners(result.Stdout)
+		} else {
+			ssAvailable = false
+			f.Evidence = append(f.Evidence, model.Evidence{Source: "ss -H -lntup", Key: "error", Value: commandError(result)})
 		}
 	}
-	listenerScope := "not-listening"
-	if ctx.Commander.Exists("ss") {
-		ss := ctx.Commander.Run(12*time.Second, "ss", "-H", "-lntup")
-		for _, listener := range parseListeners(ss.Stdout) {
-			if listener.Port == port && strings.HasPrefix(listener.Protocol, "tcp") {
-				listenerScope = listener.Scope
-				f.Evidence = append(f.Evidence, model.Evidence{Source: "ss", Key: "panel_listener", Value: fmt.Sprintf("%s:%s scope=%s process=%s", listener.Address, port, listener.Scope, truncate(listener.Process, 160))})
-			}
+	ufw := readPanelUFW(ctx)
+	products := make([]string, 0, len(panels))
+	unknowns, inactive := 0, 0
+	for _, panel := range panels {
+		products = append(products, panel.product)
+		f.Evidence = append(f.Evidence, model.Evidence{Source: "panel discovery", Key: "product", Value: panel.product + " binary=" + panel.binary})
+		settings := ctx.Commander.Run(10*time.Second, panel.binary, panel.args...)
+		if settings.Err != nil && panel.product != "S-UI" {
+			settings = ctx.Commander.Run(10*time.Second, panel.binary, "setting", "-show")
+		}
+		port, ok := parsePanelPort(panel.product, settings.Stdout)
+		if settings.Err != nil || !ok {
+			unknowns++
+			f.Evidence = append(f.Evidence, model.Evidence{Source: panel.product + " settings", Key: "panel_port", Value: "unavailable"})
+			continue
+		}
+		f.Evidence = append(f.Evidence, model.Evidence{Source: panel.product + " settings", Key: "panel_port", Value: port + "/tcp"})
+		if !ssAvailable {
+			unknowns++
+			continue
+		}
+		scope, found := panelListenerScope(listeners, port, &f)
+		if !found {
+			inactive++
+			continue
+		}
+		if scope != "public" && scope != "public-wildcard" {
+			continue
+		}
+		disposition := panelFirewallDisposition(ufw, port, &f)
+		switch disposition {
+		case "allow-anywhere", "inactive":
+			f.Status, f.Severity = model.Risk, model.High
+		case "restricted", "blocked-by-default":
+			// Public binding is constrained by the host firewall.
+		default:
+			unknowns++
 		}
 	}
-	allowAnywhere := false
-	if ctx.Commander.Exists("ufw") {
-		ufw := ctx.Commander.Run(12*time.Second, "ufw", "status", "verbose")
-		for _, line := range lines(ufw.Stdout) {
-			if strings.HasPrefix(strings.TrimSpace(line), port+"/tcp") && strings.Contains(line, "ALLOW IN") && strings.Contains(line, "Anywhere") {
-				allowAnywhere = true
-				f.Evidence = append(f.Evidence, model.Evidence{Source: "ufw status verbose", Key: "panel_rule", Value: line})
-			}
+	sort.Strings(products)
+	f.Facts["products"] = strings.Join(products, ",")
+	f.Facts["ports_unavailable"] = strconv.Itoa(unknowns)
+	f.Facts["panels_not_listening"] = strconv.Itoa(inactive)
+	if f.Status != model.Risk {
+		if unknowns > 0 {
+			f.Status, f.Unavailable = model.Unknown, true
+			f.Error = "management-panel exposure could not be determined from the available port, listener, and firewall evidence"
+		} else if inactive == len(panels) {
+			f.Status = model.Info
 		}
-	}
-	f.Facts["listener_scope"] = listenerScope
-	f.Facts["allow_anywhere"] = strconv.FormatBool(allowAnywhere)
-	if (listenerScope == "public" || listenerScope == "public-wildcard") && allowAnywhere {
-		f.Status, f.Severity = model.Risk, model.High
-	} else if listenerScope == "loopback" {
-		f.Status = model.Pass
 	}
 	return f
+}
+
+func discoverPanels(ctx *Context) []panelInstall {
+	var panels []panelInstall
+	if regularFile("/usr/local/s-ui/sui") {
+		panels = append(panels, panelInstall{product: "S-UI", binary: "/usr/local/s-ui/sui", args: []string{"setting", "-show"}})
+	}
+	if regularFile("/usr/local/x-ui/x-ui") {
+		product := "x-ui"
+		if script, err := os.ReadFile("/usr/local/x-ui/x-ui.sh"); err == nil && containsAny(string(script), "MHSanaei/3x-ui", "3X-UI", "3x-ui") {
+			product = "3x-ui"
+		}
+		version := ctx.Commander.Run(8*time.Second, "/usr/local/x-ui/x-ui", "-v")
+		if containsAny(version.Stdout+"\n"+version.Stderr, "3x-ui", "3X-UI") {
+			product = "3x-ui"
+		}
+		panels = append(panels, panelInstall{product: product, binary: "/usr/local/x-ui/x-ui", args: []string{"setting", "-show", "true"}})
+	}
+	return panels
+}
+
+func regularFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func parsePanelPort(product, output string) (string, bool) {
+	pattern := `(?mi)^\s*(?:port|webPort)\s*:\s*([0-9]{1,5})\s*$`
+	if product == "S-UI" {
+		pattern = `(?mi)^\s*Panel port\s*:\s*([0-9]{1,5})\s*$`
+	}
+	match := regexp.MustCompile(pattern).FindStringSubmatch(output)
+	if len(match) != 2 {
+		return "", false
+	}
+	port, err := strconv.Atoi(match[1])
+	return match[1], err == nil && port > 0 && port <= 65535
+}
+
+func panelListenerScope(listeners []Listener, port string, f *model.Finding) (string, bool) {
+	scope := ""
+	rank := map[string]int{"loopback": 1, "private": 2, "public": 3, "public-wildcard": 4}
+	for _, listener := range listeners {
+		if listener.Port != port || !strings.HasPrefix(listener.Protocol, "tcp") {
+			continue
+		}
+		if rank[listener.Scope] > rank[scope] {
+			scope = listener.Scope
+		}
+		f.Evidence = append(f.Evidence, model.Evidence{Source: "ss", Key: "panel_listener", Value: fmt.Sprintf("%s:%s scope=%s process=%s", listener.Address, port, listener.Scope, truncate(listener.Process, 160))})
+	}
+	return scope, scope != ""
+}
+
+type panelUFW struct {
+	available, active, defaultDeny bool
+	lines                          []string
+}
+
+func readPanelUFW(ctx *Context) panelUFW {
+	if !ctx.Commander.Exists("ufw") {
+		return panelUFW{}
+	}
+	r := ctx.Commander.Run(12*time.Second, "ufw", "status", "verbose")
+	if r.Err != nil {
+		return panelUFW{}
+	}
+	return panelUFW{available: true, active: regexp.MustCompile(`(?mi)^Status:\s+active\s*$`).MatchString(r.Stdout), defaultDeny: regexp.MustCompile(`(?mi)^Default:\s+deny \(incoming\)`).MatchString(r.Stdout), lines: lines(r.Stdout)}
+}
+
+func panelFirewallDisposition(ufw panelUFW, port string, f *model.Finding) string {
+	if !ufw.available {
+		return "unknown"
+	}
+	if !ufw.active {
+		f.Evidence = append(f.Evidence, model.Evidence{Source: "ufw status verbose", Key: "panel_firewall", Value: "inactive"})
+		return "inactive"
+	}
+	anywhere, restricted := false, false
+	for _, line := range ufw.lines {
+		idx := strings.Index(line, "ALLOW IN")
+		if idx < 0 {
+			continue
+		}
+		target := strings.TrimSpace(line[:idx])
+		if target != port && target != port+"/tcp" && target != port+"/tcp (v6)" {
+			continue
+		}
+		from := strings.TrimSpace(line[idx+len("ALLOW IN"):])
+		f.Evidence = append(f.Evidence, model.Evidence{Source: "ufw status verbose", Key: "panel_rule", Value: line})
+		if strings.HasPrefix(from, "Anywhere") {
+			anywhere = true
+		} else {
+			restricted = true
+		}
+	}
+	if anywhere {
+		return "allow-anywhere"
+	}
+	if restricted {
+		return "restricted"
+	}
+	if ufw.defaultDeny {
+		return "blocked-by-default"
+	}
+	return "unknown"
 }
 
 func checkFilesystem(ctx *Context) []model.Finding {
