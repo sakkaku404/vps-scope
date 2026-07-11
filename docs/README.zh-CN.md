@@ -26,19 +26,21 @@ VPS Scope 不打安全分，也没有自动修复功能。
 
 ## 安装
 
-最省事的安装方法就是这一行：
+只检查一次、不安装任何东西，运行这一行就够了：
+
+```bash
+curl -fsSL https://sakkaku404.github.io/vps-scope/run.sh | sudo bash
+```
+
+这一行会下载当前 Release、核对 SHA-256、执行审计，然后删除临时程序，不需要再输入第二条命令。
+
+如果准备经常使用，并希望保留 `vps-scope` 命令，再执行安装：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sakkaku404/vps-scope/main/install.sh | sudo bash
 ```
 
 装好后运行 `sudo vps-scope`。安装脚本会自动识别 amd64 或 arm64，并在安装前核对 Release 文件的 SHA-256。
-
-如果只想临时检查一次，不想安装：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/sakkaku404/vps-scope/main/run.sh | sudo bash
-```
 
 对 `curl | bash` 不放心的话，可以先把脚本下载下来查看；下面的手动安装方式也会保留。
 
