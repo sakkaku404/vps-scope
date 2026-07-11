@@ -13,7 +13,9 @@ VPS Scope is a read-only security audit tool for Ubuntu and Debian servers. It c
 
 This project began with a hands-on review of [vernu/vps-audit](https://github.com/vernu/vps-audit). That script makes a VPS check approachable, but on real servers, reading configuration files directly, applying service or port-count thresholds, and treating failed collection as safe can produce false positives and missed findings.
 
-VPS Scope is an independent implementation rather than a fork. It starts from effective configuration and reviewable evidence: failed collection becomes `UNKNOWN`, listeners are separated into public, private, loopback, and container-published scopes, and findings are interpreted in the context of the server's role. The original comparison used commit [`e39115f`](https://github.com/vernu/vps-audit/tree/e39115f85414073ee5cf96bea5e3b1b811375a2a), whose script SHA-256 is `db1134574f3c8df30bc9ac10821d207dda13ae22b0905964e2c0bc7cc71192e6`.
+VPS Scope is not a fork of that project; its code and detection implementation were developed independently. VPS Scope redesigns and implements its checks around effective system state and reviewable evidence: failed collection becomes `UNKNOWN`, listeners are separated into public, private, loopback, and container-published scopes, and findings are interpreted in the context of the server's role. The original comparison used commit [`e39115f`](https://github.com/vernu/vps-audit/tree/e39115f85414073ee5cf96bea5e3b1b811375a2a), whose script SHA-256 is `db1134574f3c8df30bc9ac10821d207dda13ae22b0905964e2c0bc7cc71192e6`.
+
+Thanks to OpenAI Codex for writing most of the Go—it has currently written far more Go than the maintainer, who is still working on understanding it.
 
 ## What it looks at
 
@@ -77,7 +79,7 @@ Running it without arguments opens a short setup prompt with Chinese and English
 
 ```bash
 sudo ./vps-scope audit --lang en --profile general
-sudo ./vps-scope audit --lang zh-CN --profile proxy
+sudo ./vps-scope audit --lang en --profile proxy
 sudo ./vps-scope audit --profile custom --expect-public 22/tcp,443/tcp
 ```
 
@@ -135,13 +137,14 @@ checks      list checks and their IDs
 explain     explain a check and its recommendation
 render      turn a JSON report into another language or format
 redact      make a report safer to share
+report      view and manage saved reports
 verify      verify the files in a report bundle
 version     show build information
 ```
 
 ## Support
 
-The first release targets Ubuntu and Debian on Linux `amd64` and `arm64`. Some checks use system tools such as `ss`, `journalctl`, `ufw`, `nft`, `dpkg`, `docker`, or `sqlite3`. If one is unavailable, the affected result is reported as unavailable rather than silently treated as safe.
+VPS Scope currently supports Ubuntu and Debian on Linux `amd64` and `arm64`. Some checks use system tools such as `ss`, `journalctl`, `ufw`, `firewall-cmd`, `nft`, `iptables`, `fail2ban-client`, `cscli`, `dpkg`, `docker`, `coredumpctl`, or `sqlite3`. If one is unavailable, the affected result is reported as unavailable rather than silently treated as safe.
 
 VPS Scope is useful for reviewing a server, but it cannot prove that a machine is clean or see cloud firewall rules from inside the guest. See [the design notes](DESIGN.md) for the current trust boundary and known limitations.
 
