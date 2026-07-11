@@ -26,19 +26,21 @@ There is no security score, and the tool does not make changes or offer an autom
 
 ## Install
 
-The shortest installation command is:
+Run one audit without installing anything:
+
+```bash
+curl -fsSL https://sakkaku404.github.io/vps-scope/run.sh | sudo bash
+```
+
+That one command downloads the current release, verifies its SHA-256, runs the audit, and removes the temporary binary. There is no second command.
+
+To install `vps-scope` for repeated use:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sakkaku404/vps-scope/main/install.sh | sudo bash
 ```
 
 Then run `sudo vps-scope`. The installer detects amd64 or arm64 automatically and verifies the release checksum before installing anything.
-
-To run one audit without installing the program:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/sakkaku404/vps-scope/main/run.sh | sudo bash
-```
 
 If you prefer to inspect scripts before running them, download them first or use the manual steps below.
 
