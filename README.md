@@ -13,7 +13,9 @@ VPS Scope 是一个给 Ubuntu、Debian 服务器用的只读安全检查工具�
 
 这个项目起于一次对 [vernu/vps-audit](https://github.com/vernu/vps-audit) 的实际复核。那份脚本让 VPS 自查变得很容易，但在真实服务器上，直接读取配置文件、按端口或服务数量设阈值，以及把取证失败当成安全，都可能产生误报或漏报。
 
-VPS Scope 不是它的分支，也没有照搬检查逻辑。它从实际生效配置和可复核证据重新实现：检查失败显示 `UNKNOWN`，监听地址按公网、私网、回环和容器发布分类，并根据服务器用途解释结果。项目最初对照的版本是提交 [`e39115f`](https://github.com/vernu/vps-audit/tree/e39115f85414073ee5cf96bea5e3b1b811375a2a)，对应脚本 SHA-256 为 `db1134574f3c8df30bc9ac10821d207dda13ae22b0905964e2c0bc7cc71192e6`。
+VPS Scope 不是该项目的分支，代码与检测实现均为独立实现。VPS Scope 以实际生效状态和可复核证据为基础，重新设计并实现了检查流程：检查失败显示 `UNKNOWN`，监听地址按公网、私网、回环和容器发布分类，并根据服务器用途解释结果。项目最初对照的版本是提交 [`e39115f`](https://github.com/vernu/vps-audit/tree/e39115f85414073ee5cf96bea5e3b1b811375a2a)，对应脚本 SHA-256 为 `db1134574f3c8df30bc9ac10821d207dda13ae22b0905964e2c0bc7cc71192e6`。
+
+感谢 OpenAI Codex 编写了绝大多数 Go——它目前写过的 Go 比维护者本人多得多，维护者目前正在努力看懂它。
 
 ## 它会检查什么
 
@@ -135,13 +137,14 @@ checks      列出检查项目和 ID
 explain     查看某项检查的说明
 render      重新生成语言或格式
 redact      生成适合分享的脱敏报告
+report      查看和管理已保存的报告
 verify      校验报告包有没有被改动
 version     显示版本和构建信息
 ```
 
 ## 当前支持范围
 
-首个版本支持 Ubuntu、Debian，以及 Linux `amd64`、`arm64`。部分检查会调用系统自带的 `ss`、`journalctl`、`ufw`、`nft`、`dpkg`、`docker` 或 `sqlite3`；缺少某个命令时，只会影响相关项目，并在报告中明确显示，不会被当成安全。
+当前支持 Ubuntu、Debian，以及 Linux `amd64`、`arm64`。部分检查会调用系统里的 `ss`、`journalctl`、`ufw`、`firewall-cmd`、`nft`、`iptables`、`fail2ban-client`、`cscli`、`dpkg`、`docker`、`coredumpctl` 或 `sqlite3`；缺少某个命令时，只会影响相关项目，并在报告中明确显示，不会被当成安全。
 
 它能帮你更快地检查服务器，但不能证明服务器一定没有被入侵，也无法从 VPS 内部读取云厂商的安全组。更具体的边界见[设计说明](docs/DESIGN.md)。
 
@@ -150,6 +153,7 @@ version     显示版本和构建信息
 ```bash
 go test ./...
 go vet ./...
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ./cmd/vps-scope
 ```
 
 欢迎提交问题、代码和可复现的 Ubuntu/Debian 测试样本。公开 issue 里请不要附上未经脱敏的服务器报告。
