@@ -77,7 +77,15 @@ Profiles give the audit some context about the server's job. Built-in choices in
 
 ## Reports
 
-The default output is intended for a terminal. Reports can also be written as JSON, plain text, Markdown, or a self-contained HTML file:
+Interactive mode defaults to showing the result in the terminal and saving a full report bundle. Saved reports go to `~/vps-scope-reports/HOST/TIMESTAMP/`; `~/vps-scope-reports/latest` points to the newest one. The completion message explains each file and prints a copy-paste download command.
+
+```bash
+sudo vps-scope report show  # show the latest report again
+sudo vps-scope report list  # list saved reports
+sudo vps-scope report path  # print the latest report directory
+```
+
+Reports can also be written to an explicit location as JSON, plain text, Markdown, HTML, or a full bundle:
 
 ```bash
 sudo ./vps-scope audit --format bundle --output ./reports/sgp

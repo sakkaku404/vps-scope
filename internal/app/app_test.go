@@ -2,9 +2,15 @@ package app
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sakkaku404/vps-scope/internal/model"
+	"github.com/sakkaku404/vps-scope/internal/report"
 )
 
 func TestInteractiveProfilePromptUsesConfiguredWriter(t *testing.T) {
@@ -15,6 +21,50 @@ func TestInteractiveProfilePromptUsesConfiguredWriter(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "选择 [1]: ") {
 		t.Fatalf("interactive output is missing the profile prompt: %q", out.String())
+	}
+}
+
+func TestDownloadCommandFromSSHConnection(t *testing.T) {
+	t.Setenv("SSH_CONNECTION", "192.0.2.10 50000 203.0.113.20 2222")
+	t.Setenv("USER", "root")
+	got := downloadCommand("/root/vps-scope-reports/latest/report.zh-CN.html")
+	want := "scp -P 2222 root@203.0.113.20:'/root/vps-scope-reports/latest/report.zh-CN.html' ."
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestSavedReportLatestCommands(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks requires additional Windows privileges")
+	}
+	root := t.TempDir()
+	t.Setenv("VPS_SCOPE_REPORT_DIR", root)
+	r := model.Report{Locale: "zh-CN", StartedAt: time.Date(2026, 7, 11, 6, 19, 30, 0, time.UTC), Host: model.Host{Hostname: "test-vps"}}
+	var out bytes.Buffer
+	e := environment{out: &out, errOut: &out}
+	if err := e.writeReport("bundle", "", r, report.Options{Locale: "zh-CN"}); err != nil {
+		t.Fatal(err)
+	}
+	wantDir := filepath.Join(root, "test-vps", "20260711T061930Z")
+	latest, err := filepath.EvalSymlinks(filepath.Join(root, "latest"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest != wantDir {
+		t.Fatalf("latest=%q, want %q", latest, wantDir)
+	}
+	for _, name := range []string{"report.zh-CN.txt", "report.zh-CN.html", "report.zh-CN.md", "report.json", "manifest.json"} {
+		if _, err := os.Stat(filepath.Join(wantDir, name)); err != nil {
+			t.Errorf("missing %s: %v", name, err)
+		}
+	}
+	out.Reset()
+	if err := e.report([]string{"path"}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(out.String()) != wantDir {
+		t.Fatalf("report path output=%q", out.String())
 	}
 }
 

@@ -6,6 +6,16 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 0.3.0 - 2026-07-11
+
+### Added
+
+- Saved-report commands: `vps-scope report list`, `report show`, and `report path`.
+
+### Changed
+
+- Interactive audits now default to showing the terminal report and saving a full bundle under `~/vps-scope-reports`, with a `latest` link and practical viewing and download instructions.
+
 ## 0.2.0 - 2026-07-11
 
 ### Changed
@@ -34,7 +44,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Report comparison, fleet summaries, re-rendering, and redaction.
 - Linux amd64 and arm64 release builds.
 
-[Unreleased]: https://github.com/sakkaku404/vps-scope/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/sakkaku404/vps-scope/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/sakkaku404/vps-scope/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/sakkaku404/vps-scope/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/sakkaku404/vps-scope/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/sakkaku404/vps-scope/compare/v0.1.0...v0.1.1

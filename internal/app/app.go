@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
@@ -51,6 +52,8 @@ func Run(args []string, in io.Reader, out, errOut io.Writer, build BuildInfo) er
 		return e.render(args[1:])
 	case "redact":
 		return e.redact(args[1:])
+	case "report":
+		return e.report(args[1:])
 	case "verify":
 		return e.verify(args[1:])
 	case "version", "--version", "-v":
@@ -77,6 +80,7 @@ Usage:
   vps-scope fleet REPORTS...        compare multiple hosts
   vps-scope render REPORT.json      render another language or format
   vps-scope redact REPORT.json      create a shareable redacted report
+  vps-scope report list|show|path   manage saved local reports
   vps-scope verify BUNDLE_DIR       verify report SHA-256 values
   vps-scope version                 show build information
 
@@ -115,14 +119,20 @@ func (e environment) interactive() error {
 		expected, _ = reader.ReadString('\n')
 		expected = strings.TrimSpace(expected)
 	}
-	fmt.Fprintln(e.out, choose(zh, "\n输出: 1. 仅终端  2. 完整报告包", "\nOutput: 1. terminal only  2. full report bundle"))
-	fmt.Fprint(e.out, choose(zh, "选择 [1]: ", "Select [1]: "))
+	fmt.Fprintln(e.out, choose(zh, "\n输出方式:\n  1. 只在终端查看\n  2. 在终端查看，并保存完整报告（推荐）\n  3. 只保存完整报告", "\nOutput:\n  1. terminal only\n  2. terminal and full report bundle (recommended)\n  3. full report bundle only"))
+	fmt.Fprint(e.out, choose(zh, "选择 [2]: ", "Select [2]: "))
 	outputChoice, _ := reader.ReadString('\n')
-	format := "terminal"
-	if strings.TrimSpace(outputChoice) == "2" {
-		format = "bundle"
+	format, alsoTerminal := "bundle", true
+	switch strings.TrimSpace(outputChoice) {
+	case "1":
+		format, alsoTerminal = "terminal", false
+	case "3":
+		alsoTerminal = false
 	}
 	auditArgs := []string{"--lang", locale, "--profile", profile, "--format", format}
+	if alsoTerminal {
+		auditArgs = append(auditArgs, "--also-terminal")
+	}
 	if expected != "" {
 		auditArgs = append(auditArgs, "--expect-public", expected)
 	}
@@ -141,6 +151,7 @@ func (e environment) audit(args []string) error {
 	quiet := fs.Bool("quiet", false, "suppress progress")
 	noColor := fs.Bool("no-color", false, "disable color output")
 	redacted := fs.Bool("redact", false, "redact public IPs, domains, and host identifiers")
+	alsoTerminal := fs.Bool("also-terminal", false, "print terminal report before saving a bundle")
 	expectPublic := fs.String("expect-public", "", "expected public listeners, e.g. 22/tcp,443/tcp")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -171,24 +182,38 @@ func (e environment) audit(args []string) error {
 		r = redact.New().Report(r)
 	}
 	opts := report.Options{Locale: locale, Color: !*noColor && os.Getenv("NO_COLOR") == "", Verbose: *verbose}
-	return e.writeReport(*format, *output, r, opts)
+	return e.writeReport(*format, *output, r, opts, *alsoTerminal)
 }
 
-func (e environment) writeReport(format, output string, r model.Report, opts report.Options) error {
+func (e environment) writeReport(format, output string, r model.Report, opts report.Options, alsoTerminal ...bool) error {
 	if format == "bundle" {
+		if len(alsoTerminal) > 0 && alsoTerminal[0] {
+			if err := report.Text(e.out, r, opts); err != nil {
+				return err
+			}
+		}
+		useDefault := output == ""
 		if output == "" {
-			output = fmt.Sprintf("vps-scope-%s-%s", safeName(r.Host.Hostname), r.StartedAt.Format("20060102T150405Z"))
+			var err error
+			output, err = defaultBundleDir(r)
+			if err != nil {
+				return err
+			}
 		}
 		manifest, err := report.Bundle(output, r, opts)
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(e.out, "%s: %s (%d files)\n", choose(opts.Locale == "zh-CN", "报告包", "Report bundle"), output, len(manifest.Files))
-		for _, file := range manifest.Files {
-			if file.Name == "report.json" {
-				fmt.Fprintf(e.out, "report.json SHA-256: %s\n", file.SHA256)
+		output, err = filepath.Abs(output)
+		if err != nil {
+			return err
+		}
+		if useDefault {
+			if err := updateLatest(filepath.Dir(filepath.Dir(output)), output); err != nil {
+				return fmt.Errorf("update latest report link: %w", err)
 			}
 		}
+		e.printBundleHelp(output, opts.Locale, len(manifest.Files))
 		return nil
 	}
 	var write func(io.Writer) error
@@ -217,6 +242,160 @@ func (e environment) writeReport(format, output string, r model.Report, opts rep
 	}
 	fmt.Fprintf(e.out, "%s: %s\n", choose(opts.Locale == "zh-CN", "报告", "Report"), output)
 	return nil
+}
+
+func defaultBundleDir(r model.Report) (string, error) {
+	root, err := reportRoot()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, safeName(r.Host.Hostname), r.StartedAt.Format("20060102T150405Z")), nil
+}
+
+func reportRoot() (string, error) {
+	if configured := strings.TrimSpace(os.Getenv("VPS_SCOPE_REPORT_DIR")); configured != "" {
+		return filepath.Abs(configured)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("find home directory: %w", err)
+	}
+	return filepath.Join(home, "vps-scope-reports"), nil
+}
+
+func updateLatest(root, bundle string) error {
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return err
+	}
+	target, err := filepath.Rel(root, bundle)
+	if err != nil {
+		return err
+	}
+	tmp := filepath.Join(root, fmt.Sprintf(".latest-%d", time.Now().UnixNano()))
+	if err := os.Symlink(target, tmp); err != nil {
+		return err
+	}
+	defer os.Remove(tmp)
+	latest := filepath.Join(root, "latest")
+	if err := os.Remove(latest); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return os.Rename(tmp, latest)
+}
+
+func (e environment) printBundleHelp(dir, locale string, reportFiles int) {
+	zh := locale == "zh-CN"
+	ext := map[string]string{
+		"html": "Open in a browser", "text": "Read in a terminal", "markdown": "Markdown", "json": "Comparison and re-rendering", "manifest": "Integrity verification",
+	}
+	if zh {
+		ext = map[string]string{"html": "用浏览器查看", "text": "在终端查看", "markdown": "Markdown 格式", "json": "用于对比和重新生成", "manifest": "文件完整性校验"}
+	}
+	localeName := locale
+	fmt.Fprintf(e.out, "\n%s\n\n%s:\n  %s\n\n%s:\n", choose(zh, "报告已经保存", "Report saved"), choose(zh, "目录", "Directory"), dir, choose(zh, fmt.Sprintf("包含 %d 个报告文件，另有完整性清单", reportFiles), fmt.Sprintf("Contents: %d report files plus an integrity manifest", reportFiles)))
+	fmt.Fprintf(e.out, "  report.%s.html   %s\n", localeName, ext["html"])
+	fmt.Fprintf(e.out, "  report.%s.txt    %s\n", localeName, ext["text"])
+	fmt.Fprintf(e.out, "  report.%s.md     %s\n", localeName, ext["markdown"])
+	fmt.Fprintf(e.out, "  report.json         %s\n", ext["json"])
+	fmt.Fprintf(e.out, "  manifest.json       %s\n", ext["manifest"])
+	fmt.Fprintf(e.out, "\n%s:\n  sudo vps-scope report show\n", choose(zh, "再次在终端查看最近报告", "Show the latest report in the terminal"))
+	htmlPath := filepath.Join(dir, "report."+localeName+".html")
+	fmt.Fprintf(e.out, "\n%s:\n  %s\n", choose(zh, "下载 HTML 到电脑（请在你自己的电脑上运行）", "Download HTML (run this on your own computer)"), downloadCommand(htmlPath))
+	fmt.Fprintf(e.out, "\n%s:\n  sudo vps-scope verify %s\n", choose(zh, "需要时校验完整性", "Verify integrity when needed"), shellQuote(dir))
+}
+
+func downloadCommand(path string) string {
+	parts := strings.Fields(os.Getenv("SSH_CONNECTION"))
+	if len(parts) >= 4 {
+		host, port := parts[2], parts[3]
+		if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
+			host = "[" + host + "]"
+		}
+		user := strings.TrimSpace(os.Getenv("USER"))
+		if user == "" {
+			user = "root"
+		}
+		portArg := ""
+		if port != "22" {
+			portArg = "-P " + port + " "
+		}
+		return fmt.Sprintf("scp %s%s@%s:%s .", portArg, user, host, shellQuote(path))
+	}
+	return fmt.Sprintf("scp <SSH_HOST>:%s .", shellQuote(path))
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
+}
+
+func (e environment) report(args []string) error {
+	if len(args) != 1 {
+		return errors.New("usage: vps-scope report list|show|path")
+	}
+	root, err := reportRoot()
+	if err != nil {
+		return err
+	}
+	latest := filepath.Join(root, "latest")
+	switch args[0] {
+	case "path":
+		path, err := filepath.EvalSymlinks(latest)
+		if err != nil {
+			return fmt.Errorf("no saved report found: %w", err)
+		}
+		path, err = filepath.Abs(path)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(e.out, path)
+		return nil
+	case "show":
+		matches, err := filepath.Glob(filepath.Join(latest, "report.*.txt"))
+		if err != nil || len(matches) == 0 {
+			return errors.New("no saved terminal report found; run an audit with a full report bundle first")
+		}
+		sort.Strings(matches)
+		file, err := os.Open(matches[0])
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+		_, err = io.Copy(e.out, file)
+		return err
+	case "list":
+		var bundles []string
+		hosts, err := os.ReadDir(root)
+		if err != nil {
+			return fmt.Errorf("no saved reports found: %w", err)
+		}
+		for _, host := range hosts {
+			if !host.IsDir() || host.Name() == "latest" {
+				continue
+			}
+			runs, _ := os.ReadDir(filepath.Join(root, host.Name()))
+			for _, run := range runs {
+				path := filepath.Join(root, host.Name(), run.Name())
+				if run.IsDir() && regularPath(filepath.Join(path, "manifest.json")) {
+					bundles = append(bundles, path)
+				}
+			}
+		}
+		sort.Sort(sort.Reverse(sort.StringSlice(bundles)))
+		if len(bundles) == 0 {
+			return errors.New("no saved reports found")
+		}
+		for _, bundle := range bundles {
+			fmt.Fprintln(e.out, bundle)
+		}
+		return nil
+	default:
+		return errors.New("usage: vps-scope report list|show|path")
+	}
+}
+
+func regularPath(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
 
 func (e environment) doctor(args []string) error {
