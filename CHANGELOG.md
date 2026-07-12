@@ -19,6 +19,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 - Added cached-fact, command-output, sudo-privacy, bundle-boundary, and fuzz regression tests.
 - CI and release workflows now run pinned `govulncheck` source scans.
+- Raised the build baseline to Go 1.25.10 after source scanning found reachable standard-library fixes in the former Go 1.24.0 toolchain.
 
 ## 0.6.0 - 2026-07-12
 
