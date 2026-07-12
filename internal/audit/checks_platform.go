@@ -396,14 +396,14 @@ func embeddedSUITLS(ctx *Context) (model.Finding, bool) {
 	if _, err := os.Stat(db); err != nil {
 		return model.Finding{}, false
 	}
-	if !ctx.Commander.Exists("sqlite3") {
-		return unknown("TLS-002", "tls", "S-UI TLS database", "S-UI database exists but sqlite3 is unavailable; embedded TLS material was not extracted"), true
+	rows, err := querySQLite(db, "SELECT count(*) FROM tls WHERE server IS NOT NULL AND length(server)>0;")
+	if err != nil || len(rows) != 1 || len(rows[0]) != 1 {
+		if err == nil {
+			err = fmt.Errorf("could not read embedded TLS record count")
+		}
+		return unknown("TLS-002", "tls", "S-UI TLS database", err.Error()), true
 	}
-	r := ctx.Commander.Run(8*time.Second, "sqlite3", "-readonly", db, "SELECT count(*) FROM tls WHERE server IS NOT NULL AND length(server)>0;")
-	if r.Err != nil {
-		return unknown("TLS-002", "tls", "S-UI TLS database", commandError(r)), true
-	}
-	count, err := strconv.Atoi(strings.TrimSpace(r.Stdout))
+	count, err := strconv.Atoi(rows[0][0])
 	if err != nil {
 		return unknown("TLS-002", "tls", "S-UI TLS database", "could not parse embedded TLS record count"), true
 	}
@@ -428,6 +428,14 @@ func discoverCertificatePaths(ctx *Context) []string {
 	}
 	for _, path := range existingFiles("/etc/letsencrypt/live/*/fullchain.pem") {
 		add(path)
+	}
+	for _, panel := range ctx.Facts.Panels() {
+		for _, endpoint := range panel.Endpoints {
+			add(endpoint.CertFile)
+		}
+		for _, path := range panel.CertificateFiles {
+			add(path)
+		}
 	}
 	if ctx.Commander.Exists("nginx") {
 		r := ctx.Commander.Run(15*time.Second, "nginx", "-T")

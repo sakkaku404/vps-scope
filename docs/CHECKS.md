@@ -16,7 +16,7 @@ Check IDs are stable across languages and report formats. A status is separate f
 | Processes | `PROC-001`–`PROC-002` | failed systemd units, `/proc/*/exe` |
 | Docker | `DOCKER-001` | Docker inspect isolation and port bindings |
 | TLS | `TLS-001`–`TLS-002` | file-backed X.509 parsing; privacy-safe embedded-material detection |
-| Workloads | `WORK-001`–`WORK-011` | proxy processes/configs, management/control exposure, native self-tests, permissions, service isolation, UDP context, config-to-listener/firewall relations, privacy-safe log counts, WireGuard runtime relations |
+| Workloads | `WORK-001`–`WORK-012` | proxy processes/configs, management/control exposure, native self-tests, permissions, service isolation, UDP context, config-to-listener/firewall relations, privacy-safe log counts, WireGuard runtime, panel role/runtime consistency |
 | Filesystem | `FS-001` | sensitive paths, modes, sticky bits |
 | Persistence | `PERSIST-001`–`PERSIST-002` | systemd, timers, cron, startup files, executables running from temporary directories |
 | Reliability | `REL-001`–`REL-002` | kernel journal, coredumps, journal persistence and size, disk and inode state |

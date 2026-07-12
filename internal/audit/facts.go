@@ -27,6 +27,14 @@ type FactStore struct {
 	dockerOnce sync.Once
 	docker     []dockerInspect
 	dockerErr  error
+
+	panelsOnce sync.Once
+	panels     []panelSnapshot
+}
+
+func (f *FactStore) Panels() []panelSnapshot {
+	f.panelsOnce.Do(func() { f.panels = collectPanelSnapshots(f.cmd) })
+	return append([]panelSnapshot(nil), f.panels...)
 }
 
 type ProcessInfo struct {

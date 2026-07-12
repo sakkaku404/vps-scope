@@ -1,8 +1,10 @@
 package audit
 
 import (
+	"database/sql"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -301,6 +303,65 @@ func TestNativeTrojanAndShadowsocksPrivacy(t *testing.T) {
 		if strings.Contains(serialized, secret) {
 			t.Fatalf("native proxy secret leaked: %q", secret)
 		}
+	}
+}
+
+func TestXrayShadowsocksUsesProtocolNetwork(t *testing.T) {
+	input := []byte(`{"inbounds":[{"listen":"::","port":31003,"protocol":"shadowsocks","settings":{"method":"2022-blake3-aes-256-gcm","password":"withheld","network":"tcp,udp"},"streamSettings":{"network":"tcp","security":"none"}}]}`)
+	got := parseXraySummary("/usr/local/x-ui/bin/config.json", input)
+	if got.Err != nil || len(got.Inbounds) != 1 {
+		t.Fatalf("unexpected Xray summary: %+v", got)
+	}
+	if fmt.Sprint(got.Inbounds[0].Transports) != "[tcp udp]" || !got.UsesUDP {
+		t.Fatalf("Shadowsocks transport semantics lost: %+v", got.Inbounds[0])
+	}
+	if strings.Contains(fmt.Sprintf("%+v", got), "withheld") {
+		t.Fatal("Shadowsocks password leaked into Xray summary")
+	}
+}
+
+func TestPanelInboundMetadataParserKeepsOnlyPolicyFacts(t *testing.T) {
+	rows := [][]string{{"1", "::", "443", "vless", "tcp", "reality", "2", "0", "0", "1", "1", "2"}, {"0", "127.0.0.1", "8443", "trojan", "tcp", "tls", "1", "1", "1", "0", "0", "0"}}
+	got := parsePanelInboundRows(rows)
+	if len(got) != 2 || !got[0].Enabled || got[0].ClientCount != 2 || !got[1].Expired || !got[1].QuotaExhausted {
+		t.Fatalf("unexpected panel inbound metadata: %+v", got)
+	}
+	serialized := fmt.Sprintf("%+v", got)
+	for _, secretField := range []string{"uuid", "password", "email", "privateKey", "shortId"} {
+		if strings.Contains(strings.ToLower(serialized), strings.ToLower(secretField)) {
+			t.Fatalf("secret-bearing field retained in panel facts: %s", secretField)
+		}
+	}
+}
+
+func TestPanelProxySummaryIncludesOnlyEnabledInbounds(t *testing.T) {
+	panel := panelSnapshot{Product: "3x-ui", Database: "/etc/x-ui/x-ui.db", DatabaseAvailable: true, Inbounds: []panelInboundFact{
+		{Enabled: true, Listen: "::", Port: "443", Protocol: "vless", Network: "tcp", Security: "reality", RealityKeySet: true, RealityTargets: 1, RealityIDs: 2},
+		{Enabled: false, Listen: "::", Port: "8443", Protocol: "trojan", Network: "tcp", Security: "tls"},
+	}}
+	got, ok := panelProxySummary(panel)
+	if !ok || got.Product != "Xray" || len(got.Inbounds) != 1 || !got.Inbounds[0].RealityEnabled || !got.Inbounds[0].RealityKeySet {
+		t.Fatalf("unexpected panel proxy summary: %+v ok=%t", got, ok)
+	}
+}
+
+func TestEmbeddedSQLiteReaderIsReadOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "panel.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE inbounds (protocol TEXT, port INTEGER); INSERT INTO inbounds VALUES ('vless',443);`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
+	rows, err := querySQLite(path, `SELECT protocol,port FROM inbounds;`)
+	if err != nil || len(rows) != 1 || fmt.Sprint(rows[0]) != "[vless 443]" {
+		t.Fatalf("rows=%v err=%v", rows, err)
+	}
+	if _, err := querySQLite(path, `DELETE FROM inbounds;`); err == nil {
+		t.Fatal("read-only SQLite connection accepted a mutation")
 	}
 }
 

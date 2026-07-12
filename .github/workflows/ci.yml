@@ -45,3 +45,4 @@ jobs:
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o /tmp/vps-scope-amd64 ./cmd/vps-scope
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o /tmp/vps-scope-arm64 ./cmd/vps-scope
+          /tmp/vps-scope-amd64 version

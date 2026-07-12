@@ -6,6 +6,16 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Added
+
+- Native, privacy-safe S-UI and 3x-ui database facts, including panel role mapping and dynamic inbound metadata, through a built-in read-only SQLite reader that does not require `sqlite3` on the audited VPS.
+- `WORK-012`, which compares supported panel database state, generated configuration, and live listeners without confusing management, subscription, and proxy ingress ports.
+
+### Fixed
+
+- Dynamic 3x-ui inbounds described by both the panel database and generated Xray configuration are deduplicated in inventory and endpoint-relation reports.
+- S-UI embedded TLS record visibility uses the same built-in read-only database reader as the panel adapter.
+
 ## 0.5.0 - 2026-07-11
 
 ### Changed
