@@ -60,6 +60,10 @@ func (f *FactStore) Listeners() ([]Listener, error) {
 		if r.Err != nil && r.Stdout == "" {
 			r = f.cmd.Run(15*time.Second, "ss", "-H", "-lntu")
 		}
+		if r.Truncated {
+			f.listenersErr = fmt.Errorf("ss listener output exceeded the capture limit")
+			return
+		}
 		if r.Err != nil {
 			f.listenersErr = fmt.Errorf("ss -H -lntu[p]: %s", commandError(r))
 			return
@@ -76,6 +80,10 @@ func (f *FactStore) Processes() ([]ProcessInfo, error) {
 			return
 		}
 		r := f.cmd.Run(10*time.Second, "ps", "-eo", "pid=,user=,comm=,args=")
+		if r.Truncated {
+			f.processesErr = fmt.Errorf("ps output exceeded the capture limit")
+			return
+		}
 		if r.Err != nil {
 			f.processesErr = fmt.Errorf("ps: %s", commandError(r))
 			return
@@ -101,7 +109,7 @@ func (f *FactStore) UFW() panelUFW {
 			return
 		}
 		r := f.cmd.Run(12*time.Second, "ufw", "status", "verbose")
-		if r.Err != nil {
+		if r.Err != nil || r.Truncated {
 			return
 		}
 		f.ufw = parsePanelUFW(r.Stdout)
@@ -116,7 +124,7 @@ func (f *FactStore) DockerContainers() ([]dockerInspect, error) {
 			return
 		}
 		ps := f.cmd.Run(15*time.Second, "docker", "ps", "-q")
-		if ps.Err != nil {
+		if ps.Err != nil || ps.Truncated {
 			f.dockerErr = fmt.Errorf("docker ps: %s", commandError(ps))
 			return
 		}
@@ -126,6 +134,10 @@ func (f *FactStore) DockerContainers() ([]dockerInspect, error) {
 		}
 		args := append([]string{"inspect"}, ids...)
 		inspect := f.cmd.Run(30*time.Second, "docker", args...)
+		if inspect.Truncated {
+			f.dockerErr = fmt.Errorf("docker inspect output exceeded the capture limit")
+			return
+		}
 		if inspect.Err != nil {
 			f.dockerErr = fmt.Errorf("docker inspect: %s", commandError(inspect))
 			return

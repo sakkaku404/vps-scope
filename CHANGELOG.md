@@ -6,6 +6,21 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 0.6.1 - 2026-07-12
+
+### Fixed
+
+- Bounded captured command output and marks completeness-sensitive checks `UNKNOWN` rather than treating truncated journals, listeners, process lists, package verification, or proxy evidence as complete.
+- Refused existing report-bundle directories, added nanosecond bundle names, and hardened manifest verification against traversal, duplicate names, oversized manifests, and unexpected file names.
+- Withheld sudo `NOPASSWD` command details and arguments from audit evidence while retaining the relevant privilege boundary.
+- Corrected installer wording: release assets are checksum-verified, not independently signed.
+
+### Changed
+
+- Added cached-fact, command-output, sudo-privacy, bundle-boundary, and fuzz regression tests.
+- CI and release workflows now run pinned `govulncheck` source scans.
+- Raised the build baseline to Go 1.25.10 after source scanning found reachable standard-library fixes in the former Go 1.24.0 toolchain.
+
 ## 0.6.0 - 2026-07-12
 
 ### Added

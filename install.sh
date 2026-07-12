@@ -7,7 +7,7 @@ INSTALL_DIR="${VPS_SCOPE_INSTALL_DIR:-/usr/local/bin}"
 
 usage() {
   cat <<'EOF'
-Install VPS Scope from its signed GitHub Release artifacts.
+Install VPS Scope from GitHub Release artifacts verified against SHA-256 checksums.
 
 Usage: install.sh [--version v0.1.0] [--install-dir /usr/local/bin]
 EOF

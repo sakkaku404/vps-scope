@@ -438,7 +438,10 @@ func checkReliability(ctx *Context) []model.Finding {
 	oom, cores := 0, 0
 	if ctx.Commander.Exists("journalctl") {
 		r := ctx.Commander.Run(25*time.Second, "journalctl", "-k", "--since", sinceArg(ctx.LogSince), "--no-pager", "-o", "cat")
-		if r.Err == nil {
+		if r.Truncated {
+			f.Status, f.Unavailable, f.Error = model.Unknown, true, commandError(r)
+			f.Evidence = append(f.Evidence, model.Evidence{Source: "journalctl -k", Key: "unavailable", Value: commandError(r)})
+		} else if r.Err == nil {
 			re := regexp.MustCompile(`(?i)(out of memory|oom-kill|killed process \d+)`)
 			for _, line := range lines(r.Stdout) {
 				if re.MatchString(line) {
@@ -454,7 +457,10 @@ func checkReliability(ctx *Context) []model.Finding {
 	}
 	if ctx.Commander.Exists("coredumpctl") {
 		r := ctx.Commander.Run(20*time.Second, "coredumpctl", "list", "--since", sinceArg(ctx.LogSince), "--no-pager", "--no-legend")
-		if r.Err == nil || r.Stdout != "" {
+		if r.Truncated {
+			f.Status, f.Unavailable, f.Error = model.Unknown, true, commandError(r)
+			f.Evidence = append(f.Evidence, model.Evidence{Source: "coredumpctl", Key: "unavailable", Value: commandError(r)})
+		} else if r.Err == nil || r.Stdout != "" {
 			coreLines := lines(r.Stdout)
 			cores = len(coreLines)
 			for i, line := range coreLines {

@@ -252,7 +252,9 @@ func defaultBundleDir(r model.Report) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(root, safeName(r.Host.Hostname), r.StartedAt.Format("20060102T150405Z")), nil
+	// Nanoseconds prevent two audits of the same host in one second from
+	// selecting the same bundle directory and overwriting evidence.
+	return filepath.Join(root, safeName(r.Host.Hostname), r.StartedAt.Format("20060102T150405.000000000Z")), nil
 }
 
 func reportRoot() (string, error) {

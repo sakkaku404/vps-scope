@@ -46,7 +46,7 @@ func TestSavedReportLatestCommands(t *testing.T) {
 	if err := e.writeReport("bundle", "", r, report.Options{Locale: "zh-CN"}); err != nil {
 		t.Fatal(err)
 	}
-	wantDir := filepath.Join(root, "test-vps", "20260711T061930Z")
+	wantDir := filepath.Join(root, "test-vps", "20260711T061930.000000000Z")
 	latest, err := filepath.EvalSymlinks(filepath.Join(root, "latest"))
 	if err != nil {
 		t.Fatal(err)

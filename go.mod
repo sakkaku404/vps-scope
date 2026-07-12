@@ -1,6 +1,8 @@
 module github.com/sakkaku404/vps-scope
 
-go 1.24.0
+// Go 1.25.10 includes the standard-library security fixes required by the
+// HTML renderer, certificate inspection, URL parsing, and command runner.
+go 1.25.10
 
 require modernc.org/sqlite v1.44.3
 

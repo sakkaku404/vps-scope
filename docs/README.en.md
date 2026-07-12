@@ -64,7 +64,7 @@ To install `vps-scope` for repeated use:
 curl -fsSL https://raw.githubusercontent.com/sakkaku404/vps-scope/main/install.sh | sudo bash
 ```
 
-Then run `sudo vps-scope`. The installer detects amd64 or arm64 automatically and verifies the release checksum before installing anything.
+Then run `sudo vps-scope`. The installer detects amd64 or arm64 automatically and verifies the release checksum before installing anything; this is checksum verification, not an independent digital signature.
 
 If you prefer to inspect scripts before running them, download them first or use the manual steps below.
 
@@ -105,7 +105,7 @@ Profiles give the audit some context about the server's job. Built-in choices in
 
 ## Reports
 
-Interactive mode defaults to showing the result in the terminal and saving a full report bundle. Saved reports go to `~/vps-scope-reports/HOST/TIMESTAMP/`; `~/vps-scope-reports/latest` points to the newest one. The completion message explains each file and prints a copy-paste download command.
+Interactive mode defaults to showing the result in the terminal and saving a full report bundle. Saved reports go to `~/vps-scope-reports/HOST/TIMESTAMP/`; `~/vps-scope-reports/latest` points to the newest one. Each run uses a distinct directory and refuses to overwrite an existing bundle. The completion message explains each file and prints a copy-paste download command.
 
 ```bash
 sudo vps-scope report show  # show the latest report again

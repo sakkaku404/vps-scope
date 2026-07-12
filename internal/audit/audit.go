@@ -234,6 +234,9 @@ func containsAny(s string, values ...string) bool {
 }
 
 func commandError(r CommandResult) string {
+	if r.Truncated {
+		return "command output exceeded the capture limit"
+	}
 	if r.Err == nil {
 		return ""
 	}

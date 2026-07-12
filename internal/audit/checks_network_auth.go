@@ -358,6 +358,9 @@ func checkFailedLogins(ctx *Context) model.Finding {
 	var text, source string
 	if ctx.Commander.Exists("journalctl") {
 		r := ctx.Commander.Run(25*time.Second, "journalctl", "--since", sinceArg(ctx.LogSince), "--no-pager", "-o", "cat", "-u", "ssh.service", "-u", "sshd.service")
+		if r.Truncated {
+			return unknown("AUTH-001", "auth", "journalctl SSH units", commandError(r))
+		}
 		if r.Err == nil || r.Stdout != "" {
 			text, source = r.Stdout, "journalctl -u ssh.service -u sshd.service"
 		}
@@ -464,7 +467,7 @@ func checkSudoAudit(ctx *Context) model.Finding {
 		return unknown("AUTH-002", "auth", "journalctl", "command not found")
 	}
 	r := ctx.Commander.Run(15*time.Second, "journalctl", "--since", sinceArg(ctx.LogSince), "--no-pager", "-o", "cat", "_COMM=sudo")
-	if r.Err != nil {
+	if r.Err != nil || r.Truncated {
 		return unknown("AUTH-002", "auth", "journalctl _COMM=sudo", commandError(r))
 	}
 	count := len(lines(r.Stdout))
@@ -546,7 +549,7 @@ func checkPendingUpdates(ctx *Context) model.Finding {
 		return unknown("UPD-001", "updates", "apt-get", "command not found")
 	}
 	r := ctx.Commander.Run(45*time.Second, "apt-get", "-s", "-o", "Debug::NoLocking=true", "upgrade")
-	if r.Err != nil && r.Stdout == "" {
+	if r.Truncated || (r.Err != nil && r.Stdout == "") {
 		return unknown("UPD-001", "updates", "apt-get -s upgrade", commandError(r))
 	}
 	regular, security, phased := 0, 0, 0

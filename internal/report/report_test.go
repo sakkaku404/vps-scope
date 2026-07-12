@@ -56,6 +56,34 @@ func TestBundleVerifyAndDetectTamper(t *testing.T) {
 	}
 }
 
+func TestBundleRefusesExistingDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	if _, err := Bundle(dir, sampleReport(), Options{Locale: "zh-CN"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Bundle(dir, sampleReport(), Options{Locale: "zh-CN"}); err == nil {
+		t.Fatal("expected existing bundle directory to be refused")
+	}
+}
+
+func TestVerifyBundleRejectsTraversalAndDuplicateNames(t *testing.T) {
+	dir := t.TempDir()
+	manifest := `{"schema_version":"1.0","files":[{"name":"../outside","size":0,"sha256":""},{"name":"report.json","size":0,"sha256":""},{"name":"report.json","size":0,"sha256":""}]}`
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, failures, err := VerifyBundle(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failures) != 3 {
+		t.Fatalf("failures=%v, want three invalid/missing entries", failures)
+	}
+	if !strings.Contains(failures[0], "invalid manifest file name") || !strings.Contains(failures[2], "duplicate") {
+		t.Fatalf("unexpected failures: %v", failures)
+	}
+}
+
 func TestHTMLIsSelfContainedAndUsable(t *testing.T) {
 	var out bytes.Buffer
 	if err := HTML(&out, sampleReport(), Options{Locale: "zh-CN"}); err != nil {
