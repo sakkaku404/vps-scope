@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -377,8 +378,15 @@ type ManifestFile struct {
 	SHA256 string `json:"sha256"`
 }
 
+const maxManifestBytes = 1 << 20
+
+var bundleFileNameRE = regexp.MustCompile(`^report\.[A-Za-z0-9-]+\.(txt|md|html)$`)
+
 func Bundle(dir string, r model.Report, opts Options) (Manifest, error) {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+		return Manifest{}, err
+	}
+	if err := os.Mkdir(dir, 0o700); err != nil {
 		return Manifest{}, err
 	}
 	locale := opts.Locale
@@ -422,6 +430,13 @@ func Bundle(dir string, r model.Report, opts Options) (Manifest, error) {
 }
 
 func VerifyBundle(dir string) (Manifest, []string, error) {
+	info, err := os.Stat(filepath.Join(dir, "manifest.json"))
+	if err != nil {
+		return Manifest{}, nil, err
+	}
+	if info.Size() > maxManifestBytes {
+		return Manifest{}, nil, fmt.Errorf("manifest exceeds %d bytes", maxManifestBytes)
+	}
 	data, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
 	if err != nil {
 		return Manifest{}, nil, err
@@ -430,8 +445,21 @@ func VerifyBundle(dir string) (Manifest, []string, error) {
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return Manifest{}, nil, err
 	}
+	if len(manifest.Files) > 16 {
+		return Manifest{}, nil, fmt.Errorf("manifest declares too many files")
+	}
 	var failures []string
+	seen := map[string]bool{}
 	for _, item := range manifest.Files {
+		if !safeBundleFileName(item.Name) {
+			failures = append(failures, item.Name+": invalid manifest file name")
+			continue
+		}
+		if seen[item.Name] {
+			failures = append(failures, item.Name+": duplicate manifest file name")
+			continue
+		}
+		seen[item.Name] = true
 		data, err := os.ReadFile(filepath.Join(dir, item.Name))
 		if err != nil {
 			failures = append(failures, item.Name+": "+err.Error())
@@ -443,6 +471,13 @@ func VerifyBundle(dir string) (Manifest, []string, error) {
 		}
 	}
 	return manifest, failures, nil
+}
+
+func safeBundleFileName(name string) bool {
+	if name == "report.json" {
+		return true
+	}
+	return filepath.Base(name) == name && bundleFileNameRE.MatchString(name)
 }
 
 func atomicWrite(path string, write func(io.Writer) error) error {

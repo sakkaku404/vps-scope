@@ -66,7 +66,7 @@ curl -fsSL https://sakkaku404.github.io/vps-scope/run.sh | sudo bash
 curl -fsSL https://raw.githubusercontent.com/sakkaku404/vps-scope/main/install.sh | sudo bash
 ```
 
-装好后运行 `sudo vps-scope`。安装脚本会自动识别 amd64 或 arm64，并在安装前核对 Release 文件的 SHA-256。
+装好后运行 `sudo vps-scope`。安装脚本会自动识别 amd64 或 arm64，并在安装前核对 Release 文件的 SHA-256；这是校验和验证，不是独立数字签名。
 
 对 `curl | bash` 不放心的话，可以先把脚本下载下来查看；下面的手动安装方式也会保留。
 
@@ -107,7 +107,7 @@ sudo ./vps-scope audit --profile custom --expect-public 22/tcp,443/tcp
 
 ## 报告
 
-交互模式默认会在终端显示结果，同时保存一份完整报告。报告统一放在 `~/vps-scope-reports/主机名/时间/`，其中 `~/vps-scope-reports/latest` 始终指向最近一次报告。生成完成后会解释每个文件的用途，并给出可以复制的下载命令。
+交互模式默认会在终端显示结果，同时保存一份完整报告。报告统一放在 `~/vps-scope-reports/主机名/时间/`，其中 `~/vps-scope-reports/latest` 始终指向最近一次报告。每次运行使用独立目录，拒绝覆盖已有报告；生成完成后会解释每个文件的用途，并给出可以复制的下载命令。
 
 ```bash
 sudo vps-scope report show  # 再次显示最近一次报告

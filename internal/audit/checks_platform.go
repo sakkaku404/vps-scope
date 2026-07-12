@@ -98,7 +98,7 @@ func checkDPKGVerify(ctx *Context) model.Finding {
 	}
 	r := ctx.Commander.Run(60*time.Second, "dpkg", "--verify")
 	// dpkg may return non-zero when it found differences, so stdout is still evidence.
-	if r.Err != nil && r.Stdout == "" {
+	if r.Truncated || (r.Err != nil && r.Stdout == "") {
 		return unknown("PKG-002", "packages", "dpkg --verify", commandError(r))
 	}
 	parsed := parseDPKGVerify(r.Stdout)
@@ -310,12 +310,20 @@ func checkTLS(ctx *Context) []model.Finding {
 }
 
 func checkFileTLS(ctx *Context) model.Finding {
-	paths := discoverCertificatePaths(ctx)
+	paths, discoveryTruncated := discoverCertificatePaths(ctx)
 	if len(paths) == 0 {
+		if discoveryTruncated {
+			return unknown("TLS-001", "tls", "certificate discovery", "nginx configuration output exceeded the capture limit")
+		}
 		return notApplicable("TLS-001", "tls", "certificate discovery", "no file-backed server certificate found in supported locations")
 	}
 	f := model.Finding{ID: "TLS-001", Category: "tls", Status: model.Pass, Facts: map[string]string{"certificates": strconv.Itoa(len(paths))}}
 	now := ctx.Now()
+	if discoveryTruncated {
+		f.Status, f.Unavailable = model.Unknown, true
+		f.Error = "nginx configuration output exceeded the capture limit; certificate discovery may be incomplete"
+		f.Evidence = append(f.Evidence, model.Evidence{Source: "nginx -T", Key: "unavailable", Value: f.Error})
+	}
 	for _, path := range paths {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -415,8 +423,9 @@ func embeddedSUITLS(ctx *Context) (model.Finding, bool) {
 	return f, true
 }
 
-func discoverCertificatePaths(ctx *Context) []string {
+func discoverCertificatePaths(ctx *Context) ([]string, bool) {
 	seen := map[string]bool{}
+	discoveryTruncated := false
 	add := func(path string) {
 		path = strings.Trim(strings.TrimSpace(path), `"'`)
 		if path == "" || strings.Contains(path, "$s") || !filepath.IsAbs(path) {
@@ -439,6 +448,7 @@ func discoverCertificatePaths(ctx *Context) []string {
 	}
 	if ctx.Commander.Exists("nginx") {
 		r := ctx.Commander.Run(15*time.Second, "nginx", "-T")
+		discoveryTruncated = r.Truncated
 		re := regexp.MustCompile(`(?m)^\s*ssl_certificate\s+([^;]+);`)
 		for _, match := range re.FindAllStringSubmatch(r.Stdout+r.Stderr, -1) {
 			if len(match) > 1 {
@@ -463,7 +473,7 @@ func discoverCertificatePaths(ctx *Context) []string {
 		paths = append(paths, path)
 	}
 	sort.Strings(paths)
-	return paths
+	return paths, discoveryTruncated
 }
 
 var workloadProcesses = regexp.MustCompile(`(?i)\b(sing-box|xray|x-ui|s-ui|sui|hysteria|tuic|trojan|ss-server|sslocal|marzban|hiddify|outline-ss-server|wg-quick|openvpn|nginx|caddy|haproxy|apache2|dockerd|containerd)\b`)

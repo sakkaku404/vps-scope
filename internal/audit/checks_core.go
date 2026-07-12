@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -400,7 +401,9 @@ func checkPrivileges(ctx *Context) []model.Finding {
 					continue
 				}
 				sudo.Status, sudo.Severity = model.Risk, model.Medium
-				sudo.Evidence = append(sudo.Evidence, model.Evidence{Source: path, Key: fmt.Sprintf("line_%d", i+1), Value: truncate(trimmed, 300)})
+				// Sudo command arguments can contain deployment tokens. Retain the
+				// privilege boundary, never the command text or its arguments.
+				sudo.Evidence = append(sudo.Evidence, model.Evidence{Source: path, Key: fmt.Sprintf("line_%d", i+1), Value: sudoNOPASSWDEvidence(trimmed)})
 			}
 		}
 	}
@@ -457,6 +460,19 @@ func checkPrivileges(ctx *Context) []model.Finding {
 		}
 	}
 	return []model.Finding{sudo, privileged}
+}
+
+func sudoNOPASSWDEvidence(line string) string {
+	fields := strings.Fields(line)
+	subject := "unknown"
+	if len(fields) > 0 {
+		subject = fields[0]
+	}
+	runAs := "default"
+	if match := regexp.MustCompile(`\(([^)]{1,80})\)`).FindStringSubmatch(line); len(match) == 2 {
+		runAs = strings.TrimSpace(match[1])
+	}
+	return fmt.Sprintf("subject=%s runas=%s tag=NOPASSWD command_details=withheld", subject, runAs)
 }
 
 func packageOwns(cmd Commander, path string) bool {

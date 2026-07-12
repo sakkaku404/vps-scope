@@ -425,6 +425,18 @@ func TestProxyProcessEvidenceNeverIncludesArguments(t *testing.T) {
 	}
 }
 
+func TestSudoNOPASSWDEvidenceWithholdsCommandArguments(t *testing.T) {
+	value := sudoNOPASSWDEvidence(`deploy ALL=(root) NOPASSWD: /usr/local/bin/backup --token super-secret`)
+	if !strings.Contains(value, "subject=deploy") || !strings.Contains(value, "runas=root") || !strings.Contains(value, "command_details=withheld") {
+		t.Fatalf("unexpected sudo evidence: %q", value)
+	}
+	for _, secret := range []string{"super-secret", "backup", "--token"} {
+		if strings.Contains(value, secret) {
+			t.Fatalf("sudo evidence leaked %q: %q", secret, value)
+		}
+	}
+}
+
 func TestSingBoxFixturePrivacyBoundary(t *testing.T) {
 	data, err := os.ReadFile("testdata/sing-box-hysteria2.json")
 	if err != nil {
