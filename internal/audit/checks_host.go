@@ -32,53 +32,43 @@ func checkWorkloads(ctx *Context) []model.Finding {
 	return append(findings, proxyChecks(ctx)...)
 }
 
-type panelInstall struct {
-	product string
-	binary  string
-	args    []string
-}
-
 func checkPanelManagement(ctx *Context) model.Finding {
-	panels := discoverPanels(ctx)
+	panels := ctx.Facts.Panels()
 	containerPanels := discoverContainerPanels(ctx)
 	if len(panels) == 0 && len(containerPanels) == 0 {
 		return notApplicable("WORK-002", "workloads", "binary and container discovery", "no supported S-UI, 3x-ui, x-ui, Hiddify, Marzban, or Outline panel found")
 	}
 	f := model.Finding{ID: "WORK-002", Category: "workloads", Status: model.Pass, Facts: map[string]string{"panel_count": strconv.Itoa(len(panels) + len(containerPanels))}}
 
-	var listeners []Listener
-	ssAvailable := ctx.Commander.Exists("ss")
-	if ssAvailable {
-		result := ctx.Commander.Run(12*time.Second, "ss", "-H", "-lntup")
-		if result.Err == nil {
-			listeners = parseListeners(result.Stdout)
-		} else {
-			ssAvailable = false
-			f.Evidence = append(f.Evidence, model.Evidence{Source: "ss -H -lntup", Key: "error", Value: commandError(result)})
-		}
+	listeners, listenerErr := ctx.Facts.Listeners()
+	ssAvailable := listenerErr == nil
+	if listenerErr != nil {
+		f.Evidence = append(f.Evidence, model.Evidence{Source: "ss -H -lntup", Key: "error", Value: listenerErr.Error()})
 	}
 	ufw := readPanelUFW(ctx)
 	products := make([]string, 0, len(panels))
 	unknowns, inactive := 0, 0
 	for _, panel := range panels {
-		products = append(products, panel.product)
-		f.Evidence = append(f.Evidence, model.Evidence{Source: "panel discovery", Key: "product", Value: panel.product + " binary=" + panel.binary})
-		settings := ctx.Commander.Run(10*time.Second, panel.binary, panel.args...)
-		if settings.Err != nil && panel.product != "S-UI" {
-			settings = ctx.Commander.Run(10*time.Second, panel.binary, "setting", "-show")
+		products = append(products, panel.Product)
+		f.Evidence = append(f.Evidence, model.Evidence{Source: "panel discovery", Key: "product", Value: fmt.Sprintf("product=%s version=%s binary=%s", panel.Product, panel.Version, panel.Binary)})
+		if panel.DefaultCredentialKnown {
+			f.Evidence = append(f.Evidence, model.Evidence{Source: panel.Product + " settings", Key: "default_credential", Value: strconv.FormatBool(panel.DefaultCredential)})
+			if panel.DefaultCredential {
+				f.Status, f.Severity = model.Risk, model.Critical
+			}
 		}
-		port, ok := parsePanelPort(panel.product, settings.Stdout)
-		if settings.Err != nil || !ok {
+		endpoint, ok := managementEndpoint(panel)
+		if !ok || endpoint.Port == "" {
 			unknowns++
-			f.Evidence = append(f.Evidence, model.Evidence{Source: panel.product + " settings", Key: "panel_port", Value: "unavailable"})
+			f.Evidence = append(f.Evidence, model.Evidence{Source: panel.Product + " settings", Key: "panel_port", Value: "unavailable"})
 			continue
 		}
-		f.Evidence = append(f.Evidence, model.Evidence{Source: panel.product + " settings", Key: "panel_port", Value: port + "/tcp"})
+		f.Evidence = append(f.Evidence, model.Evidence{Source: endpoint.Source, Key: "management_endpoint", Value: fmt.Sprintf("product=%s listen=%s port=%s/tcp tls=%s path_default=%s", panel.Product, endpoint.Listen, endpoint.Port, knownBool(endpoint.TLS, endpoint.TLSKnown), knownBool(endpoint.PathIsDefault, endpoint.PathKnown))})
 		if !ssAvailable {
 			unknowns++
 			continue
 		}
-		scope, found := panelListenerScope(listeners, port, &f)
+		scope, found := panelListenerScope(listeners, endpoint.Port, &f)
 		if !found {
 			inactive++
 			continue
@@ -86,7 +76,7 @@ func checkPanelManagement(ctx *Context) model.Finding {
 		if scope != "public" && scope != "public-wildcard" {
 			continue
 		}
-		disposition := panelFirewallDisposition(ufw, port, &f)
+		disposition := panelFirewallDisposition(ufw, endpoint.Port, &f)
 		switch disposition {
 		case "allow-anywhere", "inactive":
 			f.Status, f.Severity = model.Risk, model.High
@@ -122,6 +112,22 @@ func checkPanelManagement(ctx *Context) model.Finding {
 		}
 	}
 	return f
+}
+
+func managementEndpoint(panel panelSnapshot) (panelEndpoint, bool) {
+	for _, endpoint := range panel.Endpoints {
+		if endpoint.Role == "management" {
+			return endpoint, true
+		}
+	}
+	return panelEndpoint{}, false
+}
+
+func knownBool(value, known bool) string {
+	if !known {
+		return "unknown"
+	}
+	return strconv.FormatBool(value)
 }
 
 type containerPanelInstall struct {
@@ -170,25 +176,6 @@ func panelProductFromContainer(value string) (string, bool) {
 	default:
 		return "", false
 	}
-}
-
-func discoverPanels(ctx *Context) []panelInstall {
-	var panels []panelInstall
-	if regularFile("/usr/local/s-ui/sui") {
-		panels = append(panels, panelInstall{product: "S-UI", binary: "/usr/local/s-ui/sui", args: []string{"setting", "-show"}})
-	}
-	if regularFile("/usr/local/x-ui/x-ui") {
-		product := "x-ui"
-		if script, err := os.ReadFile("/usr/local/x-ui/x-ui.sh"); err == nil && containsAny(string(script), "MHSanaei/3x-ui", "3X-UI", "3x-ui") {
-			product = "3x-ui"
-		}
-		version := ctx.Commander.Run(8*time.Second, "/usr/local/x-ui/x-ui", "-v")
-		if containsAny(version.Stdout+"\n"+version.Stderr, "3x-ui", "3X-UI") {
-			product = "3x-ui"
-		}
-		panels = append(panels, panelInstall{product: product, binary: "/usr/local/x-ui/x-ui", args: []string{"setting", "-show", "true"}})
-	}
-	return panels
 }
 
 func regularFile(path string) bool {

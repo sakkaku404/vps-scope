@@ -46,6 +46,15 @@ type proxyConfigSummary struct {
 	Err       error
 }
 
+// configuredProxyInbound keeps the source path while allowing checks to
+// collapse an identical ingress described by both a panel database and its
+// generated runtime configuration. Panels such as 3x-ui intentionally keep
+// those two views in sync; counting both would make the report misleading.
+type configuredProxyInbound struct {
+	Path string
+	proxyInbound
+}
+
 var proxyProcessPattern = regexp.MustCompile(`(?i)\b(sing-box|xray|x-ui|s-ui|sui|hysteria|tuic|trojan|ss-server|sslocal|marzban|hiddify|outline-ss-server|wg-quick|openvpn)\b`)
 
 func proxyChecks(ctx *Context) []model.Finding {
@@ -60,7 +69,122 @@ func proxyChecks(ctx *Context) []model.Finding {
 		checkProxyEndpointRelations(ctx, summaries),
 		checkProxyLogSignals(ctx),
 		checkWireGuardRuntime(ctx),
+		checkPanelRuntimeConsistency(ctx, summaries),
 	}
+}
+
+func checkPanelRuntimeConsistency(ctx *Context, summaries []proxyConfigSummary) model.Finding {
+	panels := ctx.Facts.Panels()
+	if len(panels) == 0 {
+		return notApplicable("WORK-012", "workloads", "panel facts", "no supported native panel found")
+	}
+	listeners, listenerErr := ctx.Facts.Listeners()
+	if listenerErr != nil {
+		return unknown("WORK-012", "workloads", "panel database + ss + proxy config", listenerErr.Error())
+	}
+	f := model.Finding{ID: "WORK-012", Category: "workloads", Status: model.Pass, Facts: map[string]string{"panels": strconv.Itoa(len(panels))}}
+	ufw := readPanelUFW(ctx)
+	databaseUnavailable, mismatches, roleCollisions, unclassified := 0, 0, 0, 0
+	expired, exhausted := 0, 0
+	for _, panel := range panels {
+		knownPorts := map[string]bool{}
+		for _, endpoint := range panel.Endpoints {
+			knownPorts[endpoint.Port] = true
+			live, scope, process := listenerForPort(listeners, endpoint.Port, "tcp")
+			firewall := endpointFirewallDisposition(ufw, endpoint.Port, "tcp")
+			f.Evidence = append(f.Evidence, model.Evidence{Source: endpoint.Source + " + ss + ufw", Key: "panel_role", Value: fmt.Sprintf("product=%s role=%s listen=%s port=%s/tcp live=%t process=%s scope=%s firewall=%s tls=%s path_default=%s", panel.Product, endpoint.Role, endpoint.Listen, endpoint.Port, live, truncate(process, 100), scope, firewall, knownBool(endpoint.TLS, endpoint.TLSKnown), knownBool(endpoint.PathIsDefault, endpoint.PathKnown))})
+			if endpoint.Role == "subscription" && !live {
+				mismatches++
+				f.Status, f.Severity = model.Risk, model.Medium
+			}
+		}
+		for i := range panel.Endpoints {
+			for j := i + 1; j < len(panel.Endpoints); j++ {
+				if panel.Endpoints[i].Port != "" && panel.Endpoints[i].Port == panel.Endpoints[j].Port {
+					roleCollisions++
+					f.Status, f.Severity = model.Risk, model.High
+					f.Evidence = append(f.Evidence, model.Evidence{Source: "panel settings", Key: "role_collision", Value: fmt.Sprintf("product=%s roles=%s,%s port=%s", panel.Product, panel.Endpoints[i].Role, panel.Endpoints[j].Role, panel.Endpoints[i].Port)})
+				}
+			}
+		}
+		if !panel.DatabaseAvailable {
+			databaseUnavailable++
+			f.Evidence = append(f.Evidence, model.Evidence{Source: panel.Database, Key: "database_metadata", Value: panel.DatabaseError})
+		}
+		enabledPorts := map[string]bool{}
+		for _, inbound := range panel.Inbounds {
+			knownPorts[inbound.Port] = true
+			if inbound.Enabled {
+				enabledPorts[inbound.Port] = true
+			}
+		}
+		for _, inbound := range panel.Inbounds {
+			if inbound.Expired {
+				expired++
+			}
+			if inbound.QuotaExhausted {
+				exhausted++
+			}
+			transports := proxyTransports(inbound.Protocol, inbound.Network)
+			if inbound.Enabled && !summaryHasInbound(summaries, inbound.Port, inbound.Protocol) {
+				mismatches++
+				f.Status, f.Severity = model.Risk, model.Medium
+				f.Evidence = append(f.Evidence, model.Evidence{Source: panel.Database, Key: "enabled_db_inbound_missing_from_runtime_config", Value: fmt.Sprintf("product=%s protocol=%s port=%s transports=%s", panel.Product, inbound.Protocol, inbound.Port, strings.Join(transports, ","))})
+			}
+			for _, transport := range transports {
+				live, scope, process := listenerForPort(listeners, inbound.Port, transport)
+				if inbound.Enabled && !live {
+					mismatches++
+					f.Status, f.Severity = model.Risk, model.Medium
+				}
+				if !inbound.Enabled && live && !enabledPorts[inbound.Port] {
+					mismatches++
+					f.Status, f.Severity = model.Risk, model.High
+				}
+				f.Evidence = append(f.Evidence, model.Evidence{Source: panel.Database + " + ss", Key: "panel_inbound_runtime", Value: fmt.Sprintf("product=%s enabled=%t protocol=%s security=%s port=%s/%s clients=%d live=%t process=%s scope=%s expired=%t quota_exhausted=%t", panel.Product, inbound.Enabled, inbound.Protocol, inbound.Security, inbound.Port, transport, inbound.ClientCount, live, truncate(process, 100), scope, inbound.Expired, inbound.QuotaExhausted)})
+			}
+		}
+		processNeedle := strings.ToLower(panel.Product)
+		for _, listener := range listeners {
+			process := strings.ToLower(listener.Process)
+			owned := strings.Contains(process, "x-ui") && strings.Contains(processNeedle, "ui") || strings.Contains(process, "sui") && panel.Product == "S-UI"
+			if owned && !knownPorts[listener.Port] {
+				unclassified++
+				f.Evidence = append(f.Evidence, model.Evidence{Source: "ss", Key: "unclassified_panel_listener", Value: fmt.Sprintf("product=%s port=%s/%s scope=%s process=%s role=unknown", panel.Product, listener.Port, listener.Protocol, listener.Scope, truncate(listener.Process, 100))})
+			}
+		}
+		f.Evidence = append(f.Evidence, model.Evidence{Source: panel.Database, Key: "panel_client_summary", Value: fmt.Sprintf("product=%s enabled_clients=%d disabled_clients=%d", panel.Product, panel.EnabledClients, panel.DisabledClients)})
+	}
+	f.Facts["database_unavailable"] = strconv.Itoa(databaseUnavailable)
+	f.Facts["runtime_mismatches"] = strconv.Itoa(mismatches)
+	f.Facts["role_collisions"] = strconv.Itoa(roleCollisions)
+	f.Facts["unclassified_panel_listeners"] = strconv.Itoa(unclassified)
+	f.Facts["expired_inbounds"] = strconv.Itoa(expired)
+	f.Facts["quota_exhausted_inbounds"] = strconv.Itoa(exhausted)
+	if f.Status != model.Risk && (databaseUnavailable > 0 || unclassified > 0) {
+		f.Status = model.Info
+	}
+	return f
+}
+
+func listenerForPort(listeners []Listener, port, transport string) (bool, string, string) {
+	for _, listener := range listeners {
+		if listener.Port == port && strings.HasPrefix(listener.Protocol, transport) {
+			return true, listener.Scope, listener.Process
+		}
+	}
+	return false, "none", "none"
+}
+
+func summaryHasInbound(summaries []proxyConfigSummary, port, protocol string) bool {
+	for _, summary := range summaries {
+		for _, inbound := range summary.Inbounds {
+			if inbound.Port == port && strings.EqualFold(inbound.Protocol, protocol) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func checkProxyInventory(ctx *Context, summaries []proxyConfigSummary) model.Finding {
@@ -82,9 +206,9 @@ func checkProxyInventory(ctx *Context, summaries []proxyConfigSummary) model.Fin
 	}
 	for _, summary := range summaries {
 		products[summary.Product] = true
-		for _, inbound := range summary.Inbounds {
-			f.Evidence = append(f.Evidence, model.Evidence{Source: summary.Path, Key: "proxy_ingress", Value: fmt.Sprintf("product=%s protocol=%s listen=%s port=%s", inbound.Product, inbound.Protocol, inbound.Listen, inbound.Port)})
-		}
+	}
+	for _, inbound := range uniqueProxyInbounds(summaries) {
+		f.Evidence = append(f.Evidence, model.Evidence{Source: inbound.Path, Key: "proxy_ingress", Value: fmt.Sprintf("product=%s protocol=%s listen=%s port=%s", inbound.Product, inbound.Protocol, inbound.Listen, inbound.Port)})
 	}
 	if ctx.Commander.Exists("docker") {
 		r := ctx.Commander.Run(10*time.Second, "docker", "ps", "--format", "{{.Names}} {{.Image}}")
@@ -106,7 +230,7 @@ func checkProxyInventory(ctx *Context, summaries []proxyConfigSummary) model.Fin
 	sort.Strings(names)
 	f.Facts["products"] = strings.Join(names, ",")
 	f.Facts["product_count"] = strconv.Itoa(len(names))
-	f.Facts["configured_inbounds"] = strconv.Itoa(countProxyInbounds(summaries))
+	f.Facts["configured_inbounds"] = strconv.Itoa(len(uniqueProxyInbounds(summaries)))
 	return f
 }
 
@@ -317,18 +441,7 @@ func checkProxyTransportContext(ctx *Context, summaries []proxyConfigSummary) mo
 }
 
 func checkProxyEndpointRelations(ctx *Context, summaries []proxyConfigSummary) model.Finding {
-	var inbounds []struct {
-		Path string
-		proxyInbound
-	}
-	for _, summary := range summaries {
-		for _, inbound := range summary.Inbounds {
-			inbounds = append(inbounds, struct {
-				Path string
-				proxyInbound
-			}{summary.Path, inbound})
-		}
-	}
+	inbounds := uniqueProxyInbounds(summaries)
 	if len(inbounds) == 0 {
 		return notApplicable("WORK-009", "workloads", "proxy configuration", "no supported configured proxy ingress found")
 	}
@@ -618,48 +731,36 @@ func discoverProxyConfigs(ctx *Context) []proxyConfigSummary {
 		}
 		out = append(out, summary)
 	}
-	if summary, ok := readSUIInboundSummary(ctx); ok {
-		out = append(out, summary)
+	for _, panel := range ctx.Facts.Panels() {
+		if summary, ok := panelProxySummary(panel); ok {
+			out = append(out, summary)
+		}
 	}
 	return out
 }
 
-func readSUIInboundSummary(ctx *Context) (proxyConfigSummary, bool) {
-	db := "/usr/local/s-ui/db/s-ui.db"
-	if !regularFile(db) {
+func panelProxySummary(panel panelSnapshot) (proxyConfigSummary, bool) {
+	if !panel.DatabaseAvailable || len(panel.Inbounds) == 0 {
 		return proxyConfigSummary{}, false
 	}
-	s := proxyConfigSummary{Product: "sing-box", Path: db}
-	if !ctx.Commander.Exists("sqlite3") {
-		s.Err = fmt.Errorf("sqlite3 unavailable; S-UI inbound metadata was not extracted")
-		return s, true
+	product := "Xray"
+	if panel.Product == "S-UI" {
+		product = "sing-box"
 	}
-	// Select only protocol, listener coordinates and TLS record presence. Tags,
-	// users, credentials, UUIDs and option blobs never leave the database.
-	query := `SELECT type, COALESCE(json_extract(options,'$.listen'),''), COALESCE(json_extract(options,'$.listen_port'),''), CASE WHEN tls_id IS NULL OR tls_id=0 THEN 0 ELSE 1 END FROM inbounds;`
-	r := ctx.Commander.Run(8*time.Second, "sqlite3", "-readonly", "-separator", "\t", db, query)
-	if r.Err != nil {
-		s.Err = fmt.Errorf("S-UI inbound metadata: %s", commandError(r))
-		return s, true
-	}
-	s.Parseable = true
-	for _, line := range lines(r.Stdout) {
-		fields := strings.Split(line, "\t")
-		if len(fields) != 4 {
+	s := proxyConfigSummary{Product: product, Path: panel.Database, Parseable: true}
+	for _, item := range panel.Inbounds {
+		if !item.Enabled {
 			continue
 		}
-		protocol, listen, port := fields[0], normalizeListen(fields[1]), fields[2]
-		if _, err := strconv.Atoi(port); err != nil {
-			port = ""
-		}
-		security := ""
-		if fields[3] == "1" {
-			security = "embedded-tls"
-		}
-		transports := proxyTransports(protocol, "")
-		s.Inbounds = append(s.Inbounds, proxyInbound{Product: s.Product, Protocol: protocol, Listen: listen, Port: port, Transports: transports, Security: security})
-		if transports[0] == "udp" || len(transports) > 1 {
-			s.UsesUDP = true
+		transports := proxyTransports(item.Protocol, item.Network)
+		reality := strings.EqualFold(item.Security, "reality")
+		s.Inbounds = append(s.Inbounds, proxyInbound{
+			Product: product, Protocol: item.Protocol, Listen: item.Listen, Port: item.Port,
+			Transports: transports, Security: item.Security, RealityEnabled: reality,
+			RealityKeySet: item.RealityKeySet, RealityTargets: item.RealityTargets, RealityServerIDs: item.RealityIDs,
+		})
+		for _, transport := range transports {
+			s.UsesUDP = s.UsesUDP || transport == "udp"
 		}
 	}
 	return s, true
@@ -734,10 +835,13 @@ func parseSingBoxSummary(path string, data []byte) proxyConfigSummary {
 func parseXraySummary(path string, data []byte) proxyConfigSummary {
 	var cfg struct {
 		Inbounds []struct {
-			Listen         string          `json:"listen"`
-			Port           json.RawMessage `json:"port"`
-			Protocol       string          `json:"protocol"`
-			Tag            string          `json:"tag"`
+			Listen   string          `json:"listen"`
+			Port     json.RawMessage `json:"port"`
+			Protocol string          `json:"protocol"`
+			Tag      string          `json:"tag"`
+			Settings struct {
+				Network string `json:"network"`
+			} `json:"settings"`
 			StreamSettings struct {
 				Network  string `json:"network"`
 				Security string `json:"security"`
@@ -765,10 +869,18 @@ func parseXraySummary(path string, data []byte) proxyConfigSummary {
 		if item.StreamSettings.Reality.Target != "" || item.StreamSettings.Reality.Dest != "" {
 			targets = 1
 		}
+		network := item.StreamSettings.Network
+		if strings.EqualFold(item.Protocol, "shadowsocks") && item.Settings.Network != "" {
+			network = item.Settings.Network
+		}
+		transports := proxyTransports(item.Protocol, network)
 		s.Inbounds = append(s.Inbounds, proxyInbound{Product: s.Product, Protocol: item.Protocol, Listen: listen, Port: port,
-			Transports: proxyTransports(item.Protocol, item.StreamSettings.Network), Security: item.StreamSettings.Security,
+			Transports: transports, Security: item.StreamSettings.Security,
 			RealityEnabled: reality, RealityKeySet: item.StreamSettings.Reality.PrivateKey != "",
 			RealityTargets: targets, RealityServerIDs: len(item.StreamSettings.Reality.ServerNames) + len(item.StreamSettings.Reality.ShortIDs)})
+		for _, transport := range transports {
+			s.UsesUDP = s.UsesUDP || transport == "udp"
+		}
 		if strings.Contains(strings.ToLower(item.Tag), "api") {
 			s.Controls = append(s.Controls, controlEndpoint{Product: s.Product, Kind: "api-inbound", Listen: listen, Port: port})
 		}
@@ -935,7 +1047,7 @@ func proxyProductFromText(value string) string {
 	switch {
 	case containsAny(lower, "3x-ui", "x-ui"):
 		return "x-ui/3x-ui"
-	case containsAny(lower, "s-ui", "/sui", " sui"):
+	case lower == "sui", containsAny(lower, "s-ui", "/sui", " sui"):
 		return "S-UI"
 	case strings.Contains(lower, "sing-box"):
 		return "sing-box"
@@ -1103,10 +1215,32 @@ func jsonPort(raw json.RawMessage) string {
 	return "unknown"
 }
 
-func countProxyInbounds(summaries []proxyConfigSummary) int {
-	total := 0
+func uniqueProxyInbounds(summaries []proxyConfigSummary) []configuredProxyInbound {
+	seen := map[string]bool{}
+	out := make([]configuredProxyInbound, 0)
 	for _, summary := range summaries {
-		total += len(summary.Inbounds)
+		for _, inbound := range summary.Inbounds {
+			transports := append([]string(nil), inbound.Transports...)
+			sort.Strings(transports)
+			key := strings.Join([]string{
+				strings.ToLower(inbound.Product), strings.ToLower(inbound.Protocol), canonicalIngressListen(inbound.Listen), inbound.Port,
+				strings.Join(transports, ","), strings.ToLower(inbound.Security), strconv.FormatBool(inbound.RealityEnabled),
+			}, "\x00")
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			inbound.Transports = transports
+			out = append(out, configuredProxyInbound{Path: summary.Path, proxyInbound: inbound})
+		}
 	}
-	return total
+	return out
+}
+
+func canonicalIngressListen(value string) string {
+	value = normalizeListen(value)
+	if value == "0.0.0.0" || value == "::" {
+		return "wildcard"
+	}
+	return value
 }

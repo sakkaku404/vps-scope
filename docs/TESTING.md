@@ -23,7 +23,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o dist/vps-scope-linux
 
 Real-host tests must use disposable release candidates and explicitly chosen report paths. Read the resulting JSON and human report; a successful exit code alone is not acceptance.
 
-The current disposable matrix includes Debian 12, Debian 13, Ubuntu 22.04, and Ubuntu 26.04 on 1 vCPU / 1 GB VPS instances. Scenarios cover S-UI, 3x-ui with its generated Xray configuration, native sing-box with Hysteria2 and Clash API, Docker loopback publication, deliberately privileged containers, expiring TLS, invalid JSON beside a still-running service, UFW, IPv6, and empty cloud-image `authorized_keys` placeholders.
+The current disposable matrix includes Debian 12, Debian 13, Ubuntu 22.04, and Ubuntu 26.04 on 1 vCPU / 1 GB VPS instances. It covers S-UI with VLESS Reality, Hysteria2, and Shadowsocks; 3x-ui v3.4.2 with VLESS Reality, Trojan TLS, Shadowsocks TCP/UDP, and VMess WS; native sing-box with Hysteria2 and Clash API; Docker loopback publication; deliberately privileged containers; expiring TLS; invalid JSON beside a still-running service; UFW; IPv6; and empty cloud-image `authorized_keys` placeholders.
 
 Regression review should verify:
 
@@ -37,6 +37,8 @@ Regression review should verify:
 - masked systemd symlinks are not treated as world-writable unit files.
 - Docker loopback publication remains loopback.
 - S-UI, 3x-ui, and x-ui management listeners are distinguished from proxy ingress.
+- Native S-UI and 3x-ui database facts remain available when `sqlite3` is absent from the target host.
+- A public panel allow-rule, missing Shadowsocks UDP allow-rule, and a stopped panel each change the relevant result to `RISK` or `INFO`; none becomes a false `PASS`.
 - Resource, password-context, active-connection, firewalld, and CrowdSec parsers have deterministic fixtures.
 - file-backed TLS and embedded TLS visibility are reported separately.
 - JSON, text, Markdown, HTML, manifest verification, `diff`, and `fleet` agree.
@@ -49,6 +51,6 @@ Regression review should verify:
 - Reality, Trojan, Shadowsocks, OpenVPN, and WireGuard summaries retain semantic facts without secret-bearing values.
 - the audit executable itself is excluded from temporary-directory process findings when using the one-command runner.
 
-The latest four-host run completed the standard audit in 2.3–3.9 seconds. Deep mode completed in 27.3–36.6 seconds and ran full SUID/SGID, capability, and `dpkg --verify` checks. These timings are observations from 1 vCPU / 1 GB lab VPS instances, not performance guarantees.
+The latest four-host standard run completed in 3.2–4.8 seconds. These timings are observations from 1 vCPU / 1 GB lab VPS instances, not performance guarantees.
 
 Never commit real host reports. They may contain IP addresses, domains, usernames, paths, and operational evidence.

@@ -25,12 +25,14 @@ VPS Scope 不是该项目的分支，代码与检测实现均为独立实现。V
 
 - sing-box、Xray、Hysteria2、TUIC、Trojan、Shadowsocks 等核心与入口
 - S-UI、3x-ui/x-ui 管理面，以及 Hiddify、Marzban、Outline 容器线索
+- 对原生 S-UI、3x-ui 的面板数据库做内置只读解析；无需在目标 VPS 安装 `sqlite3`
 - sing-box 与 Xray 配置解析和原生只读自检
 - Clash API、V2Ray API 等控制接口是否公开监听、是否被主机防火墙限制
 - 面板数据库、代理配置和私钥相关文件的权限
 - 代理 systemd 服务的运行用户、capabilities、隔离选项和文件描述符限制
 - Hysteria2、TUIC 等 UDP 场景的缓冲区和错误计数上下文
 - 把配置入口、TCP/UDP 传输、实际监听进程、暴露范围和 UFW 规则关联到一起
+- 面板数据库、生成配置和实际监听三者的角色/运行态一致性；同一动态入站不会重复计数
 - Reality 关键字段是否齐全（只记录存在性和数量，不导出私钥、SNI、target 或 short ID）
 - 认证、握手、DNS、TLS、路由和致命错误的日志分类计数（不导出原始日志内容）
 - WireGuard 接口、UDP 监听、防火墙和近期握手数量（不导出 peer 公钥或 endpoint）
