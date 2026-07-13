@@ -189,11 +189,13 @@ func checkProxyControlEndpoints(ctx *Context, summaries []proxyConfigSummary) mo
 	for _, endpoint := range endpoints {
 		scope := classifyAddress(endpoint.Listen)
 		live := false
+		family := "any"
 		for _, listener := range listeners {
 			if listener.Port == endpoint.Port && strings.HasPrefix(listener.Protocol, "tcp") {
 				live = true
 				if listener.Scope == "public" || listener.Scope == "public-wildcard" {
 					scope = listener.Scope
+					family = listenerAddressFamily(listener.Address)
 				}
 			}
 		}
@@ -206,7 +208,7 @@ func checkProxyControlEndpoints(ctx *Context, summaries []proxyConfigSummary) mo
 			continue
 		}
 		publicLive++
-		switch panelFirewallDisposition(ufw, endpoint.Port, &f) {
+		switch panelFirewallDispositionFamily(ufw, endpoint.Port, family, &f) {
 		case "allow-anywhere", "inactive":
 			f.Status, f.Severity = model.Risk, model.High
 		case "restricted", "blocked-by-default":

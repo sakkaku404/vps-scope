@@ -24,7 +24,7 @@ The audit covers the parts of a small VPS that are easy to overlook: system reso
 Proxy hosts get additional context for:
 
 - sing-box, Xray, Hysteria2, TUIC, Trojan, and Shadowsocks cores and ingress
-- S-UI and 3x-ui/x-ui management planes, plus Hiddify, Marzban, and Outline container signals
+- S-UI, 3x-ui/x-ui, Marzban, and Hiddify management/ingress relations, plus container signals for Outline
 - native read-only configuration checks for sing-box and Xray
 - publicly bound Clash API, V2Ray API, and similar control endpoints
 - permissions on panel databases and proxy configuration
@@ -145,7 +145,7 @@ vps-scope diff old.json new.json
 vps-scope fleet west.json sgp.json tw.json japan.json
 ```
 
-For long-lived hosts, create a baseline and highlight added or removed public listeners, SSH keys, firewall rules, panel/proxy endpoints, containers, and proxy services:
+For long-lived hosts, create a baseline and highlight added or removed public listeners, SSH keys, firewall rules, panel/proxy endpoints, containers, and proxy services. Baseline v2 binds to the host StableID and removes volatile listener PID/fd data; legacy v1 files remain readable with a weaker-identity warning:
 
 ```bash
 vps-scope baseline create report.json baseline.json

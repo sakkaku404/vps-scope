@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 
@@ -80,14 +81,53 @@ func (e environment) fleet(args []string) error {
 }
 
 func readReport(path string) (model.Report, error) {
-	file, err := os.Open(path)
+	file, err := openLimitedJSON(path)
 	if err != nil {
 		return model.Report{}, err
 	}
 	defer file.Close()
 	var r model.Report
-	err = json.NewDecoder(file).Decode(&r)
-	return r, err
+	if err := decodeSingleJSON(file, &r); err != nil {
+		return r, fmt.Errorf("read report %q: %w", path, err)
+	}
+	if r.SchemaVersion != "1.0" {
+		return r, fmt.Errorf("read report %q: unsupported report schema %q", path, r.SchemaVersion)
+	}
+	return r, nil
+}
+
+const maxLocalJSONSize = 64 << 20
+
+func openLimitedJSON(path string) (*os.File, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		file.Close()
+		return nil, err
+	}
+	if info.Size() > maxLocalJSONSize {
+		file.Close()
+		return nil, fmt.Errorf("JSON input %q is too large (%d bytes; limit %d)", path, info.Size(), maxLocalJSONSize)
+	}
+	return file, nil
+}
+
+func decodeSingleJSON(r io.Reader, dst any) error {
+	decoder := json.NewDecoder(io.LimitReader(r, maxLocalJSONSize+1))
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("unexpected data after JSON document")
+		}
+		return err
+	}
+	return nil
 }
 func findingMap(r model.Report) map[string]model.Finding {
 	out := map[string]model.Finding{}

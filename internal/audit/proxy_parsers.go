@@ -9,11 +9,15 @@ import (
 
 func parseSingBoxSummary(path string, data []byte) proxyConfigSummary {
 	type inbound struct {
-		Type       string          `json:"type"`
-		Listen     string          `json:"listen"`
-		ListenPort json.RawMessage `json:"listen_port"`
-		Network    string          `json:"network"`
-		TLS        struct {
+		Type         string          `json:"type"`
+		Listen       string          `json:"listen"`
+		ListenPort   json.RawMessage `json:"listen_port"`
+		Network      string          `json:"network"`
+		PortBindings []struct {
+			Port     int    `json:"port"`
+			Protocol string `json:"protocol"`
+		} `json:"portBindings"`
+		TLS struct {
 			Enabled bool `json:"enabled"`
 			Reality struct {
 				Enabled    bool     `json:"enabled"`
@@ -54,10 +58,27 @@ func parseSingBoxSummary(path string, data []byte) proxyConfigSummary {
 		if item.TLS.Reality.Handshake.Server != "" || item.TLS.Reality.Handshake.ServerPort != 0 {
 			realityTargets = 1
 		}
-		s.Inbounds = append(s.Inbounds, proxyInbound{Product: s.Product, Protocol: item.Type, Listen: listen, Port: port,
-			Transports: proxyTransports(item.Type, item.Network), Security: security,
-			RealityEnabled: item.TLS.Reality.Enabled, RealityKeySet: item.TLS.Reality.PrivateKey != "",
-			RealityTargets: realityTargets, RealityServerIDs: len(item.TLS.Reality.ShortID)})
+		appendInbound := func(port string, transports []string) {
+			s.Inbounds = append(s.Inbounds, proxyInbound{Product: s.Product, Protocol: item.Type, Listen: listen, Port: port,
+				Transports: transports, Security: security,
+				RealityEnabled: item.TLS.Reality.Enabled, RealityKeySet: item.TLS.Reality.PrivateKey != "",
+				RealityTargets: realityTargets, RealityServerIDs: len(item.TLS.Reality.ShortID)})
+		}
+		if validPort(port) {
+			appendInbound(port, proxyTransports(item.Type, item.Network))
+		}
+		for _, binding := range item.PortBindings {
+			bindingPort := strconv.Itoa(binding.Port)
+			if !validPort(bindingPort) {
+				continue
+			}
+			transport := strings.ToLower(binding.Protocol)
+			if transport != "tcp" && transport != "udp" {
+				continue
+			}
+			appendInbound(bindingPort, []string{transport})
+			s.UsesUDP = s.UsesUDP || transport == "udp"
+		}
 		if containsAny(strings.ToLower(item.Type+" "+item.Network), "hysteria", "tuic", "shadowsocks", "udp") {
 			s.UsesUDP = true
 		}

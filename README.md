@@ -24,7 +24,7 @@ VPS Scope 不是该项目的分支，代码与检测实现均为独立实现。V
 代理服务器会额外检查：
 
 - sing-box、Xray、Hysteria2、TUIC、Trojan、Shadowsocks 等核心与入口
-- S-UI、3x-ui/x-ui 管理面，以及 Hiddify、Marzban、Outline 容器线索
+- S-UI、3x-ui/x-ui、Marzban、Hiddify 管理面与代理入口；Outline 目前提供容器和端口线索
 - 对原生 S-UI、3x-ui 的面板数据库做内置只读解析；无需在目标 VPS 安装 `sqlite3`
 - sing-box 与 Xray 配置解析和原生只读自检
 - Clash API、V2Ray API 等控制接口是否公开监听、是否被主机防火墙限制
@@ -147,7 +147,7 @@ vps-scope diff old.json new.json
 vps-scope fleet west.json sgp.json tw.json japan.json
 ```
 
-长期运行的服务器可以建立基线，重点观察新增或消失的公网监听、SSH key、防火墙规则、面板/代理入口、容器和代理服务：
+长期运行的服务器可以建立基线，重点观察新增或消失的公网监听、SSH key、防火墙规则、面板/代理入口、容器和代理服务。baseline v2 使用主机 StableID，监听身份不会因为服务重启后 PID 改变而产生噪声；旧 v1 文件仍可读取，但会提示主机身份保证较弱：
 
 ```bash
 vps-scope baseline create report.json baseline.json

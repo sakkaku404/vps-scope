@@ -13,17 +13,25 @@ type panelAdapter interface {
 
 type nativePanelAdapter struct {
 	id, binary string
+	detect     func() bool
 	collect    func(Commander) panelSnapshot
 }
 
-func (a nativePanelAdapter) ID() string                          { return a.id }
-func (a nativePanelAdapter) Detect() bool                        { return regularFile(a.binary) }
+func (a nativePanelAdapter) ID() string { return a.id }
+func (a nativePanelAdapter) Detect() bool {
+	if a.detect != nil {
+		return a.detect()
+	}
+	return regularFile(a.binary)
+}
 func (a nativePanelAdapter) Collect(cmd Commander) panelSnapshot { return a.collect(cmd) }
 
 func panelAdapters() []panelAdapter {
 	return []panelAdapter{
 		nativePanelAdapter{id: "s-ui/native-v1", binary: "/usr/local/s-ui/sui", collect: collectSUIFacts},
 		nativePanelAdapter{id: "x-ui/native-v1", binary: "/usr/local/x-ui/x-ui", collect: collectXUIFacts},
+		nativePanelAdapter{id: "marzban/managed-v1", detect: func() bool { return directoryExists("/opt/marzban") || directoryExists("/var/lib/marzban") }, collect: collectMarzbanFacts},
+		nativePanelAdapter{id: "hiddify/managed-v1", detect: func() bool { return directoryExists("/opt/hiddify-manager") }, collect: collectHiddifyFacts},
 	}
 }
 

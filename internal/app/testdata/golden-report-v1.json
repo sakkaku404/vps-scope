@@ -1,0 +1,57 @@
+{
+  "schema_version": "1.0",
+  "tool_version": "0.7.0",
+  "tool_commit": "fixture",
+  "locale": "en",
+  "started_at": "2026-01-01T00:00:00Z",
+  "finished_at": "2026-01-01T00:00:01Z",
+  "log_since": "168h0m0s",
+  "host": {
+    "stable_id": "fixture-machine-id",
+    "hostname": "proxy-fixture",
+    "os": "ubuntu",
+    "os_version": "24.04",
+    "kernel": "6.8.0-fixture",
+    "architecture": "x86_64",
+    "is_root": true
+  },
+  "profile": {
+    "requested": "proxy",
+    "detected": "proxy",
+    "effective": "proxy"
+  },
+  "summary": {
+    "pass": 1,
+    "risk": 0,
+    "info": 1,
+    "unknown": 0,
+    "completed": 2,
+    "unavailable": 0,
+    "not_applicable": 0
+  },
+  "findings": [
+    {
+      "id": "NET-001",
+      "category": "network",
+      "status": "INFO",
+      "evidence": [
+        {
+          "source": "ss",
+          "value": "tcp 0.0.0.0:443 scope=public-wildcard process=sing-box"
+        }
+      ]
+    },
+    {
+      "id": "WORK-002",
+      "category": "workloads",
+      "status": "PASS",
+      "evidence": [
+        {
+          "source": "fixture",
+          "key": "management_endpoint",
+          "value": "product=Hiddify listen=127.0.0.1 port=9000/tcp tls=false path_default=unknown"
+        }
+      ]
+    }
+  ]
+}

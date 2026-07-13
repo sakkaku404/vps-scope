@@ -226,7 +226,8 @@ func checkDeletedExecutables() model.Finding {
 type dockerInspect struct {
 	Name   string `json:"Name"`
 	Config struct {
-		User string `json:"User"`
+		User  string `json:"User"`
+		Image string `json:"Image"`
 	} `json:"Config"`
 	HostConfig struct {
 		Privileged  bool     `json:"Privileged"`
@@ -272,8 +273,12 @@ func checkDocker(ctx *Context) []model.Finding {
 			f.Evidence = append(f.Evidence, model.Evidence{Source: "docker inspect", Key: "privileged", Value: name})
 		}
 		if c.HostConfig.NetworkMode == "host" {
-			problems++
-			f.Evidence = append(f.Evidence, model.Evidence{Source: "docker inspect", Key: "host_network", Value: name})
+			if strings.Contains(strings.ToLower(c.Config.Image), "gozargah/marzban") {
+				f.Evidence = append(f.Evidence, model.Evidence{Source: "docker inspect", Key: "expected_host_network", Value: name + " image=" + c.Config.Image + " official deployment model; effective listeners are audited separately"})
+			} else {
+				problems++
+				f.Evidence = append(f.Evidence, model.Evidence{Source: "docker inspect", Key: "host_network", Value: name})
+			}
 		}
 		if c.HostConfig.PidMode == "host" || c.HostConfig.IpcMode == "host" {
 			problems++

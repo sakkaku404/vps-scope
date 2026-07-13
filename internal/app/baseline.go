@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 type baselineDocument struct {
 	SchemaVersion string         `json:"schema_version"`
 	Host          string         `json:"host"`
+	StableID      string         `json:"stable_id,omitempty"`
 	CreatedAt     time.Time      `json:"created_at"`
 	Items         []baselineItem `json:"items"`
 }
@@ -56,7 +58,13 @@ func (e environment) baseline(args []string) error {
 		return err
 	}
 	current := makeBaseline(r)
-	if doc.Host != "" && current.Host != "" && doc.Host != current.Host {
+	if doc.StableID != "" && current.StableID != "" && doc.StableID != current.StableID {
+		return fmt.Errorf("baseline stable_id %q does not match report stable_id %q", doc.StableID, current.StableID)
+	}
+	if doc.StableID == "" {
+		fmt.Fprintln(e.out, "WARNING legacy baseline has no stable_id; host identity is verified by hostname only")
+	}
+	if (doc.StableID == "" || current.StableID == "") && doc.Host != "" && current.Host != "" && doc.Host != current.Host {
 		return fmt.Errorf("baseline host %q does not match report host %q", doc.Host, current.Host)
 	}
 	added, removed := compareBaseline(doc.Items, current.Items)
@@ -74,7 +82,7 @@ func (e environment) baseline(args []string) error {
 }
 
 func makeBaseline(r model.Report) baselineDocument {
-	doc := baselineDocument{SchemaVersion: "vps-scope-baseline/v1", Host: r.Host.Hostname, CreatedAt: time.Now().UTC()}
+	doc := baselineDocument{SchemaVersion: "vps-scope-baseline/v2", Host: r.Host.Hostname, StableID: r.Host.StableID, CreatedAt: time.Now().UTC()}
 	seen := map[string]bool{}
 	add := func(kind, value string) {
 		value = strings.TrimSpace(value)
@@ -88,7 +96,7 @@ func makeBaseline(r model.Report) baselineDocument {
 		for _, evidence := range finding.Evidence {
 			switch {
 			case finding.ID == "NET-001" && containsPublicScope(evidence.Value):
-				add("public_listener", evidence.Value)
+				add("public_listener", normalizeListenerIdentity(evidence.Value))
 			case evidence.Key == "authorized_key":
 				add("ssh_key", evidence.Value)
 			case evidence.Key == "allow_rule":
@@ -115,21 +123,29 @@ func makeBaseline(r model.Report) baselineDocument {
 	return doc
 }
 
+var listenerVolatileRE = regexp.MustCompile(`(?i)(?:,?pid=\d+|,?fd=\d+|,?ino=\d+)`)
+
+func normalizeListenerIdentity(value string) string {
+	value = listenerVolatileRE.ReplaceAllString(value, "")
+	value = regexp.MustCompile(`\s+`).ReplaceAllString(value, " ")
+	return strings.TrimSpace(value)
+}
+
 func containsPublicScope(value string) bool {
 	return strings.Contains(value, "scope=public ") || strings.Contains(value, "scope=public-wildcard") || strings.HasSuffix(value, "scope=public")
 }
 
 func readBaseline(path string) (baselineDocument, error) {
-	file, err := os.Open(path)
+	file, err := openLimitedJSON(path)
 	if err != nil {
 		return baselineDocument{}, err
 	}
 	defer file.Close()
 	var doc baselineDocument
-	if err := json.NewDecoder(file).Decode(&doc); err != nil {
+	if err := decodeSingleJSON(file, &doc); err != nil {
 		return doc, err
 	}
-	if doc.SchemaVersion != "vps-scope-baseline/v1" {
+	if doc.SchemaVersion != "vps-scope-baseline/v1" && doc.SchemaVersion != "vps-scope-baseline/v2" {
 		return doc, fmt.Errorf("unsupported baseline schema %q", doc.SchemaVersion)
 	}
 	return doc, nil
