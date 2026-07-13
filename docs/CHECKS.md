@@ -31,6 +31,7 @@ Check IDs are stable across languages and report formats. A status is separate f
 - Package-owned SUID files and capabilities remain inventory; unowned privileged files elevate the finding.
 - Missing documentation excluded by image minimization is separated from missing runtime package files.
 - Public S-UI, 3x-ui, and x-ui management access is evaluated separately from proxy ingress and subscription endpoints.
+- A public subscription endpoint is expected to be reachable, but unrestricted plaintext transport is a high risk because subscription URLs commonly carry bearer-like access material.
 - A root/default panel path and disabled panel TLS strengthen the explanation of an already public management exposure; neither a random path nor HTTPS alone makes a public panel private.
 - A loopback panel reached through a public Nginx, Caddy, or HAProxy route is still public management exposure.
 - Management/subscription ports reused by proxy ingress, disabled inbounds that remain live, and unexplained public panel/core listeners are explicit runtime-consistency risks.

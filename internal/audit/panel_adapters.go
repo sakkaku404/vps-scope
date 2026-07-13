@@ -3,6 +3,7 @@ package audit
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 type panelAdapter interface {
@@ -36,6 +37,21 @@ func panelAdapters() []panelAdapter {
 }
 
 func detectPanelSchema(cmd Commander, database, product string) (string, error) {
+	var lastErr error
+	for attempt, delay := range []time.Duration{0, 100 * time.Millisecond, 250 * time.Millisecond} {
+		if attempt > 0 {
+			time.Sleep(delay)
+		}
+		schema, err := detectPanelSchemaOnce(cmd, database, product)
+		if err == nil {
+			return schema, nil
+		}
+		lastErr = err
+	}
+	return "", lastErr
+}
+
+func detectPanelSchemaOnce(cmd Commander, database, product string) (string, error) {
 	rows, err := sqliteTSV(cmd, database, `SELECT name FROM sqlite_master WHERE type='table';`)
 	if err != nil {
 		return "", fmt.Errorf("panel schema tables: %w", err)

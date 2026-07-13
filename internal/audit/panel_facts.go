@@ -158,6 +158,9 @@ func collectXUIFacts(cmd Commander) panelSnapshot {
 	}
 	s.SchemaVersion = schema
 	s.DatabaseAvailable = true
+	if s.Product == "3x-ui" {
+		apply3XUIDefaults(&s)
+	}
 	settingRows, err := sqliteTSV(cmd, s.Database, `SELECT key, value FROM settings WHERE key IN ('webListen','webPort','webBasePath','webCertFile','webCertKey','subEnable','subListen','subPort','subPath','subCertFile','subKeyFile');`)
 	if err == nil {
 		applyPanelSettings(&s, settingRows, "x-ui database")
@@ -180,6 +183,18 @@ func collectXUIFacts(cmd Commander) panelSnapshot {
 		s.DisabledClients, _ = strconv.Atoi(clientRows[0][1])
 	}
 	return s
+}
+
+func apply3XUIDefaults(snapshot *panelSnapshot) {
+	// 3x-ui stores only overrides in the settings table. A fresh database
+	// therefore has no subPort/subPath rows even though the built-in
+	// subscription server is enabled and listening. Seed the documented
+	// defaults, then let persisted settings override or disable them.
+	upsertPanelEndpoint(snapshot, panelEndpoint{
+		Role: "subscription", Listen: "::", Port: "2096",
+		TLS: false, TLSKnown: true, Source: "3x-ui built-in defaults",
+		PathKnown: true, PathIsDefault: true,
+	})
 }
 
 func sqliteTSV(cmd Commander, database, query string) ([][]string, error) {
@@ -243,32 +258,79 @@ func applyPanelSettings(snapshot *panelSnapshot, rows [][]string, source string)
 		}
 	}
 	for _, role := range []struct{ name, prefix string }{{"management", "web"}, {"subscription", "sub"}} {
-		port := values[role.prefix+"Port"]
+		if role.name == "subscription" && settingIsFalse(values["subEnable"]) {
+			removePanelEndpoint(snapshot, role.name)
+			continue
+		}
+		old, hasOld := panelEndpointByRole(*snapshot, role.name)
+		port, portSet := values[role.prefix+"Port"]
+		if !portSet && hasOld {
+			port = old.Port
+		}
 		if port == "" {
 			continue
 		}
-		listen := normalizeListen(values[role.prefix+"Listen"])
-		tlsKnown := true
-		certFile := values[role.prefix+"CertFile"]
-		tls := certFile != "" && (values[role.prefix+"KeyFile"] != "" || values[role.prefix+"CertKey"] != "")
-		updated := panelEndpoint{Role: role.name, Listen: listen, Port: port, TLS: tls, TLSKnown: tlsKnown, Source: source, CertFile: certFile}
+		updated := old
+		updated.Role, updated.Port = role.name, port
+		changed := portSet
+		if listen, ok := values[role.prefix+"Listen"]; ok {
+			updated.Listen = normalizeListen(listen)
+			changed = true
+		} else if !hasOld {
+			updated.Listen = "::"
+		}
+		certFile, certSet := values[role.prefix+"CertFile"]
+		keyFile, keySet := values[role.prefix+"KeyFile"]
+		certKey, certKeySet := values[role.prefix+"CertKey"]
+		if certSet || keySet || certKeySet {
+			updated.CertFile = certFile
+			updated.TLSKnown = true
+			updated.TLS = certFile != "" && (keyFile != "" || certKey != "")
+			changed = true
+		} else if !hasOld && portSet {
+			// Preserve the previous database semantics: a configured panel
+			// endpoint without certificate settings is known plaintext.
+			updated.TLSKnown = true
+			updated.TLS = false
+		}
 		if path, ok := values[map[string]string{"web": "webBasePath", "sub": "subPath"}[role.prefix]]; ok {
 			updated.PathKnown = true
+			changed = true
 			if role.name == "management" {
 				updated.PathIsDefault = panelPathIsDefault(path)
 			} else {
 				updated.PathIsDefault = subscriptionPathIsDefault(path)
 			}
 		}
-		for _, old := range snapshot.Endpoints {
-			if old.Role == role.name {
-				if !updated.PathKnown {
-					updated.PathKnown, updated.PathIsDefault = old.PathKnown, old.PathIsDefault
-				}
-			}
+		if changed || !hasOld {
+			updated.Source = source
 		}
 		upsertPanelEndpoint(snapshot, updated)
 	}
+}
+
+func settingIsFalse(value string) bool {
+	value = strings.TrimSpace(value)
+	return strings.EqualFold(value, "false") || value == "0"
+}
+
+func panelEndpointByRole(snapshot panelSnapshot, role string) (panelEndpoint, bool) {
+	for _, endpoint := range snapshot.Endpoints {
+		if endpoint.Role == role {
+			return endpoint, true
+		}
+	}
+	return panelEndpoint{}, false
+}
+
+func removePanelEndpoint(snapshot *panelSnapshot, role string) {
+	endpoints := snapshot.Endpoints[:0]
+	for _, endpoint := range snapshot.Endpoints {
+		if endpoint.Role != role {
+			endpoints = append(endpoints, endpoint)
+		}
+	}
+	snapshot.Endpoints = endpoints
 }
 
 func upsertPanelEndpoint(snapshot *panelSnapshot, endpoint panelEndpoint) {

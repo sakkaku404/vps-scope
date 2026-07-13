@@ -502,6 +502,20 @@ func TestApplyPanelSettingsReadsPathsFromDatabase(t *testing.T) {
 	}
 }
 
+func TestApplyPanelSettingsMergesDefaultsAndHonorsSubscriptionDisable(t *testing.T) {
+	snapshot := panelSnapshot{}
+	apply3XUIDefaults(&snapshot)
+	applyPanelSettings(&snapshot, [][]string{{"subPath", "/private-sub/"}, {"subListen", "127.0.0.1"}}, "fixture")
+	endpoint, ok := panelEndpointByRole(snapshot, "subscription")
+	if !ok || endpoint.Port != "2096" || endpoint.Listen != "127.0.0.1" || !endpoint.PathKnown || endpoint.PathIsDefault || endpoint.Source != "fixture" {
+		t.Fatalf("merged endpoint=%+v ok=%t", endpoint, ok)
+	}
+	applyPanelSettings(&snapshot, [][]string{{"subEnable", "false"}}, "fixture")
+	if _, ok := panelEndpointByRole(snapshot, "subscription"); ok {
+		t.Fatalf("disabled subscription endpoint was retained: %+v", snapshot.Endpoints)
+	}
+}
+
 func TestProxyConnectionCountsOnlyConfiguredIngressWithoutPeers(t *testing.T) {
 	input := "tcp ESTAB 0 0 10.0.0.1:443 198.51.100.1:50000 users:((\"sing-box\",pid=1))\n" +
 		"tcp ESTAB 0 0 10.0.0.1:22 198.51.100.2:50001 users:((\"sshd\",pid=2))\n"

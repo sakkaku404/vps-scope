@@ -219,6 +219,42 @@ func TestScenarioPublicUnclassifiedPanelListenerIsRisk(t *testing.T) {
 	}
 }
 
+func TestScenarioPublicPlaintextSubscriptionIsHighRisk(t *testing.T) {
+	cmd := newScenarioCommander(nil, nil)
+	ctx := scenarioContext(cmd)
+	ctx.Facts.listenersOnce.Do(func() {
+		ctx.Facts.listeners = []Listener{{Protocol: "tcp", Address: "0.0.0.0", Port: "2096", Scope: "public-wildcard", Process: "x-ui"}}
+	})
+	ctx.Facts.ufwOnce.Do(func() {
+		ctx.Facts.ufw = parsePanelUFW("Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n2096/tcp ALLOW IN Anywhere")
+	})
+	panel := panelSnapshot{
+		Product: "3x-ui", Database: "/etc/x-ui/x-ui.db", DatabaseAvailable: true,
+		Endpoints: []panelEndpoint{{Role: "subscription", Port: "2096", Listen: "::", Source: "fixture", TLSKnown: true, TLS: false}},
+	}
+	ctx.Facts.panelsOnce.Do(func() { ctx.Facts.panels = []panelSnapshot{panel} })
+	f := checkPanelRuntimeConsistency(ctx, nil)
+	if f.Status != model.Risk || f.Severity != model.High || f.Facts["public_plaintext_subscription_listeners"] != "1" {
+		t.Fatalf("status=%s severity=%s facts=%v evidence=%v", f.Status, f.Severity, f.Facts, f.Evidence)
+	}
+	if !evidenceHas(f, "plaintext_public_subscription", "bearer-like subscription URLs") {
+		t.Fatalf("plaintext subscription evidence missing: %+v", f.Evidence)
+	}
+}
+
+func TestScenarioXUIInternalXrayListenersAreInferredControls(t *testing.T) {
+	ctx := scenarioContext(newScenarioCommander(nil, nil))
+	ctx.Facts.listenersOnce.Do(func() {
+		ctx.Facts.listeners = []Listener{{Protocol: "tcp", Address: "127.0.0.1", Port: "62789", Scope: "loopback", Process: "xray-linux-amd64"}}
+	})
+	panel := panelSnapshot{Product: "3x-ui", Database: "/etc/x-ui/x-ui.db", DatabaseAvailable: true}
+	ctx.Facts.panelsOnce.Do(func() { ctx.Facts.panels = []panelSnapshot{panel} })
+	f := checkPanelRuntimeConsistency(ctx, nil)
+	if f.Status != model.Pass || f.Facts["inferred_control_listeners"] != "1" || f.Facts["unclassified_panel_listeners"] != "0" {
+		t.Fatalf("status=%s facts=%v evidence=%v", f.Status, f.Facts, f.Evidence)
+	}
+}
+
 func TestScenarioPanelRoleCollisionWithProxyIngressIsHighRisk(t *testing.T) {
 	ctx := scenarioContext(newScenarioCommander(nil, nil))
 	ctx.Facts.listenersOnce.Do(func() {

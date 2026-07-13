@@ -20,6 +20,7 @@ func checkPanelRuntimeConsistency(ctx *Context, summaries []proxyConfigSummary) 
 	f := model.Finding{ID: "WORK-012", Category: "workloads", Status: model.Pass, Facts: map[string]string{"panels": strconv.Itoa(len(panels))}}
 	ufw := readPanelUFW(ctx)
 	databaseUnavailable, mismatches, roleCollisions, unclassified, publicUnclassified, inferredControls := 0, 0, 0, 0, 0, 0
+	publicSubscriptions, publicPlaintextSubscriptions := 0, 0
 	disabledStillListening := 0
 	expired, exhausted := 0, 0
 	for _, panel := range panels {
@@ -32,6 +33,13 @@ func checkPanelRuntimeConsistency(ctx *Context, summaries []proxyConfigSummary) 
 			if endpoint.Role == "subscription" && !live {
 				mismatches++
 				raiseRisk(&f, model.Medium)
+			} else if endpoint.Role == "subscription" && live && (scope == "public" || scope == "public-wildcard") {
+				publicSubscriptions++
+				if endpoint.TLSKnown && !endpoint.TLS && (firewall == "allow-anywhere" || firewall == "inactive") {
+					publicPlaintextSubscriptions++
+					raiseRisk(&f, model.High)
+					f.Evidence = append(f.Evidence, model.Evidence{Source: endpoint.Source + " + ss + ufw", Key: "plaintext_public_subscription", Value: fmt.Sprintf("product=%s port=%s/tcp scope=%s firewall=%s; bearer-like subscription URLs may be exposed in transit", panel.Product, endpoint.Port, scope, firewall)})
+				}
 			}
 		}
 		for i := range panel.Endpoints {
@@ -104,7 +112,7 @@ func checkPanelRuntimeConsistency(ctx *Context, summaries []proxyConfigSummary) 
 					f.Evidence = append(f.Evidence, model.Evidence{Source: "ss", Key: "inferred_control_listener", Value: fmt.Sprintf("product=%s port=%s/%s scope=loopback process=%s role=internal-metrics-or-control", panel.Product, listener.Port, listener.Protocol, truncate(listener.Process, 100))})
 					continue
 				}
-				if listener.Scope == "loopback" && strings.Contains(process, "xray") && (panel.Product == "Hiddify" || panel.Product == "Marzban") {
+				if listener.Scope == "loopback" && strings.Contains(process, "xray") && (panel.Product == "Hiddify" || panel.Product == "Marzban" || panel.Product == "x-ui" || panel.Product == "3x-ui") {
 					inferredControls++
 					f.Evidence = append(f.Evidence, model.Evidence{Source: "ss", Key: "inferred_control_listener", Value: fmt.Sprintf("product=%s port=%s/%s scope=loopback process=%s role=internal-xray-control", panel.Product, listener.Port, listener.Protocol, truncate(listener.Process, 100))})
 					continue
@@ -125,6 +133,8 @@ func checkPanelRuntimeConsistency(ctx *Context, summaries []proxyConfigSummary) 
 	f.Facts["unclassified_panel_listeners"] = strconv.Itoa(unclassified)
 	f.Facts["public_unclassified_panel_listeners"] = strconv.Itoa(publicUnclassified)
 	f.Facts["inferred_control_listeners"] = strconv.Itoa(inferredControls)
+	f.Facts["public_subscription_listeners"] = strconv.Itoa(publicSubscriptions)
+	f.Facts["public_plaintext_subscription_listeners"] = strconv.Itoa(publicPlaintextSubscriptions)
 	f.Facts["disabled_inbounds_still_listening"] = strconv.Itoa(disabledStillListening)
 	f.Facts["expired_inbounds"] = strconv.Itoa(expired)
 	f.Facts["quota_exhausted_inbounds"] = strconv.Itoa(exhausted)

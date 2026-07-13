@@ -3,6 +3,7 @@ package audit
 import (
 	"database/sql"
 	"fmt"
+	"net/url"
 	"path/filepath"
 
 	_ "modernc.org/sqlite"
@@ -17,7 +18,7 @@ func querySQLite(database, query string) ([][]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	dsn := "file:" + filepath.ToSlash(abs) + "?mode=ro"
+	dsn := "file:" + filepath.ToSlash(abs) + "?mode=ro&_pragma=" + url.QueryEscape("busy_timeout=5000")
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open SQLite read-only: %w", err)

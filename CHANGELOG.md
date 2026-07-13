@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 0.10.0 - 2026-07-13
+
 ### Added
 
 - Management posture evidence for S-UI and 3x-ui/x-ui now includes root/default-path visibility, direct TLS state, host-firewall disposition, and public reverse-proxy reachability.
@@ -26,6 +28,9 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Docker socket mounts visible through both bind and effective-mount views are counted once.
 - Later medium-severity panel/runtime mismatches no longer overwrite an earlier high-severity collision.
 - Corrected `render` and `redact` examples so Go CLI flags precede the report path.
+- Fresh 3x-ui installations now inherit the panel's built-in subscription role before database overrides are applied; explicit `subEnable=false` still removes that role.
+- Public, unrestricted plaintext subscription endpoints are reported as high risk, while loopback Xray control listeners owned by 3x-ui/x-ui are classified as internal controls instead of unknown ports.
+- Read-only panel database access now waits briefly for SQLite writers and retries schema probing, reducing transient `UNKNOWN` results while a panel is committing runtime changes.
 
 ## 0.9.1 - 2026-07-13
 
