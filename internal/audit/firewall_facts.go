@@ -9,20 +9,41 @@ import (
 // firewallRule is the normalized host-firewall unit consumed by workload
 // checks. Family is ipv4, ipv6, or any; source is "any" or a restricted CIDR.
 type firewallRule struct {
-	Family, Protocol, Port, Source, Action, Raw string
+	Family, Protocol, Port, Source, Action, Origin, Raw string
 }
 
 func collectHostFirewall(cmd Commander) panelUFW {
 	var inactive panelUFW
+	var active panelUFW
 	if cmd.Exists("ufw") {
 		r := cmd.Run(12*time.Second, "ufw", "status", "verbose")
 		if r.Err == nil && !r.Truncated {
 			f := parsePanelUFW(r.Stdout)
 			if f.active {
-				return f
+				active = f
 			}
 			inactive = f
 		}
+	}
+	// UFW and products such as Hiddify can both install rules into the same
+	// effective nftables INPUT path.  UFW's summary intentionally omits rules
+	// inserted by other managers, so merge the live nftables view instead of
+	// returning as soon as an active UFW frontend is found.
+	if active.available && cmd.Exists("nft") {
+		r := cmd.Run(15*time.Second, "nft", "list", "ruleset")
+		if r.Err == nil && !r.Truncated {
+			nft := parseNFTFirewall(r.Stdout)
+			active.rules = append(active.rules, nft.rules...)
+			active.backend = "ufw+nftables"
+			for family, deny := range nft.defaultDenyByFamily {
+				active.defaultDenyByFamily[family] = active.defaultDenyByFamily[family] || deny
+			}
+			active.defaultDeny = active.defaultDeny || nft.defaultDeny
+		}
+		return active
+	}
+	if active.available {
+		return active
 	}
 	if cmd.Exists("firewall-cmd") {
 		state := cmd.Run(8*time.Second, "firewall-cmd", "--state")
@@ -92,11 +113,11 @@ func collectFirewalld(cmd Commander) panelUFW {
 			if len(parts) != 2 || !validPort(parts[0]) {
 				continue
 			}
-			f.rules = append(f.rules, firewallRule{Family: "any", Protocol: parts[1], Port: parts[0], Source: source, Action: "allow", Raw: item})
+			f.rules = append(f.rules, firewallRule{Family: "any", Protocol: parts[1], Port: parts[0], Source: source, Action: "allow", Origin: "firewalld-zone", Raw: item})
 		}
 		for _, service := range analysis.services {
 			if port := servicePorts[service]; port != "" {
-				f.rules = append(f.rules, firewallRule{Family: "any", Protocol: "tcp", Port: port, Source: source, Action: "allow", Raw: service})
+				f.rules = append(f.rules, firewallRule{Family: "any", Protocol: "tcp", Port: port, Source: source, Action: "allow", Origin: "firewalld-zone", Raw: service})
 			}
 		}
 	}
@@ -127,7 +148,7 @@ func parseUFWRules(input []string) []firewallRule {
 		if strings.HasPrefix(source, "Anywhere") {
 			source = "any"
 		}
-		out = append(out, firewallRule{Family: family, Protocol: protocol, Port: port, Source: source, Action: "allow", Raw: line})
+		out = append(out, firewallRule{Family: family, Protocol: protocol, Port: port, Source: source, Action: "allow", Origin: "ufw-user", Raw: line})
 	}
 	return out
 }
@@ -135,6 +156,12 @@ func parseUFWRules(input []string) []firewallRule {
 func parseNFTFirewall(output string) panelUFW {
 	f := panelUFW{available: true, active: true, backend: "nftables", lines: lines(output), defaultDenyByFamily: map[string]bool{}}
 	collectNFTDefaultPolicies(&f, output)
+	f.rules = parseNFTInputRules(f.lines)
+	if len(f.rules) > 0 {
+		return f
+	}
+	// Keep accepting compact single-line fixtures and unusual nft renderers.
+	// Real multi-line rulesets take the input-chain-only path above.
 	ruleRE := regexp.MustCompile(`(?i)\b(tcp|udp)\s+dport\s+([0-9]+)\b([^\n]*?)\b(accept|drop|reject)\b`)
 	for _, line := range f.lines {
 		m := ruleRE.FindStringSubmatch(line)
@@ -158,9 +185,126 @@ func parseNFTFirewall(output string) panelUFW {
 		} else {
 			outcome = "deny"
 		}
-		f.rules = append(f.rules, firewallRule{Family: family, Protocol: strings.ToLower(m[1]), Port: m[2], Source: source, Action: outcome, Raw: line})
+		f.rules = append(f.rules, firewallRule{Family: family, Protocol: strings.ToLower(m[1]), Port: m[2], Source: source, Action: outcome, Origin: "nft-unknown", Raw: line})
 	}
 	return f
+}
+
+type nftInputChain struct {
+	family, table, name string
+	baseInput           bool
+	lines               []string
+}
+
+// parseNFTInputRules follows only base chains with hook input and chains they
+// jump or go to. Parsing every accept statement in a ruleset would mistake
+// OUTPUT, FORWARD, Docker NAT, and unrelated tables for host ingress policy.
+func parseNFTInputRules(input []string) []firewallRule {
+	tableRE := regexp.MustCompile(`(?i)^table\s+(ip|ip6|inet)\s+([^\s{]+)\s*\{`)
+	chainRE := regexp.MustCompile(`(?i)^chain\s+([^\s{]+)\s*\{`)
+	tableFamily, tableName := "", ""
+	var current *nftInputChain
+	chains := map[string]*nftInputChain{}
+	for _, raw := range input {
+		trimmed := strings.TrimSpace(raw)
+		if current == nil {
+			if m := tableRE.FindStringSubmatch(trimmed); len(m) > 2 {
+				tableFamily = map[string]string{"ip": "ipv4", "ip6": "ipv6", "inet": "any"}[strings.ToLower(m[1])]
+				tableName = m[2]
+				continue
+			}
+			if tableFamily != "" {
+				if m := chainRE.FindStringSubmatch(trimmed); len(m) > 1 {
+					current = &nftInputChain{family: tableFamily, table: tableName, name: m[1]}
+					chains[nftChainKey(tableFamily, tableName, m[1])] = current
+					continue
+				}
+				if trimmed == "}" {
+					tableFamily, tableName = "", ""
+				}
+			}
+			continue
+		}
+		if trimmed == "}" {
+			current = nil
+			continue
+		}
+		current.lines = append(current.lines, trimmed)
+		if strings.Contains(strings.ToLower(trimmed), "hook input") {
+			current.baseInput = true
+		}
+	}
+
+	jumpRE := regexp.MustCompile(`(?i)\b(?:jump|goto)\s+([^\s;]+)`)
+	reachable := map[string]bool{}
+	var visit func(*nftInputChain)
+	visit = func(chain *nftInputChain) {
+		key := nftChainKey(chain.family, chain.table, chain.name)
+		if reachable[key] {
+			return
+		}
+		reachable[key] = true
+		for _, line := range chain.lines {
+			for _, match := range jumpRE.FindAllStringSubmatch(line, -1) {
+				if next := chains[nftChainKey(chain.family, chain.table, match[1])]; next != nil {
+					visit(next)
+				}
+			}
+		}
+	}
+	for _, chain := range chains {
+		if chain.baseInput {
+			visit(chain)
+		}
+	}
+
+	var out []firewallRule
+	for key := range reachable {
+		chain := chains[key]
+		origin := "nft-reachable"
+		if chain.baseInput {
+			origin = "nft-input"
+		}
+		for _, line := range chain.lines {
+			out = append(out, parseNFTRuleLine(line, chain.family, origin)...)
+		}
+	}
+	return out
+}
+
+func nftChainKey(family, table, chain string) string {
+	return family + "\x00" + table + "\x00" + chain
+}
+
+func parseNFTRuleLine(line, family, origin string) []firewallRule {
+	ruleRE := regexp.MustCompile(`(?i)\b(tcp|udp)\s+dport\s+(\{[^}]+\}|[0-9]+)\b?([^\n]*?)\b(accept|drop|reject)\b`)
+	m := ruleRE.FindStringSubmatch(line)
+	if len(m) == 0 {
+		return nil
+	}
+	source := "any"
+	if s := regexp.MustCompile(`(?i)\b(?:ip|ip6)\s+saddr\s+([^\s]+)`).FindStringSubmatch(line); len(s) > 1 {
+		source = s[1]
+	} else if d := regexp.MustCompile(`(?i)\b(?:ip|ip6)\s+daddr\s+([^\s]+)`).FindStringSubmatch(line); len(d) > 1 {
+		// Multicast/broadcast destination rules are not equivalent to a public
+		// unicast allow, even when their source is unrestricted.
+		source = "destination:" + d[1]
+	}
+	action := strings.ToLower(m[4])
+	if action == "accept" {
+		action = "allow"
+	} else {
+		action = "deny"
+	}
+	ports := strings.Split(strings.Trim(m[2], "{} "), ",")
+	var out []firewallRule
+	for _, port := range ports {
+		port = strings.TrimSpace(port)
+		if validPort(port) {
+			out = append(out, firewallRule{Family: family, Protocol: strings.ToLower(m[1]), Port: port, Source: source, Action: action, Origin: origin, Raw: line})
+		}
+	}
+	return out
 }
 
 func collectNFTDefaultPolicies(f *panelUFW, output string) {
@@ -207,7 +351,7 @@ func parseIPTablesFirewall(output, family string) ([]firewallRule, bool) {
 		if source == "0.0.0.0/0" || source == "::/0" {
 			source = "any"
 		}
-		out = append(out, firewallRule{Family: family, Protocol: value("-p", "any"), Port: port, Source: source, Action: action, Raw: line})
+		out = append(out, firewallRule{Family: family, Protocol: value("-p", "any"), Port: port, Source: source, Action: action, Origin: "iptables-input", Raw: line})
 	}
 	return out, defaultDeny
 }
@@ -266,6 +410,9 @@ func defaultDenyForFamily(f panelUFW, family string) bool {
 }
 
 func listenerAddressFamily(address string) string {
+	if address == "*" || address == "::" || address == "0.0.0.0" {
+		return "any"
+	}
 	if strings.Contains(address, ":") && !strings.Contains(address, ".") {
 		return "ipv6"
 	}

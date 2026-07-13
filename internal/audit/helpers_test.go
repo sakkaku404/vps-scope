@@ -82,6 +82,62 @@ func TestExpectedInfrastructureListeners(t *testing.T) {
 	}
 }
 
+func TestRuntimeExpectedWireGuardListener(t *testing.T) {
+	cmd := newScenarioCommander([]string{"wg"}, map[string]CommandResult{
+		scenarioCommandKey("wg", "show", "all", "listen-port"): {Stdout: "hiddifywg\t32247\n"},
+	})
+	ctx := &Context{Options: Options{Commander: cmd}}
+	if !runtimeExpectedPublicListeners(ctx)["32247/udp"] {
+		t.Fatal("active WireGuard listen port was not recognized")
+	}
+}
+
+func TestFirewallExposureReportsStaleAllowRule(t *testing.T) {
+	cmd := newScenarioCommander(nil, nil)
+	ctx := scenarioContext(cmd)
+	ctx.Facts.listenersOnce.Do(func() {
+		ctx.Facts.listeners = []Listener{{Protocol: "tcp", Address: "0.0.0.0", Port: "22", Scope: "public-wildcard", Process: "sshd"}}
+	})
+	ctx.Facts.ufwOnce.Do(func() {
+		ctx.Facts.ufw = parsePanelUFW("Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n22/tcp ALLOW IN Anywhere\n31001/tcp ALLOW IN Anywhere")
+	})
+	f := checkFirewallExposure(ctx)
+	if f.Status != model.Risk || f.Severity != model.Medium || f.Facts["stale_allow_rules"] != "1" {
+		t.Fatalf("stale firewall finding=%+v", f)
+	}
+}
+
+func TestSensitivePermissionCheckSkipsManagerDirectory(t *testing.T) {
+	dir := t.TempDir()
+	config := filepath.Join(dir, "generated.json")
+	if err := os.WriteFile(config, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := checkProxySensitivePermissions([]proxyConfigSummary{{Path: dir, SensitiveFiles: []string{config}}})
+	if f.Facts["files_checked"] != "1" {
+		t.Fatalf("directory counted as secret-bearing file: %+v", f)
+	}
+	for _, evidence := range f.Evidence {
+		if evidence.Value == dir || strings.Contains(evidence.Value, dir+" mode=") {
+			t.Fatalf("manager directory was assessed as a secret file: %+v", evidence)
+		}
+	}
+}
+
+func TestDeletedExecutableClassification(t *testing.T) {
+	count, severity := classifyDeletedExecutables([]string{
+		"pid=1 exe=/usr/bin/python3.14 (deleted)",
+		"pid=2 exe=/opt/hiddify-manager/singbox/hiddify-core (deleted)",
+	})
+	if count != 1 || severity != model.Medium {
+		t.Fatalf("count=%d severity=%s", count, severity)
+	}
+	count, severity = classifyDeletedExecutables([]string{"pid=3 exe=/tmp/worker (deleted)"})
+	if count != 1 || severity != model.High {
+		t.Fatalf("temporary executable count=%d severity=%s", count, severity)
+	}
+}
+
 func TestParsePanelPort(t *testing.T) {
 	tests := []struct {
 		product, output, want string

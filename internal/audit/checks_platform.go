@@ -214,6 +214,11 @@ func checkDeletedExecutables() model.Finding {
 		// evidence to investigate or restart, not proof of compromise.
 		f.Status = model.Info
 	}
+	securityRelevant, severity := classifyDeletedExecutables(deleted)
+	f.Facts["security_relevant_deleted_executables"] = strconv.Itoa(securityRelevant)
+	if securityRelevant > 0 {
+		f.Status, f.Severity = model.Risk, severity
+	}
 	for i, item := range deleted {
 		if i >= 30 {
 			break
@@ -223,11 +228,26 @@ func checkDeletedExecutables() model.Finding {
 	return f
 }
 
+func classifyDeletedExecutables(items []string) (int, model.Severity) {
+	count, severity := 0, model.Medium
+	for _, item := range items {
+		lower := strings.ToLower(item)
+		if proxyProcessPattern.MatchString(lower) || containsAny(lower, "/tmp/", "/var/tmp/", "/dev/shm/") {
+			count++
+		}
+		if containsAny(lower, "/tmp/", "/var/tmp/", "/dev/shm/") {
+			severity = model.High
+		}
+	}
+	return count, severity
+}
+
 type dockerInspect struct {
 	Name   string `json:"Name"`
 	Config struct {
-		User  string `json:"User"`
-		Image string `json:"Image"`
+		User  string   `json:"User"`
+		Image string   `json:"Image"`
+		Env   []string `json:"Env"`
 	} `json:"Config"`
 	HostConfig struct {
 		Privileged  bool     `json:"Privileged"`
@@ -273,7 +293,8 @@ func checkDocker(ctx *Context) []model.Finding {
 			f.Evidence = append(f.Evidence, model.Evidence{Source: "docker inspect", Key: "privileged", Value: name})
 		}
 		if c.HostConfig.NetworkMode == "host" {
-			if strings.Contains(strings.ToLower(c.Config.Image), "gozargah/marzban") {
+			image := strings.ToLower(c.Config.Image)
+			if strings.Contains(image, "gozargah/marzban") || strings.Contains(image, "quay.io/outline/shadowbox") {
 				f.Evidence = append(f.Evidence, model.Evidence{Source: "docker inspect", Key: "expected_host_network", Value: name + " image=" + c.Config.Image + " official deployment model; effective listeners are audited separately"})
 			} else {
 				problems++

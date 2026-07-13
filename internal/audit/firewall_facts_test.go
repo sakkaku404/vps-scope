@@ -50,3 +50,48 @@ func TestNFTDefaultPolicyTracksTableFamily(t *testing.T) {
 		t.Fatalf("family policies=%v", f.defaultDenyByFamily)
 	}
 }
+
+func TestNFTParserUsesOnlyReachableInputChains(t *testing.T) {
+	input := `table ip filter {
+	chain INPUT {
+		type filter hook input priority filter; policy accept;
+		tcp dport 16659 accept
+		jump user-input
+	}
+	chain user-input {
+		udp dport 443 accept
+	}
+	chain OUTPUT {
+		type filter hook output priority filter; policy accept;
+		tcp dport 9999 accept
+	}
+}`
+	f := parseNFTFirewall(input)
+	if firewallDispositionFamily(f, "16659", "tcp", "ipv4") != "allow-anywhere" || firewallDispositionFamily(f, "443", "udp", "ipv4") != "allow-anywhere" {
+		t.Fatalf("input path not parsed: %+v", f.rules)
+	}
+	if firewallDispositionFamily(f, "9999", "tcp", "ipv4") == "allow-anywhere" {
+		t.Fatal("OUTPUT rule was mistaken for host ingress")
+	}
+}
+
+func TestActiveUFWIncludesDirectNFTInputRules(t *testing.T) {
+	ufw := "Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n22/tcp ALLOW IN Anywhere"
+	nft := `table ip filter {
+	chain INPUT {
+		type filter hook input priority filter; policy accept;
+		tcp dport 16659 accept
+	}
+}`
+	cmd := newScenarioCommander([]string{"ufw", "nft"}, map[string]CommandResult{
+		scenarioCommandKey("ufw", "status", "verbose"): {Stdout: ufw},
+		scenarioCommandKey("nft", "list", "ruleset"):   {Stdout: nft},
+	})
+	f := collectHostFirewall(cmd)
+	if f.backend != "ufw+nftables" || firewallDispositionFamily(f, "16659", "tcp", "ipv4") != "allow-anywhere" {
+		t.Fatalf("merged firewall=%+v", f)
+	}
+	if firewallDispositionFamily(f, "24443", "udp", "ipv4") != "blocked-by-default" {
+		t.Fatal("UFW default deny was lost while merging nftables")
+	}
+}

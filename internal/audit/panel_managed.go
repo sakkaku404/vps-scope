@@ -1,10 +1,12 @@
 package audit
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -14,7 +16,7 @@ func directoryExists(path string) bool {
 }
 
 func collectMarzbanFacts(_ Commander) panelSnapshot {
-	s := panelSnapshot{Product: "Marzban", Binary: "container or Python service", Database: "/opt/marzban/.env", SchemaVersion: "marzban-config-v1"}
+	s := panelSnapshot{Product: "Marzban", Binary: "container or Python service", Database: "/opt/marzban/.env", SchemaVersion: "marzban-config-v1", SensitiveFiles: []string{"/opt/marzban/.env"}}
 	values, err := readEnvWhitelist("/opt/marzban/.env", map[string]bool{
 		"UVICORN_HOST": true, "UVICORN_PORT": true, "UVICORN_UDS": true,
 		"UVICORN_SSL_CERTFILE": true, "UVICORN_SSL_KEYFILE": true,
@@ -74,12 +76,86 @@ func collectHiddifyFacts(_ Commander) panelSnapshot {
 		}
 		applyManagedProxyConfig(&s, path, product)
 	}
+	for _, path := range paths {
+		// Generated routing, DNS, logging, and outbound fragments generally do
+		// not contain client credentials. Inbound fragments can contain UUIDs,
+		// passwords, and Reality private keys and therefore need strict modes.
+		if strings.Contains(strings.ToLower(filepath.Base(path)), "inbound") {
+			s.SensitiveFiles = append(s.SensitiveFiles, path)
+		}
+	}
 	if len(paths) == 0 {
 		s.DatabaseAvailable = false
 		s.DatabaseError = "no supported generated Xray or sing-box configuration found"
 	}
 	sortPanelFacts(&s)
 	return s
+}
+
+func collectContainerPanelSnapshots(containers []dockerInspect) []panelSnapshot {
+	var out []panelSnapshot
+	for _, container := range containers {
+		image := strings.ToLower(container.Config.Image)
+		if strings.Contains(image, "quay.io/outline/shadowbox") {
+			out = append(out, collectOutlineFacts(container))
+		}
+	}
+	return out
+}
+
+func collectOutlineFacts(container dockerInspect) panelSnapshot {
+	name := strings.TrimPrefix(container.Name, "/")
+	s := panelSnapshot{Product: "Outline", Binary: name, Adapter: "outline/container-v1", SchemaVersion: "outline-shadowbox-v1"}
+	values := outlineEnvValues(container.Config.Env)
+	apiPort := values["SB_API_PORT"]
+	if validPort(apiPort) {
+		s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "management", Listen: "::", Port: apiPort, TLSKnown: true, TLS: true, Source: "docker inspect allowlisted Outline environment", PathKnown: true, PathIsDefault: false})
+	}
+	stateDir := filepath.Clean(values["SB_STATE_DIR"])
+	if filepath.IsAbs(stateDir) && (strings.HasPrefix(stateDir, "/opt/") || strings.HasPrefix(stateDir, "/var/lib/")) {
+		s.Database = filepath.Join(stateDir, "shadowbox_server_config.json")
+		s.SensitiveFiles = append(s.SensitiveFiles, s.Database)
+		if data, err := readSmall(s.Database, 1<<20); err == nil {
+			if port, ok := parseOutlineState([]byte(data)); ok {
+				s.DatabaseAvailable = true
+				s.Inbounds = append(s.Inbounds, panelInboundFact{Enabled: true, Listen: "::", Port: port, Protocol: "shadowsocks", Network: "tcp,udp"})
+			} else {
+				s.DatabaseError = "Outline state did not contain a valid access-key port"
+			}
+		} else {
+			s.DatabaseError = "Outline state file unavailable"
+		}
+	} else {
+		s.DatabaseError = "Outline state directory unavailable or outside supported roots"
+	}
+	if len(s.Endpoints) == 0 && s.DatabaseError == "" {
+		s.DatabaseError = "Outline management API port unavailable"
+	}
+	sortPanelFacts(&s)
+	return s
+}
+
+func outlineEnvValues(environment []string) map[string]string {
+	allowed := map[string]bool{"SB_API_PORT": true, "SB_STATE_DIR": true}
+	values := map[string]string{}
+	for _, entry := range environment {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok && allowed[key] {
+			values[key] = value
+		}
+	}
+	return values
+}
+
+func parseOutlineState(data []byte) (string, bool) {
+	var config struct {
+		PortForNewAccessKeys int `json:"portForNewAccessKeys"`
+	}
+	if json.Unmarshal(data, &config) != nil {
+		return "", false
+	}
+	port := strconv.Itoa(config.PortForNewAccessKeys)
+	return port, validPort(port)
 }
 
 func applyManagedProxyConfig(snapshot *panelSnapshot, path, product string) {

@@ -28,15 +28,18 @@ type Build struct {
 type ProgressFunc func(index, total int, category string)
 
 type Options struct {
-	Locale         string
-	Profile        string
-	ExpectedPublic map[string]bool
-	LogSince       time.Duration
-	Deep           bool
-	Commander      Commander
-	Build          Build
-	Progress       ProgressFunc
-	Now            func() time.Time
+	Locale          string
+	Profile         string
+	ExpectedPublic  map[string]bool
+	LogSince        time.Duration
+	Deep            bool
+	ExternalDomains []string
+	ExpectCDN       bool
+	ExternalProber  ExternalProber
+	Commander       Commander
+	Build           Build
+	Progress        ProgressFunc
+	Now             func() time.Time
 }
 
 type Context struct {
@@ -107,7 +110,7 @@ func Run(opts Options) (model.Report, error) {
 		Findings:      findings,
 		Metadata: map[string]string{
 			"mutation_policy": "never-modify-system",
-			"network_checks":  "disabled-by-default",
+			"network_checks":  map[bool]string{true: "explicitly-enabled", false: "disabled-by-default"}[len(opts.ExternalDomains) > 0],
 			"audit_depth":     map[bool]string{true: "deep", false: "standard"}[opts.Deep],
 		},
 	}

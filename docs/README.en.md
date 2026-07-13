@@ -24,16 +24,18 @@ The audit covers the parts of a small VPS that are easy to overlook: system reso
 Proxy hosts get additional context for:
 
 - sing-box, Xray, Hysteria2, TUIC, Trojan, and Shadowsocks cores and ingress
-- S-UI, 3x-ui/x-ui, Marzban, and Hiddify management/ingress relations, plus container signals for Outline
+- S-UI, 3x-ui/x-ui, Marzban, Hiddify, and Outline management/ingress relations
 - native read-only configuration checks for sing-box and Xray
 - publicly bound Clash API, V2Ray API, and similar control endpoints
 - permissions on panel databases and proxy configuration
 - systemd identity, capabilities, isolation, and file-descriptor limits
 - UDP buffer and error-counter context for Hysteria2 and TUIC workloads
-- config-to-listener relations across TCP/UDP transport, process ownership, exposure scope, and normalized UFW, firewalld, nftables, or iptables/ip6tables policy
+- config-to-listener relations across TCP/UDP transport, process ownership, exposure scope, merged UFW/effective nftables INPUT policy, and stale allows left without a live listener
 - Reality semantic completeness without exporting private keys, SNI values, targets, or short IDs
 - privacy-safe category counts for authentication, handshake, DNS, TLS, routing, and fatal log signals
 - WireGuard interface, UDP listener, firewall, and recent-handshake counts without peer keys or endpoints
+- Nginx, Caddy, and HAProxy chains from public frontends to panel or proxy backends, including public management routes and over-broad backend listeners
+- optional external DNS/TLS observation, disabled by default and enabled only when domains are explicitly supplied, with CDN-origin address comparison
 
 Detecting a product is not the same as proving which port is its management plane. Container networking, reverse proxies, and unknown panel layouts remain `UNKNOWN` when the evidence cannot support a safe conclusion. See [proxy compatibility](PROXY-COMPATIBILITY.md) for the tested scope.
 
@@ -97,15 +99,20 @@ Running it without arguments opens a short setup prompt with Chinese and English
 sudo ./vps-scope audit --lang en --profile general
 sudo ./vps-scope audit --lang en --profile proxy
 sudo ./vps-scope audit --profile custom --expect-public 22/tcp,443/tcp
+sudo ./vps-scope audit --profile proxy --external-domain panel.example.com --expect-cdn
 ```
 
 The standard audit is suitable for routine use and avoids recursive filesystem scans. Use `sudo vps-scope audit --deep` to add SUID/SGID, file-capability, and installed-package integrity checks. Deep-only checks that were not run are shown as skipped, never as `PASS`.
 
 Profiles give the audit some context about the server's job. Built-in choices include `general`, `web`, `proxy`, `docker`, and `mixed`. Custom public listeners can be declared as `PORT/tcp` or `PORT/udp`; this affects exposure checks, not the rest of the audit.
 
+External DNS/TLS observation is disabled by default. `--external-domain` explicitly enables network access, while `--expect-cdn` declares that those domains should sit behind a CDN. The audit compares DNS results with local global addresses and observes TLS on port 443; historical DNS, cloud firewalls, and true off-host reachability still require a second vantage point.
+
 ## Reports
 
 Interactive mode defaults to showing the result in the terminal and saving a full report bundle. Saved reports go to `~/vps-scope-reports/HOST/TIMESTAMP/`; `~/vps-scope-reports/latest` points to the newest one. Each run uses a distinct directory and refuses to overwrite an existing bundle. The completion message explains each file and prints a copy-paste download command.
+
+Start with the action summary rather than the raw count: it separates confirmed high-priority risks, likely availability problems, routine maintenance, and evidence gaps. This is a reading aid only; it never changes a finding's `PASS` / `RISK` / `INFO` / `UNKNOWN` state. Terminal and Markdown reports show a small set of key evidence first, while the full evidence remains available in verbose output, JSON, and collapsible Markdown sections.
 
 ```bash
 sudo vps-scope report show  # show the latest report again

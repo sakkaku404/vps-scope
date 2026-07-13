@@ -63,6 +63,7 @@ func TestManagedPanelProcessOwnership(t *testing.T) {
 		{"Hiddify", `users:(("xray",pid=2))`},
 		{"Marzban", `users:(("xray",pid=3))`},
 		{"3x-ui", `users:(("x-ui",pid=4))`},
+		{"Outline", `users:(("outline-ss-serv",pid=5))`},
 	} {
 		if !panelOwnsProcess(test.product, test.process) {
 			t.Errorf("%s should own %s", test.product, test.process)
@@ -70,5 +71,21 @@ func TestManagedPanelProcessOwnership(t *testing.T) {
 	}
 	if panelOwnsProcess("Marzban", `users:(("nginx",pid=5))`) {
 		t.Fatal("Marzban should not claim an unrelated nginx process")
+	}
+}
+
+func TestOutlineAdapterWhitelistsEnvironmentAndState(t *testing.T) {
+	values := outlineEnvValues([]string{
+		"SB_API_PORT=39443",
+		"SB_STATE_DIR=/opt/outline/persisted-state",
+		"SB_API_PREFIX=must-not-leak",
+		"SB_PRIVATE_KEY_FILE=/secret/key",
+	})
+	if len(values) != 2 || values["SB_API_PORT"] != "39443" || values["SB_STATE_DIR"] != "/opt/outline/persisted-state" {
+		t.Fatalf("allowlisted values=%#v", values)
+	}
+	port, ok := parseOutlineState([]byte(`{"hostname":"203.0.113.10","portForNewAccessKeys":39444,"secret":"must-not-leak"}`))
+	if !ok || port != "39444" {
+		t.Fatalf("port=%q ok=%t", port, ok)
 	}
 }

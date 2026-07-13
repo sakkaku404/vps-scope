@@ -52,6 +52,7 @@ type panelSnapshot struct {
 	EnabledClients         int
 	DisabledClients        int
 	CertificateFiles       []string
+	SensitiveFiles         []string
 }
 
 func collectPanelSnapshots(cmd Commander) []panelSnapshot {

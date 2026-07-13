@@ -7,7 +7,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,47 +14,6 @@ import (
 
 	"github.com/sakkaku404/vps-scope/internal/model"
 )
-
-type proxyInbound struct {
-	Product          string
-	Protocol         string
-	Listen           string
-	Port             string
-	Transports       []string
-	Security         string
-	RealityEnabled   bool
-	RealityKeySet    bool
-	RealityTargets   int
-	RealityServerIDs int
-}
-
-type controlEndpoint struct {
-	Product string
-	Kind    string
-	Listen  string
-	Port    string
-}
-
-type proxyConfigSummary struct {
-	Product   string
-	Path      string
-	Inbounds  []proxyInbound
-	Controls  []controlEndpoint
-	UsesUDP   bool
-	Parseable bool
-	Err       error
-}
-
-// configuredProxyInbound keeps the source path while allowing checks to
-// collapse an identical ingress described by both a panel database and its
-// generated runtime configuration. Panels such as 3x-ui intentionally keep
-// those two views in sync; counting both would make the report misleading.
-type configuredProxyInbound struct {
-	Path string
-	proxyInbound
-}
-
-var proxyProcessPattern = regexp.MustCompile(`(?i)\b(sing-box|xray|x-ui|s-ui|sui|hysteria|tuic|trojan|ss-server|sslocal|marzban|hiddify|outline-ss-server|wg-quick|openvpn)\b`)
 
 func proxyChecks(ctx *Context) []model.Finding {
 	summaries := discoverProxyConfigs(ctx)
@@ -70,6 +28,8 @@ func proxyChecks(ctx *Context) []model.Finding {
 		checkProxyLogSignals(ctx),
 		checkWireGuardRuntime(ctx),
 		checkPanelRuntimeConsistency(ctx, summaries),
+		checkReverseProxyRelations(ctx),
+		checkExternalExposure(ctx),
 	}
 }
 func checkProxyInventory(ctx *Context, summaries []proxyConfigSummary) model.Finding {
@@ -227,7 +187,14 @@ func checkProxyControlEndpoints(ctx *Context, summaries []proxyConfigSummary) mo
 func checkProxySensitivePermissions(summaries []proxyConfigSummary) model.Finding {
 	paths := map[string]fs.FileMode{}
 	for _, summary := range summaries {
-		paths[summary.Path] = 0o027 // allow controlled group read, never group write or other access
+		if regularFile(summary.Path) {
+			paths[summary.Path] = 0o027 // allow controlled group read, never group write or other access
+		}
+		for _, path := range summary.SensitiveFiles {
+			if regularFile(path) {
+				paths[path] = 0o027
+			}
+		}
 	}
 	for _, path := range []string{
 		"/usr/local/s-ui/db/s-ui.db", "/etc/s-ui/s-ui.db", "/etc/x-ui/x-ui.db", "/etc/wireguard/wg0.conf",
@@ -241,7 +208,8 @@ func checkProxySensitivePermissions(summaries []proxyConfigSummary) model.Findin
 		return notApplicable("WORK-006", "workloads", "filesystem discovery", "no supported proxy secret-bearing file found")
 	}
 	f := model.Finding{ID: "WORK-006", Category: "workloads", Status: model.Pass, Facts: map[string]string{"files_checked": strconv.Itoa(len(paths))}}
-	problems := 0
+	problems, checked := 0, 0
+	var checkedEvidence, problemEvidence []model.Evidence
 	ordered := make([]string, 0, len(paths))
 	for path := range paths {
 		ordered = append(ordered, path)
@@ -252,15 +220,26 @@ func checkProxySensitivePermissions(summaries []proxyConfigSummary) model.Findin
 		if err != nil {
 			continue
 		}
-		f.Evidence = append(f.Evidence, model.Evidence{Source: "stat", Key: "proxy_sensitive_file", Value: fmt.Sprintf("%s mode=%s", path, modeString(info))})
+		checked++
+		checkedEvidence = append(checkedEvidence, model.Evidence{Source: "stat", Key: "proxy_sensitive_file", Value: fmt.Sprintf("%s mode=%s", path, modeString(info))})
 		if tooOpen(info, paths[path]) {
 			problems++
-			f.Evidence = append(f.Evidence, model.Evidence{Source: "stat", Key: "insecure_mode", Value: fmt.Sprintf("%s mode=%s", path, modeString(info))})
+			problemEvidence = append(problemEvidence, model.Evidence{Source: "stat", Key: "insecure_mode", Value: fmt.Sprintf("%s mode=%s", path, modeString(info))})
 		}
 	}
+	f.Facts["files_checked"] = strconv.Itoa(checked)
 	f.Facts["permission_problems"] = strconv.Itoa(problems)
 	if problems > 0 {
 		f.Status, f.Severity = model.Risk, model.High
+		f.Evidence = append(f.Evidence, problemEvidence[:min(len(problemEvidence), 20)]...)
+		if len(problemEvidence) > 20 {
+			f.Facts["evidence_omitted"] = strconv.Itoa(len(problemEvidence) - 20)
+		}
+	} else {
+		f.Evidence = append(f.Evidence, checkedEvidence[:min(len(checkedEvidence), 20)]...)
+		if len(checkedEvidence) > 20 {
+			f.Facts["evidence_omitted"] = strconv.Itoa(len(checkedEvidence) - 20)
+		}
 	}
 	return f
 }
@@ -338,84 +317,44 @@ func checkProxyEndpointRelations(ctx *Context, summaries []proxyConfigSummary) m
 		return unknown("WORK-009", "workloads", "ss + proxy configuration", err.Error())
 	}
 	active := activeProxyProducts(ctx)
-	ufw := readPanelUFW(ctx)
+	graph := buildProxyEndpointGraph(inbounds, listeners, readPanelUFW(ctx))
 	matched, missing, semanticProblems := 0, 0, 0
 	for _, endpoint := range inbounds {
-		transports := endpoint.Transports
-		if len(transports) == 0 {
-			transports = proxyTransports(endpoint.Protocol, "")
-		}
-		if endpoint.Port == "" {
-			f.Status = model.Info
-			f.Evidence = append(f.Evidence, model.Evidence{Source: endpoint.Path, Key: "endpoint_unresolved", Value: fmt.Sprintf("product=%s protocol=%s reason=port_not_resolved", endpoint.Product, endpoint.Protocol)})
-			continue
-		}
 		if endpoint.RealityEnabled && (!endpoint.RealityKeySet || endpoint.RealityTargets == 0 || endpoint.RealityServerIDs == 0) {
 			semanticProblems++
 			f.Status, f.Severity = model.Risk, model.Medium
-		}
-		for _, transport := range transports {
-			var live []Listener
-			for _, listener := range listeners {
-				if listener.Port == endpoint.Port && strings.HasPrefix(listener.Protocol, transport) {
-					live = append(live, listener)
-				}
-			}
-			if len(live) == 0 {
-				missing++
-				status := "configured_not_listening"
-				if active[strings.ToLower(endpoint.Product)] {
-					f.Status, f.Severity = model.Risk, model.Medium
-					status = "active_product_but_not_listening"
-				} else if f.Status != model.Risk {
-					f.Status = model.Info
-				}
-				f.Evidence = append(f.Evidence, model.Evidence{Source: endpoint.Path + " + ss", Key: "endpoint_relation", Value: endpointRelationValue(endpoint.proxyInbound, transport, "none", "none", "not-live", status)})
-				continue
-			}
-			matched++
-			for _, listener := range live {
-				firewall := firewallDispositionFamily(ufw, endpoint.Port, transport, listenerAddressFamily(listener.Address))
-				judgment := "expected-proxy-ingress"
-				if product, known := listenerProxyProduct(listener.Process); known && !sameProxyProduct(product, endpoint.Product) {
-					judgment = "listener-owner-does-not-match-configured-product"
-					f.Status, f.Severity = model.Risk, model.Medium
-				}
-				if (listener.Scope == "public" || listener.Scope == "public-wildcard") && firewall == "blocked-by-default" {
-					judgment = "configured-public-ingress-blocked-by-host-firewall"
-					f.Status, f.Severity = model.Risk, model.Medium
-				}
-				f.Evidence = append(f.Evidence, model.Evidence{Source: endpoint.Path + " + ss + ufw", Key: "endpoint_relation", Value: endpointRelationValue(endpoint.proxyInbound, transport, listener.Process, listener.Scope, firewall, judgment)})
-			}
 		}
 		if endpoint.RealityEnabled {
 			f.Evidence = append(f.Evidence, model.Evidence{Source: endpoint.Path, Key: "reality_semantics", Value: fmt.Sprintf("product=%s port=%s private_key_set=%t target_set=%t server_name_or_short_id_count=%d", endpoint.Product, endpoint.Port, endpoint.RealityKeySet, endpoint.RealityTargets > 0, endpoint.RealityServerIDs)})
 		}
 	}
+	for _, assessment := range assessProxyEndpointGraph(graph, active) {
+		endpoint := assessment.Node
+		if endpoint.Port == "" {
+			f.Status = model.Info
+			f.Evidence = append(f.Evidence, model.Evidence{Source: endpoint.Source, Key: "endpoint_unresolved", Value: fmt.Sprintf("product=%s protocol=%s reason=port_not_resolved", endpoint.Product, endpoint.Protocol)})
+			continue
+		}
+		if assessment.Missing {
+			missing++
+			if assessment.Risk {
+				f.Status, f.Severity = model.Risk, model.Medium
+			} else if f.Status != model.Risk {
+				f.Status = model.Info
+			}
+		} else {
+			matched++
+		}
+		if assessment.Risk {
+			f.Status, f.Severity = model.Risk, model.Medium
+		}
+		inbound := proxyInbound{Product: endpoint.Product, Protocol: endpoint.Protocol, Port: endpoint.Port, Security: endpoint.Security}
+		f.Evidence = append(f.Evidence, model.Evidence{Source: endpoint.Source + " + ss + host firewall", Key: "endpoint_relation", Value: endpointRelationValue(inbound, endpoint.Transport, valueOr(endpoint.Process, "none"), valueOr(endpoint.Scope, "none"), valueOr(endpoint.Firewall, "not-live"), assessment.Judgment)})
+	}
 	f.Facts["matched_listener_relations"] = strconv.Itoa(matched)
 	f.Facts["missing_listener_relations"] = strconv.Itoa(missing)
 	f.Facts["semantic_problems"] = strconv.Itoa(semanticProblems)
 	return f
-}
-
-func listenerProxyProduct(process string) (string, bool) {
-	product := proxyProductFromText(process)
-	return product, product != "unknown-proxy"
-}
-
-func sameProxyProduct(a, b string) bool {
-	normalize := func(value string) string {
-		value = strings.ToLower(value)
-		switch {
-		case containsAny(value, "x-ui", "xray"):
-			return "xray-family"
-		case containsAny(value, "s-ui", "sing-box"):
-			return "sing-box-family"
-		default:
-			return value
-		}
-	}
-	return normalize(a) == normalize(b)
 }
 
 func checkWireGuardRuntime(ctx *Context) model.Finding {
@@ -470,39 +409,6 @@ func checkWireGuardRuntime(ctx *Context) model.Finding {
 	f.Facts["peers_with_recent_handshake"] = strconv.Itoa(recentPeers)
 	f.Evidence = append(f.Evidence, model.Evidence{Source: "wg show", Key: "peer_summary", Value: fmt.Sprintf("peers=%d recent_handshakes=%d; public keys and endpoints withheld", peers, recentPeers)})
 	return f
-}
-
-func proxyTransports(protocol, network string) []string {
-	p := strings.ToLower(protocol)
-	n := strings.ToLower(network)
-	if containsAny(p+" "+n, "hysteria", "tuic", "quic", "kcp") {
-		return []string{"udp"}
-	}
-	if strings.Contains(p, "shadowsocks") || strings.Contains(p, "mixed") {
-		if n == "tcp" || n == "udp" {
-			return []string{n}
-		}
-		return []string{"tcp", "udp"}
-	}
-	if n == "udp" {
-		return []string{"udp"}
-	}
-	return []string{"tcp"}
-}
-
-func endpointRelationValue(in proxyInbound, transport, process, scope, firewall, judgment string) string {
-	security := in.Security
-	if in.RealityEnabled {
-		security = "reality"
-	}
-	if security == "" {
-		security = "none-or-protocol-native"
-	}
-	return fmt.Sprintf("port=%s/%s process=%s purpose=%s/%s security=%s scope=%s firewall=%s judgment=%s", in.Port, transport, truncate(process, 120), in.Product, in.Protocol, security, scope, firewall, judgment)
-}
-
-func endpointFirewallDisposition(ufw panelUFW, port, protocol string) string {
-	return firewallDisposition(ufw, port, protocol)
 }
 
 func discoverProxyConfigs(ctx *Context) []proxyConfigSummary {
@@ -561,8 +467,10 @@ func panelProxySummary(panel panelSnapshot) (proxyConfigSummary, bool) {
 	product := "Xray"
 	if panel.Product == "S-UI" {
 		product = "sing-box"
+	} else if panel.Product == "Outline" {
+		product = "Outline"
 	}
-	s := proxyConfigSummary{Product: product, Path: panel.Database, Parseable: true}
+	s := proxyConfigSummary{Product: product, Path: panel.Database, SensitiveFiles: append([]string(nil), panel.SensitiveFiles...), Parseable: true}
 	for _, item := range panel.Inbounds {
 		if !item.Enabled {
 			continue

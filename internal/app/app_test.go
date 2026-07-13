@@ -101,3 +101,18 @@ func TestParseExpectedPublic(t *testing.T) {
 		t.Fatal("invalid format accepted")
 	}
 }
+
+func TestParseExternalDomains(t *testing.T) {
+	got, err := parseExternalDomains("Panel.Example.com, panel.example.com.,api.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != "panel.example.com" || got[1] != "api.example.com" {
+		t.Fatalf("domains=%v", got)
+	}
+	for _, invalid := range []string{"https://example.com", "bad name.example", "-bad.example"} {
+		if _, err := parseExternalDomains(invalid); err == nil {
+			t.Fatalf("accepted invalid domain %q", invalid)
+		}
+	}
+}

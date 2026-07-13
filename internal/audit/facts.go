@@ -33,7 +33,12 @@ type FactStore struct {
 }
 
 func (f *FactStore) Panels() []panelSnapshot {
-	f.panelsOnce.Do(func() { f.panels = collectPanelSnapshots(f.cmd) })
+	f.panelsOnce.Do(func() {
+		f.panels = collectPanelSnapshots(f.cmd)
+		if containers, err := f.DockerContainers(); err == nil {
+			f.panels = append(f.panels, collectContainerPanelSnapshots(containers)...)
+		}
+	})
 	return append([]panelSnapshot(nil), f.panels...)
 }
 

@@ -24,18 +24,20 @@ VPS Scope 不是该项目的分支，代码与检测实现均为独立实现。V
 代理服务器会额外检查：
 
 - sing-box、Xray、Hysteria2、TUIC、Trojan、Shadowsocks 等核心与入口
-- S-UI、3x-ui/x-ui、Marzban、Hiddify 管理面与代理入口；Outline 目前提供容器和端口线索
+- S-UI、3x-ui/x-ui、Marzban、Hiddify、Outline 的管理面与代理入口关系
 - 对原生 S-UI、3x-ui 的面板数据库做内置只读解析；无需在目标 VPS 安装 `sqlite3`
 - sing-box 与 Xray 配置解析和原生只读自检
 - Clash API、V2Ray API 等控制接口是否公开监听、是否被主机防火墙限制
 - 面板数据库、代理配置和私钥相关文件的权限
 - 代理 systemd 服务的运行用户、capabilities、隔离选项和文件描述符限制
 - Hysteria2、TUIC 等 UDP 场景的缓冲区和错误计数上下文
-- 把配置入口、TCP/UDP 传输、实际监听进程、暴露范围和主机防火墙规则关联到一起；统一识别 UFW、firewalld、nftables、iptables/ip6tables
+- 把配置入口、TCP/UDP 传输、实际监听进程、暴露范围和主机防火墙规则关联到一起；合并 UFW 与实际 nftables INPUT 规则，并识别服务停止后遗留的开放端口
 - 面板数据库、生成配置和实际监听三者的角色/运行态一致性；同一动态入站不会重复计数
 - Reality 关键字段是否齐全（只记录存在性和数量，不导出私钥、SNI、target 或 short ID）
 - 认证、握手、DNS、TLS、路由和致命错误的日志分类计数（不导出原始日志内容）
 - WireGuard 接口、UDP 监听、防火墙和近期握手数量（不导出 peer 公钥或 endpoint）
+- Nginx、Caddy、HAProxy 公网前端到面板或代理核心的反向代理链；能够指出公开反代管理面和监听过宽的后端
+- 可选的外部 DNS/TLS 观察；默认完全关闭，只有显式传入域名时才联网，并可检查声明使用 CDN 的域名是否仍直接发布源站地址
 
 “识别到了软件”和“可以可靠判断管理端口”是两回事。遇到容器网络、反向代理或未知面板结构时，VPS Scope 会保留 `UNKNOWN`，不会为了显得支持得多而给出 `PASS`。当前实测范围见[代理兼容性](docs/PROXY-COMPATIBILITY.md)。
 
@@ -99,15 +101,20 @@ sudo ./vps-scope
 sudo ./vps-scope audit --lang zh-CN --profile general
 sudo ./vps-scope audit --lang zh-CN --profile proxy
 sudo ./vps-scope audit --profile custom --expect-public 22/tcp,443/tcp
+sudo ./vps-scope audit --profile proxy --external-domain panel.example.com --expect-cdn
 ```
 
 `profile` 用来告诉工具这台服务器大致是做什么的，目前有 `general`、`web`、`proxy`、`docker` 和 `mixed`。如果某个公网端口是你明确需要的，可以用 `--expect-public` 声明；这只影响端口是否符合用途预期，不会跳过其他安全检查。
+
+外部 DNS/TLS 观察默认关闭。`--external-domain` 会明确启用网络访问，`--expect-cdn` 表示这些域名预期位于 CDN 后；工具会比较 DNS 地址与本机全局地址并检查 443 TLS，但历史 DNS、云防火墙和真正的异地可达性仍需要从另一台主机复核。
 
 默认检查适合日常运行，不会递归扫描整块磁盘。需要核对 SUID/SGID、文件 capabilities 和已安装软件包完整性时，使用 `sudo vps-scope audit --deep`；未运行的深度项目会明确标成未执行，不会冒充 `PASS`。
 
 ## 报告
 
 交互模式默认会在终端显示结果，同时保存一份完整报告。报告统一放在 `~/vps-scope-reports/主机名/时间/`，其中 `~/vps-scope-reports/latest` 始终指向最近一次报告。每次运行使用独立目录，拒绝覆盖已有报告；生成完成后会解释每个文件的用途，并给出可以复制的下载命令。
+
+先看“现在优先处理”等行动摘要，而不是只看风险数量：它会区分明确的高优先级风险、可能影响可用性的问题、例行维护和证据不足项。这只是帮助阅读，不会改变任何检查的 `PASS` / `RISK` / `INFO` / `UNKNOWN` 结论。终端和 Markdown 默认先展示关键证据；完整证据仍可在详细模式、JSON 和可折叠的 Markdown 区域中查看。
 
 ```bash
 sudo vps-scope report show  # 再次显示最近一次报告

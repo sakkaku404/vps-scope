@@ -4,6 +4,31 @@ Notable changes to VPS Scope are recorded here.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+## 0.9.0 - 2026-07-13
+
+### Added
+
+- A structured endpoint graph separating product adapters, live listeners, host-firewall facts, policy judgments, and report evidence.
+- `WORK-013` for Nginx, Caddy, and HAProxy frontend-to-backend chains, including public management routes, missing endpoints, over-broad backends, and external upstream separation.
+- `WORK-014` for explicitly enabled external DNS/TLS observation with optional CDN-origin address expectations; network access remains disabled by default.
+- A native Outline Shadowbox container adapter that distinguishes the management API from TCP/UDP Shadowsocks ingress without retaining API prefixes, keys, or credentials.
+- Policy matrices for TCP/UDP endpoint relations, reverse proxies, external observation, and native/sing-box TUIC, Trojan, Shadowsocks, and OpenVPN parsing.
+- An action-oriented reading layer for terminal, Markdown, and HTML reports: confirmed priority risks, availability concerns, maintenance work, and evidence gaps are separated without changing raw finding states.
+
+### Changed
+
+- Official Outline and Marzban host-network containers are treated as deployment context while their effective listeners and management exposure are audited separately.
+- Proxy endpoint policy now consumes a typed graph instead of combining collection, product parsing, and judgment in one loop.
+- Raised the build baseline to Go 1.25.12 because opt-in TLS observation made standard-library fixes for GO-2026-5856 and GO-2026-5037 reachable.
+- Active UFW evidence is now merged with the effective nftables INPUT path, avoiding false blocked-port results when a workload installs direct nftables rules.
+- Firewall exposure reports collapse duplicate IPv4/IPv6 rules and flag public allow rules with no matching live listener.
+- Hiddify-managed Xray/sing-box listeners, WireGuard kernel listeners, path-gated HAProxy management routes, and secret-bearing generated inbound files now receive product-aware judgments.
+- Deleted proxy-core or temporary-directory executables still running are distinguished from ordinary post-upgrade interpreter processes.
+- Markdown reports lead with key evidence and keep the remaining evidence in a collapsible section; JSON remains the full canonical evidence record.
+- Split shared proxy endpoint vocabulary and endpoint-policy helpers out of the main proxy check implementation without changing audit IDs or schemas.
+
 ## 0.8.0 - 2026-07-13
 
 ### Added
@@ -137,7 +162,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Report comparison, fleet summaries, re-rendering, and redaction.
 - Linux amd64 and arm64 release builds.
 
-[Unreleased]: https://github.com/sakkaku404/vps-scope/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/sakkaku404/vps-scope/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/sakkaku404/vps-scope/compare/v0.8.0...v0.9.0
 [0.5.0]: https://github.com/sakkaku404/vps-scope/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/sakkaku404/vps-scope/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/sakkaku404/vps-scope/compare/v0.2.0...v0.3.0
