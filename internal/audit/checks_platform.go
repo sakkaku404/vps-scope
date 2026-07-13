@@ -245,24 +245,36 @@ func classifyDeletedExecutables(items []string) (int, model.Severity) {
 type dockerInspect struct {
 	Name   string `json:"Name"`
 	Config struct {
-		User  string   `json:"User"`
-		Image string   `json:"Image"`
-		Env   []string `json:"Env"`
+		User   string            `json:"User"`
+		Image  string            `json:"Image"`
+		Env    []string          `json:"Env"`
+		Labels map[string]string `json:"Labels"`
 	} `json:"Config"`
 	HostConfig struct {
-		Privileged  bool     `json:"Privileged"`
-		NetworkMode string   `json:"NetworkMode"`
-		PidMode     string   `json:"PidMode"`
-		IpcMode     string   `json:"IpcMode"`
-		Binds       []string `json:"Binds"`
-		CapAdd      []string `json:"CapAdd"`
-		SecurityOpt []string `json:"SecurityOpt"`
+		Privileged     bool     `json:"Privileged"`
+		ReadonlyRootfs bool     `json:"ReadonlyRootfs"`
+		NetworkMode    string   `json:"NetworkMode"`
+		PidMode        string   `json:"PidMode"`
+		IpcMode        string   `json:"IpcMode"`
+		Binds          []string `json:"Binds"`
+		CapAdd         []string `json:"CapAdd"`
+		SecurityOpt    []string `json:"SecurityOpt"`
+		RestartPolicy  struct {
+			Name string `json:"Name"`
+		} `json:"RestartPolicy"`
 	} `json:"HostConfig"`
+	Mounts []struct {
+		Type        string `json:"Type"`
+		Source      string `json:"Source"`
+		Destination string `json:"Destination"`
+		RW          bool   `json:"RW"`
+	} `json:"Mounts"`
 	NetworkSettings struct {
 		Ports map[string][]struct {
 			HostIP   string `json:"HostIp"`
 			HostPort string `json:"HostPort"`
 		} `json:"Ports"`
+		Networks map[string]json.RawMessage `json:"Networks"`
 	} `json:"NetworkSettings"`
 }
 
@@ -285,11 +297,29 @@ func checkDocker(ctx *Context) []model.Finding {
 		return []model.Finding{{ID: "DOCKER-001", Category: "docker", Status: model.Info, Evidence: []model.Evidence{{Source: "docker ps", Value: "no running containers"}}}}
 	}
 	f := model.Finding{ID: "DOCKER-001", Category: "docker", Status: model.Pass, Facts: map[string]string{"running_containers": strconv.Itoa(len(containers))}}
-	problems := 0
+	problemKeys := map[string]bool{}
+	recordProblem := func(key string) { problemKeys[key] = true }
+	composeProjects, composeServices := map[string]bool{}, 0
 	for _, c := range containers {
 		name := strings.TrimPrefix(c.Name, "/")
+		project, service := c.Config.Labels["com.docker.compose.project"], c.Config.Labels["com.docker.compose.service"]
+		if project != "" || service != "" {
+			composeProjects[project] = true
+			composeServices++
+			f.Evidence = append(f.Evidence, model.Evidence{Source: "docker inspect labels", Key: "compose_service", Value: fmt.Sprintf("project=%s service=%s container=%s image=%s network_mode=%s", valueOr(project, "unknown"), valueOr(service, "unknown"), name, c.Config.Image, c.HostConfig.NetworkMode)})
+		}
+		user := c.Config.User
+		if user == "" {
+			user = "root(default)"
+		}
+		networks := make([]string, 0, len(c.NetworkSettings.Networks))
+		for network := range c.NetworkSettings.Networks {
+			networks = append(networks, network)
+		}
+		sort.Strings(networks)
+		f.Evidence = append(f.Evidence, model.Evidence{Source: "docker inspect", Key: "container_context", Value: fmt.Sprintf("name=%s image=%s user=%s restart=%s readonly_rootfs=%t networks=%s", name, c.Config.Image, user, valueOr(c.HostConfig.RestartPolicy.Name, "none"), c.HostConfig.ReadonlyRootfs, strings.Join(networks, ","))})
 		if c.HostConfig.Privileged {
-			problems++
+			recordProblem(name + ":privileged")
 			f.Evidence = append(f.Evidence, model.Evidence{Source: "docker inspect", Key: "privileged", Value: name})
 		}
 		if c.HostConfig.NetworkMode == "host" {
@@ -297,18 +327,30 @@ func checkDocker(ctx *Context) []model.Finding {
 			if strings.Contains(image, "gozargah/marzban") || strings.Contains(image, "quay.io/outline/shadowbox") {
 				f.Evidence = append(f.Evidence, model.Evidence{Source: "docker inspect", Key: "expected_host_network", Value: name + " image=" + c.Config.Image + " official deployment model; effective listeners are audited separately"})
 			} else {
-				problems++
+				recordProblem(name + ":host-network")
 				f.Evidence = append(f.Evidence, model.Evidence{Source: "docker inspect", Key: "host_network", Value: name})
 			}
 		}
 		if c.HostConfig.PidMode == "host" || c.HostConfig.IpcMode == "host" {
-			problems++
+			recordProblem(name + ":host-namespace")
 			f.Evidence = append(f.Evidence, model.Evidence{Source: "docker inspect", Key: "host_namespace", Value: name})
 		}
 		for _, bind := range c.HostConfig.Binds {
 			if strings.Contains(bind, "/var/run/docker.sock") || strings.HasPrefix(bind, "/:/") {
-				problems++
+				recordProblem(name + ":sensitive-mount")
 				f.Evidence = append(f.Evidence, model.Evidence{Source: "docker inspect", Key: "sensitive_bind", Value: name + " " + bind})
+			}
+		}
+		for _, mount := range c.Mounts {
+			if mount.Source == "/var/run/docker.sock" || mount.Destination == "/var/run/docker.sock" || (mount.Source == "/" && mount.RW) {
+				recordProblem(name + ":sensitive-mount")
+				f.Evidence = append(f.Evidence, model.Evidence{Source: "docker inspect mounts", Key: "sensitive_mount", Value: fmt.Sprintf("%s type=%s source=%s destination=%s rw=%t", name, mount.Type, mount.Source, mount.Destination, mount.RW)})
+			}
+		}
+		for _, capability := range c.HostConfig.CapAdd {
+			if containsAny(strings.ToUpper(capability), "SYS_ADMIN", "SYS_PTRACE", "DAC_READ_SEARCH", "ALL") {
+				recordProblem(name + ":dangerous-capability:" + strings.ToUpper(capability))
+				f.Evidence = append(f.Evidence, model.Evidence{Source: "docker inspect", Key: "dangerous_capability", Value: name + " capability=" + capability})
 			}
 		}
 		for containerPort, bindings := range c.NetworkSettings.Ports {
@@ -318,8 +360,10 @@ func checkDocker(ctx *Context) []model.Finding {
 			}
 		}
 	}
-	f.Facts["isolation_problems"] = strconv.Itoa(problems)
-	if problems > 0 {
+	f.Facts["compose_projects"] = strconv.Itoa(len(composeProjects))
+	f.Facts["compose_services"] = strconv.Itoa(composeServices)
+	f.Facts["isolation_problems"] = strconv.Itoa(len(problemKeys))
+	if len(problemKeys) > 0 {
 		f.Status, f.Severity = model.Risk, model.High
 	}
 	return []model.Finding{f}

@@ -99,7 +99,10 @@ func checkProxyConfiguration(ctx *Context, summaries []proxyConfigSummary) model
 			continue
 		}
 		f.Evidence = append(f.Evidence, model.Evidence{Source: summary.Path, Key: "parsed", Value: fmt.Sprintf("product=%s inbounds=%d controls=%d", summary.Product, len(summary.Inbounds), len(summary.Controls))})
-		if strings.HasSuffix(summary.Path, ".db") {
+		// Managed-panel summaries may represent an entire generated config tree
+		// or a database-derived runtime model. Passing such a directory to a
+		// single-file native self-test produces a false failure.
+		if strings.HasSuffix(summary.Path, ".db") || !regularFile(summary.Path) {
 			continue
 		}
 		binary, args := proxySelfTest(summary.Product, summary.Path)
@@ -250,6 +253,7 @@ func checkProxyServiceIsolation(ctx *Context) model.Finding {
 		return notApplicable("WORK-007", "workloads", "systemd", "no supported proxy systemd service found")
 	}
 	f := model.Finding{ID: "WORK-007", Category: "workloads", Status: model.Info, Facts: map[string]string{"services": strconv.Itoa(len(units))}}
+	rootServices, dangerousCapabilities := 0, 0
 	for _, unit := range units {
 		r := ctx.Commander.Run(10*time.Second, "systemctl", "show", unit,
 			"--property=ActiveState,SubState,User,Group,NoNewPrivileges,ProtectSystem,ProtectHome,PrivateTmp,CapabilityBoundingSet,AmbientCapabilities,LimitNOFILE,NRestarts,FragmentPath")
@@ -258,6 +262,18 @@ func checkProxyServiceIsolation(ctx *Context) model.Finding {
 			continue
 		}
 		values := parseKeyValues(r.Stdout)
+		if values["User"] == "" || values["User"] == "root" {
+			rootServices++
+		}
+		// CapabilityBoundingSet is only an upper bound and often defaults to a
+		// broad set; it does not grant those capabilities. AmbientCapabilities,
+		// on the other hand, is an explicit grant inherited by the service.
+		ambientCapabilities := strings.ToUpper(values["AmbientCapabilities"])
+		if containsAny(ambientCapabilities, "CAP_SYS_ADMIN", "CAP_SYS_PTRACE", "CAP_DAC_READ_SEARCH") {
+			dangerousCapabilities++
+			raiseRisk(&f, model.High)
+			f.Evidence = append(f.Evidence, model.Evidence{Source: "systemctl show", Key: "dangerous_proxy_service_ambient_capability", Value: unit + " explicitly receives a high-impact ambient capability; complete capability list withheld from summary"})
+		}
 		keys := []string{"ActiveState", "SubState", "User", "NoNewPrivileges", "ProtectSystem", "ProtectHome", "PrivateTmp", "CapabilityBoundingSet", "AmbientCapabilities", "LimitNOFILE", "NRestarts"}
 		parts := make([]string, 0, len(keys))
 		for _, key := range keys {
@@ -276,6 +292,8 @@ func checkProxyServiceIsolation(ctx *Context) model.Finding {
 			}
 		}
 	}
+	f.Facts["root_services"] = strconv.Itoa(rootServices)
+	f.Facts["dangerous_capability_services"] = strconv.Itoa(dangerousCapabilities)
 	return f
 }
 
@@ -354,7 +372,54 @@ func checkProxyEndpointRelations(ctx *Context, summaries []proxyConfigSummary) m
 	f.Facts["matched_listener_relations"] = strconv.Itoa(matched)
 	f.Facts["missing_listener_relations"] = strconv.Itoa(missing)
 	f.Facts["semantic_problems"] = strconv.Itoa(semanticProblems)
+	if ctx.Commander.Exists("ss") {
+		r := ctx.Commander.Run(12*time.Second, "ss", "-H", "-ntup", "state", "established")
+		if r.Err != nil && r.Stdout == "" {
+			r = ctx.Commander.Run(12*time.Second, "ss", "-H", "-ntu", "state", "established")
+		}
+		if r.Err == nil && !r.Truncated {
+			ports := map[string]bool{}
+			for _, endpoint := range inbounds {
+				for _, transport := range endpoint.Transports {
+					if transport == "tcp" {
+						ports[endpoint.Port] = true
+					}
+				}
+			}
+			counts, total := proxyConnectionCounts(r.Stdout, ports)
+			for port := range ports {
+				if _, ok := counts[port]; !ok {
+					counts[port] = 0
+				}
+			}
+			f.Facts["established_proxy_tcp_connections"] = strconv.Itoa(total)
+			for _, port := range sortedCountKeys(counts) {
+				f.Evidence = append(f.Evidence, model.Evidence{Source: "ss established + proxy ingress", Key: "connection_snapshot", Value: fmt.Sprintf("port=%s/tcp established=%d; peer addresses withheld from this workload summary", port, counts[port])})
+			}
+		}
+	}
 	return f
+}
+
+func proxyConnectionCounts(output string, proxyPorts map[string]bool) (map[string]int, int) {
+	counts, total := map[string]int{}, 0
+	for _, connection := range parseEstablishedConnections(output) {
+		_, port := splitHostPortLoose(connection.local)
+		if proxyPorts[port] {
+			counts[port]++
+			total++
+		}
+	}
+	return counts, total
+}
+
+func sortedCountKeys(values map[string]int) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func checkWireGuardRuntime(ctx *Context) model.Finding {
@@ -500,7 +565,7 @@ func proxyServiceUnits(ctx *Context) []string {
 		if len(fields) == 0 || !strings.HasSuffix(fields[0], ".service") {
 			continue
 		}
-		if proxyProcessPattern.MatchString(fields[0]) || containsAny(strings.ToLower(fields[0]), "marzban", "hiddify", "outline") {
+		if proxyProcessPattern.MatchString(fields[0]) || containsAny(strings.ToLower(fields[0]), "marzban", "hiddify", "outline", "nginx", "caddy", "haproxy") {
 			seen[fields[0]] = true
 		}
 	}

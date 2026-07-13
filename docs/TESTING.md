@@ -17,7 +17,7 @@ Proxy-specific fixtures also verify that configuration summaries never retain UU
 
 `internal/audit/scenario_test.go` provides the reusable command fixture used for policy tests. Every command used by a scenario must be declared explicitly; an undeclared command fails, so a test cannot quietly inherit facts from the developer workstation or CI runner.
 
-The scenarios assert outcomes, not implementation details. They currently cover effective SSH policy, firewall and update evidence, journald-based SSH and sudo auditing, public panel exposure, expected public proxy ingress, public control APIs, panel/runtime mismatches, unsafe Docker isolation, and truncated command output. The important safety contract is that incomplete evidence produces `UNKNOWN`, never `PASS`.
+The scenarios assert outcomes, not implementation details. They currently cover effective SSH policy, firewall and update evidence, journald-based SSH and sudo auditing, public panel exposure and default paths, expected public proxy ingress, public control APIs, panel/runtime and role collisions, disabled or unexplained listeners, privacy-safe abuse counts, Compose/effective mounts, ambient capabilities, unsafe Docker isolation, and truncated command output. The important safety contract is that incomplete evidence produces `UNKNOWN`, never `PASS`.
 
 When adding a new decision rule, add at least one ordinary expected-state scenario and one adverse or incomplete-evidence scenario. Keep fixtures small, synthetic, and free of real host identifiers or secrets.
 
@@ -48,10 +48,13 @@ Regression review should verify:
 - masked systemd symlinks are not treated as world-writable unit files.
 - Docker loopback publication remains loopback.
 - S-UI, 3x-ui, and x-ui management listeners are distinguished from proxy ingress.
+- Empty/root panel paths are distinguished from unavailable path evidence, and a public path-gated reverse proxy remains management exposure.
+- Management/subscription and proxy-ingress role collisions, disabled inbounds that still listen, and unexplained public panel/core listeners elevate the panel-runtime finding.
 - Native S-UI and 3x-ui database facts remain available when `sqlite3` is absent from the target host.
 - Native panel reports identify the selected adapter and supported database schema version; an unknown schema stops metadata queries cleanly.
 - A public panel allow-rule, missing Shadowsocks UDP allow-rule, and a stopped panel each change the relevant result to `RISK` or `INFO`; none becomes a false `PASS`.
 - Resource, password-context, active-connection, firewalld, and CrowdSec parsers have deterministic fixtures.
+- Per-ingress TCP connection snapshots exclude peer addresses from the workload summary and never become a risk solely from a generic count threshold.
 - file-backed TLS and embedded TLS visibility are reported separately.
 - JSON, text, Markdown, HTML, manifest verification, `diff`, and `fleet` agree.
 - SSH fingerprint evidence excludes key material and comments; empty placeholder files are not `UNKNOWN`.
@@ -64,6 +67,8 @@ Regression review should verify:
 - the audit executable itself is excluded from temporary-directory process findings when using the one-command runner.
 - a baseline created from a report matches a later unchanged audit and rejects a different host or changed stable inventory.
 - reverse-proxy policy separates local loopback backends from external camouflage upstreams and elevates unrestricted public management routes.
+- Docker Compose labels are allowlisted, effective Docker socket mounts are deduplicated, and official host-network deployment context does not hide unrelated privileged containers.
+- A broad `CapabilityBoundingSet` alone is not a risk; an explicit high-impact `AmbientCapabilities` grant is.
 - external DNS/TLS observation stays disabled without `--external-domain`; failures are `UNKNOWN`, while an explicitly expected CDN domain that publishes the local address is `RISK`.
 
 The latest four-host standard run completed in about 4 to 8 seconds with the expanded workload graph. Deep runs on the two busiest lab hosts took about 37 to 54 seconds. These timings are observations from 1 vCPU / 1 GB lab VPS instances, not performance guarantees.

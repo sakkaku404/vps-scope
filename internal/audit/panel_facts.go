@@ -73,12 +73,12 @@ func collectSUIFacts(cmd Commander) panelSnapshot {
 	s.Version = firstVersion(version.Stdout + "\n" + version.Stderr)
 	settings := cmd.Run(8*time.Second, s.Binary, "setting", "-show")
 	if port, ok := parseNamedPort(settings.Stdout, "Panel port"); ok {
-		path := parseNamedText(settings.Stdout, "Panel path")
-		s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "management", Listen: "::", Port: port, Source: "sui setting -show", PathKnown: path != "", PathIsDefault: panelPathIsDefault(path)})
+		path, pathKnown := parseNamedTextKnown(settings.Stdout, "Panel path")
+		s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "management", Listen: "::", Port: port, Source: "sui setting -show", PathKnown: pathKnown, PathIsDefault: panelPathIsDefault(path)})
 	}
 	if port, ok := parseNamedPort(settings.Stdout, "Sub port"); ok {
-		path := parseNamedText(settings.Stdout, "Sub path")
-		s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "subscription", Listen: "::", Port: port, Source: "sui setting -show", PathKnown: path != "", PathIsDefault: subscriptionPathIsDefault(path)})
+		path, pathKnown := parseNamedTextKnown(settings.Stdout, "Sub path")
+		s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "subscription", Listen: "::", Port: port, Source: "sui setting -show", PathKnown: pathKnown, PathIsDefault: subscriptionPathIsDefault(path)})
 	}
 	if !regularFile(s.Database) {
 		s.DatabaseError = "S-UI database missing"
@@ -90,7 +90,7 @@ func collectSUIFacts(cmd Commander) panelSnapshot {
 		return s
 	}
 	s.SchemaVersion = schema
-	settingRows, err := sqliteTSV(cmd, s.Database, `SELECT key, value FROM settings WHERE key IN ('webListen','webPort','webCertFile','webKeyFile','subListen','subPort','subCertFile','subKeyFile');`)
+	settingRows, err := sqliteTSV(cmd, s.Database, `SELECT key, value FROM settings WHERE key IN ('webListen','webPort','webBasePath','webCertFile','webKeyFile','subListen','subPort','subPath','subCertFile','subKeyFile');`)
 	if err != nil {
 		s.DatabaseError = err.Error()
 		return s
@@ -130,8 +130,8 @@ func collectXUIFacts(cmd Commander) panelSnapshot {
 		settings = cmd.Run(8*time.Second, s.Binary, "setting", "-show")
 	}
 	if port, ok := parsePanelPort(s.Product, settings.Stdout); ok {
-		path := parseNamedText(settings.Stdout, "webBasePath")
-		s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "management", Listen: "::", Port: port, Source: "x-ui setting -show", PathKnown: path != "", PathIsDefault: panelPathIsDefault(path)})
+		path, pathKnown := parseNamedTextKnown(settings.Stdout, "webBasePath")
+		s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "management", Listen: "::", Port: port, Source: "x-ui setting -show", PathKnown: pathKnown, PathIsDefault: panelPathIsDefault(path)})
 	}
 	if match := regexp.MustCompile(`(?mi)^\s*hasDefaultCredential\s*:\s*(true|false)\s*$`).FindStringSubmatch(settings.Stdout); len(match) == 2 {
 		s.DefaultCredentialKnown = true
@@ -158,7 +158,7 @@ func collectXUIFacts(cmd Commander) panelSnapshot {
 	}
 	s.SchemaVersion = schema
 	s.DatabaseAvailable = true
-	settingRows, err := sqliteTSV(cmd, s.Database, `SELECT key, value FROM settings WHERE key IN ('webListen','webPort','webCertFile','webCertKey','subEnable','subListen','subPort','subCertFile','subKeyFile');`)
+	settingRows, err := sqliteTSV(cmd, s.Database, `SELECT key, value FROM settings WHERE key IN ('webListen','webPort','webBasePath','webCertFile','webCertKey','subEnable','subListen','subPort','subPath','subCertFile','subKeyFile');`)
 	if err == nil {
 		applyPanelSettings(&s, settingRows, "x-ui database")
 	}
@@ -252,9 +252,19 @@ func applyPanelSettings(snapshot *panelSnapshot, rows [][]string, source string)
 		certFile := values[role.prefix+"CertFile"]
 		tls := certFile != "" && (values[role.prefix+"KeyFile"] != "" || values[role.prefix+"CertKey"] != "")
 		updated := panelEndpoint{Role: role.name, Listen: listen, Port: port, TLS: tls, TLSKnown: tlsKnown, Source: source, CertFile: certFile}
+		if path, ok := values[map[string]string{"web": "webBasePath", "sub": "subPath"}[role.prefix]]; ok {
+			updated.PathKnown = true
+			if role.name == "management" {
+				updated.PathIsDefault = panelPathIsDefault(path)
+			} else {
+				updated.PathIsDefault = subscriptionPathIsDefault(path)
+			}
+		}
 		for _, old := range snapshot.Endpoints {
 			if old.Role == role.name {
-				updated.PathKnown, updated.PathIsDefault = old.PathKnown, old.PathIsDefault
+				if !updated.PathKnown {
+					updated.PathKnown, updated.PathIsDefault = old.PathKnown, old.PathIsDefault
+				}
 			}
 		}
 		upsertPanelEndpoint(snapshot, updated)
@@ -289,11 +299,16 @@ func parseNamedPort(output, name string) (string, bool) {
 }
 
 func parseNamedText(output, name string) string {
-	match := regexp.MustCompile(`(?mi)^\s*` + regexp.QuoteMeta(name) + `\s*:\s*(\S+)\s*$`).FindStringSubmatch(output)
-	if len(match) == 2 {
-		return strings.TrimSpace(match[1])
+	value, _ := parseNamedTextKnown(output, name)
+	return value
+}
+
+func parseNamedTextKnown(output, name string) (string, bool) {
+	match := regexp.MustCompile(`(?mi)^\s*` + regexp.QuoteMeta(name) + `\s*:\s*(.*?)\s*$`).FindStringSubmatch(output)
+	if len(match) != 2 {
+		return "", false
 	}
-	return ""
+	return strings.TrimSpace(match[1]), true
 }
 
 func panelPathIsDefault(path string) bool {

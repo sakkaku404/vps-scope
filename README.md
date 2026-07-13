@@ -51,6 +51,19 @@ VPS Scope 会尽量把它还原成能行动的判断：
 
 这也是 VPS Scope 的核心：不靠端口或服务数量的阈值给服务器打分，而是尽量将**配置、运行状态和网络暴露关系**对应起来。
 
+## 它实际解决哪些代理服务器问题
+
+VPS Scope 不只是列出“检测到 S-UI、sing-box、Reality”。这些名称只有在能解释运行关系时才有价值。当前检查会继续追问：
+
+- S-UI 或 3x-ui 管理面是直接监听公网，还是只监听回环后经 Nginx、Caddy、HAProxy 暴露；根/默认路径和未启用 TLS 会写进判断，但随机路径不会被当作安全边界
+- 面板管理、订阅和代理入站是否错误共用端口；面板里已经禁用的入口是否仍在监听；是否出现面板或核心拥有、却无法由数据库和生成配置解释的公网端口
+- Reality、Hysteria2、TUIC、Trojan、Shadowsocks 等配置入口，是否由正确进程按 TCP/UDP 实际监听，并被 IPv4/IPv6 主机防火墙正确放行或阻断
+- Clash/V2Ray API、面板 API 和订阅相关异常是否暴露；日志只输出分类计数，不复制地址、Token 或原始请求
+- Docker Compose 中哪个服务承载面板或核心，是否使用 privileged、host namespace、危险 capabilities 或 Docker socket；官方 host-network 部署会保留上下文，不会掩盖同机的危险容器
+- 当前每个 TCP 代理入口有多少已建立连接，供多次报告和基线比较；不会因为某个通用数量阈值就武断判定攻击
+
+因此，“识别协议”不是最终功能。真正的结果是把面板数据库或配置、systemd/Docker、实际监听、反向代理和主机防火墙连接成一条可以复核的证据链。证据不足时仍然是 `UNKNOWN`，不会因为识别到产品名就显示 `PASS`。
+
 ## 为什么做 VPS Scope
 
 VPS Scope 起于我对 [vernu/vps-audit](https://github.com/vernu/vps-audit) 的一次实际复核。它让我意识到，VPS 自查应该尽量依据真正生效的状态，而不是只读取某一份配置文件，或根据端口和服务数量判断风险。
@@ -188,14 +201,14 @@ sudo vps-scope audit --format bundle --output ./reports/sgp
 完整报告包包含 JSON、文本、Markdown、HTML 和 SHA-256 清单。HTML 是不加载外部脚本或字体的离线单文件页面，支持筛选和搜索。已有 JSON 不必重新连接服务器，也可以重新渲染为其他语言或格式：
 
 ```bash
-vps-scope render report.json --lang zh-CN --format html --output report.zh-CN.html
-vps-scope render report.json --lang en --format markdown --output report.en.md
+vps-scope render --lang zh-CN --format html --output report.zh-CN.html report.json
+vps-scope render --lang en --format markdown --output report.en.md report.json
 ```
 
 准备公开报告前，可以生成脱敏版：
 
 ```bash
-vps-scope redact report.json --format markdown --output public.md
+vps-scope redact --format markdown --output public.md report.json
 ```
 
 同一地址或用户名会保留同一个代号，方便看懂关系。密码、token、私钥、订阅路径、SSH key 注释和完整进程参数不会写进报告；可能同时装有证书和私钥的应用数据也不会为了检查而导出。完整边界见[隐私说明](docs/PRIVACY.md)。

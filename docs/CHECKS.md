@@ -31,9 +31,14 @@ Check IDs are stable across languages and report formats. A status is separate f
 - Package-owned SUID files and capabilities remain inventory; unowned privileged files elevate the finding.
 - Missing documentation excluded by image minimization is separated from missing runtime package files.
 - Public S-UI, 3x-ui, and x-ui management access is evaluated separately from proxy ingress and subscription endpoints.
+- A root/default panel path and disabled panel TLS strengthen the explanation of an already public management exposure; neither a random path nor HTTPS alone makes a public panel private.
+- A loopback panel reached through a public Nginx, Caddy, or HAProxy route is still public management exposure.
+- Management/subscription ports reused by proxy ingress, disabled inbounds that remain live, and unexplained public panel/core listeners are explicit runtime-consistency risks.
 - Public proxy ingress is expected when configuration, transport, listener, process, and firewall evidence agree.
+- Established TCP counts are snapshots for each configured proxy ingress, not generic attack thresholds; compare runs or baselines to identify meaningful changes.
 - Reality private keys, server names, targets, and short IDs are never exported; only presence and counts are retained.
 - Embedded S-UI TLS blobs are never exported merely to inspect expiry; validity remains `UNKNOWN` until a safe interface exists.
+- systemd capability bounding sets are context, not grants; only explicit high-impact ambient capabilities elevate `WORK-007`.
 
 ## Standard and deep audit
 

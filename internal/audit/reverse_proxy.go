@@ -331,17 +331,17 @@ func assessReverseProxyRoutes(routes []reverseProxyRoute, listeners []Listener, 
 		if product := managementPorts[route.BackendPort]; product != "" && frontend != nil && (frontScope == "public" || frontScope == "public-wildcard") && (frontFW == "allow-anywhere" || frontFW == "inactive") {
 			exposedManagement++
 			managementJudgment := "public-reverse-proxy-exposes-" + strings.ToLower(product) + "-management"
-			severity := model.High
 			if route.Access == "path-gated" {
 				managementJudgment = "public-path-gated-reverse-proxy-reaches-" + strings.ToLower(product) + "-management"
-				severity = model.Medium
 			}
 			if judgment == "reverse-proxy-chain-consistent" {
 				judgment = managementJudgment
 			} else {
 				judgment += "+" + managementJudgment
 			}
-			raiseRisk(&f, severity)
+			// A non-default or conditional URL path reduces scan noise but is not
+			// an authentication or network-access boundary.
+			raiseRisk(&f, model.High)
 		}
 		backScope, backProcess := "not-live", "none"
 		if backend != nil {
