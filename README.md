@@ -31,7 +31,7 @@ VPS Scope 不是该项目的分支，代码与检测实现均为独立实现。V
 - 面板数据库、代理配置和私钥相关文件的权限
 - 代理 systemd 服务的运行用户、capabilities、隔离选项和文件描述符限制
 - Hysteria2、TUIC 等 UDP 场景的缓冲区和错误计数上下文
-- 把配置入口、TCP/UDP 传输、实际监听进程、暴露范围和 UFW 规则关联到一起
+- 把配置入口、TCP/UDP 传输、实际监听进程、暴露范围和主机防火墙规则关联到一起；统一识别 UFW、firewalld、nftables、iptables/ip6tables
 - 面板数据库、生成配置和实际监听三者的角色/运行态一致性；同一动态入站不会重复计数
 - Reality 关键字段是否齐全（只记录存在性和数量，不导出私钥、SNI、target 或 short ID）
 - 认证、握手、DNS、TLS、路由和致命错误的日志分类计数（不导出原始日志内容）
@@ -145,6 +145,13 @@ vps-scope redact report.json --format markdown --output public.md
 ```bash
 vps-scope diff old.json new.json
 vps-scope fleet west.json sgp.json tw.json japan.json
+```
+
+长期运行的服务器可以建立基线，重点观察新增或消失的公网监听、SSH key、防火墙规则、面板/代理入口、容器和代理服务：
+
+```bash
+vps-scope baseline create report.json baseline.json
+vps-scope baseline check baseline.json report-new.json
 ```
 
 检查 ID 不随语言变化，所以中文报告和英文报告也能正常比较。

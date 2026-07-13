@@ -105,14 +105,7 @@ func (f *FactStore) Processes() ([]ProcessInfo, error) {
 
 func (f *FactStore) UFW() panelUFW {
 	f.ufwOnce.Do(func() {
-		if !f.cmd.Exists("ufw") {
-			return
-		}
-		r := f.cmd.Run(12*time.Second, "ufw", "status", "verbose")
-		if r.Err != nil || r.Truncated {
-			return
-		}
-		f.ufw = parsePanelUFW(r.Stdout)
+		f.ufw = collectHostFirewall(f.cmd)
 	})
 	return f.ufw
 }

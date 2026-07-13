@@ -39,6 +39,8 @@ type panelInboundFact struct {
 type panelSnapshot struct {
 	Product                string
 	Version                string
+	Adapter                string
+	SchemaVersion          string
 	Binary                 string
 	Database               string
 	Endpoints              []panelEndpoint
@@ -54,11 +56,12 @@ type panelSnapshot struct {
 
 func collectPanelSnapshots(cmd Commander) []panelSnapshot {
 	var out []panelSnapshot
-	if regularFile("/usr/local/s-ui/sui") {
-		out = append(out, collectSUIFacts(cmd))
-	}
-	if regularFile("/usr/local/x-ui/x-ui") {
-		out = append(out, collectXUIFacts(cmd))
+	for _, adapter := range panelAdapters() {
+		if adapter.Detect() {
+			snapshot := adapter.Collect(cmd)
+			snapshot.Adapter = adapter.ID()
+			out = append(out, snapshot)
+		}
 	}
 	return out
 }
@@ -80,6 +83,12 @@ func collectSUIFacts(cmd Commander) panelSnapshot {
 		s.DatabaseError = "S-UI database missing"
 		return s
 	}
+	schema, err := detectPanelSchema(cmd, s.Database, "S-UI")
+	if err != nil {
+		s.DatabaseError = err.Error()
+		return s
+	}
+	s.SchemaVersion = schema
 	settingRows, err := sqliteTSV(cmd, s.Database, `SELECT key, value FROM settings WHERE key IN ('webListen','webPort','webCertFile','webKeyFile','subListen','subPort','subCertFile','subKeyFile');`)
 	if err != nil {
 		s.DatabaseError = err.Error()
@@ -141,6 +150,12 @@ func collectXUIFacts(cmd Commander) panelSnapshot {
 		s.DatabaseError = "x-ui database missing"
 		return s
 	}
+	schema, err := detectPanelSchema(cmd, s.Database, s.Product)
+	if err != nil {
+		s.DatabaseError = err.Error()
+		return s
+	}
+	s.SchemaVersion = schema
 	s.DatabaseAvailable = true
 	settingRows, err := sqliteTSV(cmd, s.Database, `SELECT key, value FROM settings WHERE key IN ('webListen','webPort','webCertFile','webCertKey','subEnable','subListen','subPort','subCertFile','subKeyFile');`)
 	if err == nil {

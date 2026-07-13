@@ -4,7 +4,17 @@ Notable changes to VPS Scope are recorded here.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.7.0 - 2026-07-13
+
+### Added
+
+- Normalized host-firewall facts for UFW, firewalld, nftables, and iptables/ip6tables, preserving protocol, port, source scope, address family, and action.
+- Versioned native S-UI and 3x-ui/x-ui adapters with database schema probing before metadata queries.
+- `baseline create` and `baseline check` for stable public listeners, SSH key fingerprints, firewall rules, panel/proxy endpoints, containers, and proxy services.
+
+### Changed
+
+- Split panel runtime policy, proxy parsers, and report comparison commands out of the largest audit and CLI files without changing check IDs or report schemas.
 
 ## 0.6.1 - 2026-07-12
 

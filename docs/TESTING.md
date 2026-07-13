@@ -41,12 +41,14 @@ Regression review should verify:
 - `sshd -T` facts match the effective daemon policy.
 - failed-login categories are not summed into a misleading total.
 - UFW default policy and individual allow rules are both represented.
+- nftables, iptables/ip6tables, and firewalld fixtures normalize family, protocol, port, source, and action without allowing an IPv4 rule to cover IPv6.
 - package-owned capabilities are not automatically risks.
 - normal `/etc/shadow` group-readable policy is accepted on Ubuntu/Debian.
 - masked systemd symlinks are not treated as world-writable unit files.
 - Docker loopback publication remains loopback.
 - S-UI, 3x-ui, and x-ui management listeners are distinguished from proxy ingress.
 - Native S-UI and 3x-ui database facts remain available when `sqlite3` is absent from the target host.
+- Native panel reports identify the selected adapter and supported database schema version; an unknown schema stops metadata queries cleanly.
 - A public panel allow-rule, missing Shadowsocks UDP allow-rule, and a stopped panel each change the relevant result to `RISK` or `INFO`; none becomes a false `PASS`.
 - Resource, password-context, active-connection, firewalld, and CrowdSec parsers have deterministic fixtures.
 - file-backed TLS and embedded TLS visibility are reported separately.
@@ -59,6 +61,7 @@ Regression review should verify:
 - config-to-listener relations distinguish TCP and UDP and do not treat expected public proxy ingress as a vulnerability.
 - Reality, Trojan, Shadowsocks, OpenVPN, and WireGuard summaries retain semantic facts without secret-bearing values.
 - the audit executable itself is excluded from temporary-directory process findings when using the one-command runner.
+- a baseline created from a report matches a later unchanged audit and rejects a different host or changed stable inventory.
 
 The latest four-host standard run completed in about 3 to 5 seconds. These timings are observations from 1 vCPU / 1 GB lab VPS instances, not performance guarantees.
 
