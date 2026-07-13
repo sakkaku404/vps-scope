@@ -142,3 +142,26 @@ func TestMarkdownCompressesLongEvidence(t *testing.T) {
 		t.Fatalf("long evidence was not collapsed:\n%s", out.String())
 	}
 }
+
+func TestProxyOverviewShowsPanelsAndIngressWithoutVerbose(t *testing.T) {
+	r := sampleReport()
+	r.Findings = append(r.Findings,
+		model.Finding{ID: "WORK-002", Category: "workloads", Status: model.Risk, Severity: model.High, Facts: map[string]string{"products": "S-UI"}, Evidence: []model.Evidence{{Source: "panel discovery", Key: "product", Value: "product=S-UI version=1.5.3 adapter=native"}}},
+		model.Finding{ID: "WORK-003", Category: "workloads", Status: model.Info, Facts: map[string]string{"products": "S-UI,sing-box"}},
+		model.Finding{ID: "WORK-009", Category: "workloads", Status: model.Pass, Evidence: []model.Evidence{{Source: "endpoint graph", Key: "endpoint_relation", Value: "port=443/tcp process=sing-box purpose=sing-box/vless security=reality scope=public-wildcard firewall=allow-anywhere judgment=expected-proxy-ingress"}}},
+	)
+	r.Recount()
+	var out bytes.Buffer
+	if err := Text(&out, r, Options{Locale: "zh-CN"}); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	for _, expected := range []string{"代理工作负载概览", "S-UI 1.5.3 [RISK/HIGH]", "S-UI, sing-box", "443/tcp  sing-box/vless (reality)", "公网通配", "符合入口预期"} {
+		if !strings.Contains(text, expected) {
+			t.Errorf("text missing %q:\n%s", expected, text)
+		}
+	}
+	if strings.Contains(text, "系统修改:") {
+		t.Fatalf("removed header line is still present:\n%s", text)
+	}
+}

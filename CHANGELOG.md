@@ -6,6 +6,13 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 0.9.1 - 2026-07-13
+
+### Changed
+
+- Terminal reports now show a privacy-safe proxy workload overview with detected components, panel versions, proxy ingress relationships, and configured control APIs when evidence is available.
+- Removed the redundant system-mutation banner from terminal report headers.
+
 ## 0.9.0 - 2026-07-13
 
 ### Added
@@ -162,7 +169,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Report comparison, fleet summaries, re-rendering, and redaction.
 - Linux amd64 and arm64 release builds.
 
-[Unreleased]: https://github.com/sakkaku404/vps-scope/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/sakkaku404/vps-scope/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/sakkaku404/vps-scope/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/sakkaku404/vps-scope/compare/v0.8.0...v0.9.0
 [0.5.0]: https://github.com/sakkaku404/vps-scope/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/sakkaku404/vps-scope/compare/v0.3.0...v0.4.0

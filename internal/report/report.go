@@ -51,12 +51,10 @@ func Text(w io.Writer, r model.Report, opts Options) error {
 		fmt.Fprintf(w, "VPS Scope %s — 证据驱动的服务器安全审计\n%s\n", r.ToolVersion, line)
 		fmt.Fprintf(w, "主机: %s  系统: %s %s  架构: %s\n", r.Host.Hostname, r.Host.OS, r.Host.OSVersion, r.Host.Architecture)
 		fmt.Fprintf(w, "Profile: %s (检测: %s)  Root: %t  日志范围: %s\n", r.Profile.Effective, r.Profile.Detected, r.Host.IsRoot, r.LogSince)
-		fmt.Fprintln(w, "系统修改: 永不执行；仅在明确指定位置写入报告。")
 	} else {
 		fmt.Fprintf(w, "VPS Scope %s — Evidence-driven server security audit\n%s\n", r.ToolVersion, line)
 		fmt.Fprintf(w, "Host: %s  OS: %s %s  Arch: %s\n", r.Host.Hostname, r.Host.OS, r.Host.OSVersion, r.Host.Architecture)
 		fmt.Fprintf(w, "Profile: %s (detected: %s)  Root: %t  Log window: %s\n", r.Profile.Effective, r.Profile.Detected, r.Host.IsRoot, r.LogSince)
-		fmt.Fprintln(w, "System mutation: never; files are written only to an explicitly selected report path.")
 	}
 	fmt.Fprintln(w, line)
 	fmt.Fprintf(w, "RISK %d   PASS %d   INFO %d   UNKNOWN %d\n", r.Summary.Risk, r.Summary.Pass, r.Summary.Info, r.Summary.Unknown)
@@ -67,6 +65,7 @@ func Text(w io.Writer, r model.Report, opts Options) error {
 	}
 	writeExposureText(w, r, zh, line)
 	writeResourceText(w, r, zh, line)
+	writeProxyOverviewText(w, r, zh, line)
 	writeActionSummaryText(w, summarizeActions(r, opts.Locale), zh, line)
 
 	if r.Summary.Risk > 0 && opts.Verbose {
