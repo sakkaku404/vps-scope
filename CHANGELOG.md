@@ -4,6 +4,21 @@ Notable changes to VPS Scope are recorded here.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- A structured endpoint graph separating product adapters, live listeners, host-firewall facts, policy judgments, and report evidence.
+- `WORK-013` for Nginx, Caddy, and HAProxy frontend-to-backend chains, including public management routes, missing endpoints, over-broad backends, and external upstream separation.
+- `WORK-014` for explicitly enabled external DNS/TLS observation with optional CDN-origin address expectations; network access remains disabled by default.
+- A native Outline Shadowbox container adapter that distinguishes the management API from TCP/UDP Shadowsocks ingress without retaining API prefixes, keys, or credentials.
+- Policy matrices for TCP/UDP endpoint relations, reverse proxies, external observation, and native/sing-box TUIC, Trojan, Shadowsocks, and OpenVPN parsing.
+
+### Changed
+
+- Official Outline and Marzban host-network containers are treated as deployment context while their effective listeners and management exposure are audited separately.
+- Proxy endpoint policy now consumes a typed graph instead of combining collection, product parsing, and judgment in one loop.
+
 ## 0.8.0 - 2026-07-13
 
 ### Added

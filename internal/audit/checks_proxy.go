@@ -70,6 +70,8 @@ func proxyChecks(ctx *Context) []model.Finding {
 		checkProxyLogSignals(ctx),
 		checkWireGuardRuntime(ctx),
 		checkPanelRuntimeConsistency(ctx, summaries),
+		checkReverseProxyRelations(ctx),
+		checkExternalExposure(ctx),
 	}
 }
 func checkProxyInventory(ctx *Context, summaries []proxyConfigSummary) model.Finding {
@@ -338,64 +340,51 @@ func checkProxyEndpointRelations(ctx *Context, summaries []proxyConfigSummary) m
 		return unknown("WORK-009", "workloads", "ss + proxy configuration", err.Error())
 	}
 	active := activeProxyProducts(ctx)
-	ufw := readPanelUFW(ctx)
+	graph := buildProxyEndpointGraph(inbounds, listeners, readPanelUFW(ctx))
 	matched, missing, semanticProblems := 0, 0, 0
 	for _, endpoint := range inbounds {
-		transports := endpoint.Transports
-		if len(transports) == 0 {
-			transports = proxyTransports(endpoint.Protocol, "")
-		}
-		if endpoint.Port == "" {
-			f.Status = model.Info
-			f.Evidence = append(f.Evidence, model.Evidence{Source: endpoint.Path, Key: "endpoint_unresolved", Value: fmt.Sprintf("product=%s protocol=%s reason=port_not_resolved", endpoint.Product, endpoint.Protocol)})
-			continue
-		}
 		if endpoint.RealityEnabled && (!endpoint.RealityKeySet || endpoint.RealityTargets == 0 || endpoint.RealityServerIDs == 0) {
 			semanticProblems++
 			f.Status, f.Severity = model.Risk, model.Medium
-		}
-		for _, transport := range transports {
-			var live []Listener
-			for _, listener := range listeners {
-				if listener.Port == endpoint.Port && strings.HasPrefix(listener.Protocol, transport) {
-					live = append(live, listener)
-				}
-			}
-			if len(live) == 0 {
-				missing++
-				status := "configured_not_listening"
-				if active[strings.ToLower(endpoint.Product)] {
-					f.Status, f.Severity = model.Risk, model.Medium
-					status = "active_product_but_not_listening"
-				} else if f.Status != model.Risk {
-					f.Status = model.Info
-				}
-				f.Evidence = append(f.Evidence, model.Evidence{Source: endpoint.Path + " + ss", Key: "endpoint_relation", Value: endpointRelationValue(endpoint.proxyInbound, transport, "none", "none", "not-live", status)})
-				continue
-			}
-			matched++
-			for _, listener := range live {
-				firewall := firewallDispositionFamily(ufw, endpoint.Port, transport, listenerAddressFamily(listener.Address))
-				judgment := "expected-proxy-ingress"
-				if product, known := listenerProxyProduct(listener.Process); known && !sameProxyProduct(product, endpoint.Product) {
-					judgment = "listener-owner-does-not-match-configured-product"
-					f.Status, f.Severity = model.Risk, model.Medium
-				}
-				if (listener.Scope == "public" || listener.Scope == "public-wildcard") && firewall == "blocked-by-default" {
-					judgment = "configured-public-ingress-blocked-by-host-firewall"
-					f.Status, f.Severity = model.Risk, model.Medium
-				}
-				f.Evidence = append(f.Evidence, model.Evidence{Source: endpoint.Path + " + ss + ufw", Key: "endpoint_relation", Value: endpointRelationValue(endpoint.proxyInbound, transport, listener.Process, listener.Scope, firewall, judgment)})
-			}
 		}
 		if endpoint.RealityEnabled {
 			f.Evidence = append(f.Evidence, model.Evidence{Source: endpoint.Path, Key: "reality_semantics", Value: fmt.Sprintf("product=%s port=%s private_key_set=%t target_set=%t server_name_or_short_id_count=%d", endpoint.Product, endpoint.Port, endpoint.RealityKeySet, endpoint.RealityTargets > 0, endpoint.RealityServerIDs)})
 		}
 	}
+	for _, assessment := range assessProxyEndpointGraph(graph, active) {
+		endpoint := assessment.Node
+		if endpoint.Port == "" {
+			f.Status = model.Info
+			f.Evidence = append(f.Evidence, model.Evidence{Source: endpoint.Source, Key: "endpoint_unresolved", Value: fmt.Sprintf("product=%s protocol=%s reason=port_not_resolved", endpoint.Product, endpoint.Protocol)})
+			continue
+		}
+		if assessment.Missing {
+			missing++
+			if assessment.Risk {
+				f.Status, f.Severity = model.Risk, model.Medium
+			} else if f.Status != model.Risk {
+				f.Status = model.Info
+			}
+		} else {
+			matched++
+		}
+		if assessment.Risk {
+			f.Status, f.Severity = model.Risk, model.Medium
+		}
+		inbound := proxyInbound{Product: endpoint.Product, Protocol: endpoint.Protocol, Port: endpoint.Port, Security: endpoint.Security}
+		f.Evidence = append(f.Evidence, model.Evidence{Source: endpoint.Source + " + ss + host firewall", Key: "endpoint_relation", Value: endpointRelationValue(inbound, endpoint.Transport, valueOr(endpoint.Process, "none"), valueOr(endpoint.Scope, "none"), valueOr(endpoint.Firewall, "not-live"), assessment.Judgment)})
+	}
 	f.Facts["matched_listener_relations"] = strconv.Itoa(matched)
 	f.Facts["missing_listener_relations"] = strconv.Itoa(missing)
 	f.Facts["semantic_problems"] = strconv.Itoa(semanticProblems)
 	return f
+}
+
+func valueOr(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
 }
 
 func listenerProxyProduct(process string) (string, bool) {
@@ -561,6 +550,8 @@ func panelProxySummary(panel panelSnapshot) (proxyConfigSummary, bool) {
 	product := "Xray"
 	if panel.Product == "S-UI" {
 		product = "sing-box"
+	} else if panel.Product == "Outline" {
+		product = "Outline"
 	}
 	s := proxyConfigSummary{Product: product, Path: panel.Database, Parseable: true}
 	for _, item := range panel.Inbounds {

@@ -32,7 +32,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o dist/vps-scope-linux
 
 Real-host tests must use disposable release candidates and explicitly chosen report paths. Read the resulting JSON and human report; a successful exit code alone is not acceptance.
 
-The current disposable matrix includes Debian 12, Debian 13, Ubuntu 22.04, and Ubuntu 26.04 on 1 vCPU / 1 GB VPS instances. It covers S-UI with VLESS Reality, Hysteria2, and Shadowsocks; 3x-ui v3.4.2 with VLESS Reality, Trojan TLS, Shadowsocks TCP/UDP, and VMess WS; native sing-box with Hysteria2 and Clash API; Docker loopback publication; deliberately privileged containers; expiring TLS; invalid JSON beside a still-running service; UFW; IPv6; and empty cloud-image `authorized_keys` placeholders.
+The current disposable matrix includes Debian 12, Debian 13, Ubuntu 22.04, and Ubuntu 26.04 on 1 vCPU / 1 GB VPS instances. It covers S-UI with VLESS Reality, Hysteria2, and Shadowsocks; 3x-ui v3.4.2 with VLESS Reality, Trojan TLS, Shadowsocks TCP/UDP, and VMess WS; native sing-box with Hysteria2, TUIC, Trojan, Shadowsocks, and Clash API; a two-host WireGuard tunnel; an OpenVPN 2.6 UDP server; official Outline Shadowbox; Nginx/Caddy/HAProxy management chains; Docker loopback publication; deliberately privileged containers; expiring TLS; invalid JSON beside a still-running service; UFW; IPv6; and empty cloud-image `authorized_keys` placeholders.
 
 Regression review should verify:
 
@@ -62,7 +62,9 @@ Regression review should verify:
 - Reality, Trojan, Shadowsocks, OpenVPN, and WireGuard summaries retain semantic facts without secret-bearing values.
 - the audit executable itself is excluded from temporary-directory process findings when using the one-command runner.
 - a baseline created from a report matches a later unchanged audit and rejects a different host or changed stable inventory.
+- reverse-proxy policy separates local loopback backends from external camouflage upstreams and elevates unrestricted public management routes.
+- external DNS/TLS observation stays disabled without `--external-domain`; failures are `UNKNOWN`, while an explicitly expected CDN domain that publishes the local address is `RISK`.
 
-The latest four-host standard run completed in about 3 to 5 seconds. These timings are observations from 1 vCPU / 1 GB lab VPS instances, not performance guarantees.
+The latest four-host standard run completed in about 4 to 8 seconds with the expanded workload graph. Deep runs on the two busiest lab hosts took about 37 to 54 seconds. These timings are observations from 1 vCPU / 1 GB lab VPS instances, not performance guarantees.
 
 Never commit real host reports. They may contain IP addresses, domains, usernames, paths, and operational evidence.

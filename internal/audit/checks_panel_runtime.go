@@ -89,6 +89,11 @@ func checkPanelRuntimeConsistency(ctx *Context, summaries []proxyConfigSummary) 
 			process := strings.ToLower(listener.Process)
 			owned := panelOwnsProcess(panel.Product, process)
 			if owned && !knownPorts[listener.Port] {
+				if panel.Product == "Outline" && listener.Scope == "loopback" {
+					inferredControls++
+					f.Evidence = append(f.Evidence, model.Evidence{Source: "ss", Key: "inferred_control_listener", Value: fmt.Sprintf("product=%s port=%s/%s scope=loopback process=%s role=internal-metrics-or-control", panel.Product, listener.Port, listener.Protocol, truncate(listener.Process, 100))})
+					continue
+				}
 				if listener.Scope == "loopback" && strings.Contains(process, "xray") && (panel.Product == "Hiddify" || panel.Product == "Marzban") {
 					inferredControls++
 					f.Evidence = append(f.Evidence, model.Evidence{Source: "ss", Key: "inferred_control_listener", Value: fmt.Sprintf("product=%s port=%s/%s scope=loopback process=%s role=internal-xray-control", panel.Product, listener.Port, listener.Protocol, truncate(listener.Process, 100))})
@@ -124,6 +129,8 @@ func panelOwnsProcess(product, process string) bool {
 		return strings.Contains(process, "hiddify-core") || strings.Contains(process, "xray")
 	case "marzban":
 		return strings.Contains(process, "marzban") || strings.Contains(process, "xray")
+	case "outline":
+		return strings.Contains(process, "outline-ss-serv") || strings.Contains(process, "node")
 	default:
 		return false
 	}

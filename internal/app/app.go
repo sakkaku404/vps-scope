@@ -158,6 +158,8 @@ func (e environment) audit(args []string) error {
 	deep := fs.Bool("deep", false, "run slower filesystem and package-integrity checks")
 	alsoTerminal := fs.Bool("also-terminal", false, "print terminal report before saving a bundle")
 	expectPublic := fs.String("expect-public", "", "expected public listeners, e.g. 22/tcp,443/tcp")
+	externalDomains := fs.String("external-domain", "", "comma-separated domains for opt-in DNS and TLS observation")
+	expectCDN := fs.Bool("expect-cdn", false, "treat a domain resolving directly to this VPS as a risk; requires --external-domain")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -179,7 +181,14 @@ func (e environment) audit(args []string) error {
 	if err != nil {
 		return err
 	}
-	r, err := audit.Run(audit.Options{Locale: locale, Profile: *profile, ExpectedPublic: expected, LogSince: duration, Deep: *deep, Build: audit.Build{Version: e.build.Version, Commit: e.build.Commit}, Progress: progress})
+	domains, err := parseExternalDomains(*externalDomains)
+	if err != nil {
+		return err
+	}
+	if *expectCDN && len(domains) == 0 {
+		return fmt.Errorf("--expect-cdn requires --external-domain")
+	}
+	r, err := audit.Run(audit.Options{Locale: locale, Profile: *profile, ExpectedPublic: expected, LogSince: duration, Deep: *deep, ExternalDomains: domains, ExpectCDN: *expectCDN, Build: audit.Build{Version: e.build.Version, Commit: e.build.Commit}, Progress: progress})
 	if err != nil {
 		return err
 	}
@@ -546,6 +555,34 @@ func parseDuration(value string) (time.Duration, error) {
 		return time.Duration(days) * 24 * time.Hour, nil
 	}
 	return time.ParseDuration(value)
+}
+func parseExternalDomains(value string) ([]string, error) {
+	seen := map[string]bool{}
+	var domains []string
+	for _, item := range strings.Split(value, ",") {
+		domain := strings.ToLower(strings.TrimSpace(strings.TrimSuffix(item, ".")))
+		if domain == "" {
+			continue
+		}
+		if len(domain) > 253 || strings.ContainsAny(domain, "/:@[] \\") {
+			return nil, fmt.Errorf("invalid --external-domain value %q", item)
+		}
+		for _, label := range strings.Split(domain, ".") {
+			if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+				return nil, fmt.Errorf("invalid --external-domain value %q", item)
+			}
+			for _, character := range label {
+				if (character < 'a' || character > 'z') && (character < '0' || character > '9') && character != '-' {
+					return nil, fmt.Errorf("invalid --external-domain value %q", item)
+				}
+			}
+		}
+		if !seen[domain] {
+			seen[domain] = true
+			domains = append(domains, domain)
+		}
+	}
+	return domains, nil
 }
 func parseExpectedPublic(value string) (map[string]bool, error) {
 	out := map[string]bool{}
