@@ -40,8 +40,9 @@ Regression review should verify:
 - loopback DNS, application, and container ports are not public exposure.
 - `sshd -T` facts match the effective daemon policy.
 - failed-login categories are not summed into a misleading total.
-- UFW default policy and individual allow rules are both represented.
+- UFW default policy and individual allow rules are both represented; direct nftables INPUT rules are merged when another workload bypasses the UFW summary.
 - nftables, iptables/ip6tables, and firewalld fixtures normalize family, protocol, port, source, and action without allowing an IPv4 rule to cover IPv6.
+- nftables OUTPUT/FORWARD accepts do not become host-ingress evidence, duplicate dual-stack rules collapse in reports, and stale public allows require a missing live listener.
 - package-owned capabilities are not automatically risks.
 - normal `/etc/shadow` group-readable policy is accepted on Ubuntu/Debian.
 - masked systemd symlinks are not treated as world-writable unit files.

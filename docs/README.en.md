@@ -30,7 +30,7 @@ Proxy hosts get additional context for:
 - permissions on panel databases and proxy configuration
 - systemd identity, capabilities, isolation, and file-descriptor limits
 - UDP buffer and error-counter context for Hysteria2 and TUIC workloads
-- config-to-listener relations across TCP/UDP transport, process ownership, exposure scope, and normalized UFW, firewalld, nftables, or iptables/ip6tables policy
+- config-to-listener relations across TCP/UDP transport, process ownership, exposure scope, merged UFW/effective nftables INPUT policy, and stale allows left without a live listener
 - Reality semantic completeness without exporting private keys, SNI values, targets, or short IDs
 - privacy-safe category counts for authentication, handshake, DNS, TLS, routing, and fatal log signals
 - WireGuard interface, UDP listener, firewall, and recent-handshake counts without peer keys or endpoints

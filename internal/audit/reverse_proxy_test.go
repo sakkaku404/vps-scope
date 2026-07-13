@@ -52,7 +52,7 @@ backend panel
 		t.Fatalf("routes=%+v", routes)
 	}
 	for _, route := range routes {
-		if route.FrontendPort != "80" || route.BackendAddress != "127.0.0.1" || route.BackendPort != "9000" {
+		if route.FrontendPort != "80" || route.BackendAddress != "127.0.0.1" || route.BackendPort != "9000" || route.Access != "path-gated" {
 			t.Fatalf("route=%+v", route)
 		}
 	}
@@ -95,6 +95,7 @@ func TestReverseProxyPolicyMatrix(t *testing.T) {
 	}{
 		{name: "consistent restricted chain", routes: []reverseProxyRoute{route}, listeners: []Listener{publicFrontend, loopbackBackend}, firewall: parsePanelUFW("Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)"), panels: panels, status: model.Pass, judgment: "reverse-proxy-chain-consistent"},
 		{name: "public management route", routes: []reverseProxyRoute{route}, listeners: []Listener{publicFrontend, loopbackBackend}, firewall: allowed, panels: panels, status: model.Risk, severity: model.High, judgment: "public-reverse-proxy-exposes-3x-ui-management"},
+		{name: "path gated public management route", routes: []reverseProxyRoute{{Product: "haproxy", Source: "fixture", FrontendAddress: "::", FrontendPort: "443", FrontendTransport: "tcp", BackendAddress: "127.0.0.1", BackendPort: "2053", Access: "path-gated"}}, listeners: []Listener{publicFrontend, loopbackBackend}, firewall: allowed, panels: panels, status: model.Risk, severity: model.Medium, judgment: "public-path-gated-reverse-proxy-reaches-3x-ui-management"},
 		{name: "missing frontend", routes: []reverseProxyRoute{route}, listeners: []Listener{loopbackBackend}, firewall: allowed, status: model.Risk, severity: model.Medium, judgment: "configured-frontend-not-listening"},
 		{name: "missing backend", routes: []reverseProxyRoute{route}, listeners: []Listener{publicFrontend}, firewall: allowed, status: model.Risk, severity: model.Medium, judgment: "configured-backend-not-listening"},
 		{name: "broad backend and public management", routes: []reverseProxyRoute{route}, listeners: []Listener{publicFrontend, {Protocol: "tcp", Address: "0.0.0.0", Port: "2053", Scope: "public-wildcard", Process: "x-ui"}}, firewall: allowed, panels: panels, status: model.Risk, severity: model.High, judgment: "backend-listens-more-broadly-than-configured+public-reverse-proxy-exposes-3x-ui-management"},

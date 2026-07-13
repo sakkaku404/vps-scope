@@ -258,7 +258,8 @@ func readPanelUFW(ctx *Context) panelUFW {
 }
 
 func parsePanelUFW(output string) panelUFW {
-	f := panelUFW{available: true, active: regexp.MustCompile(`(?mi)^Status:\s+active\s*$`).MatchString(output), defaultDeny: regexp.MustCompile(`(?mi)^Default:\s+deny \(incoming\)`).MatchString(output), lines: lines(output), backend: "ufw"}
+	defaultDeny := regexp.MustCompile(`(?mi)^Default:\s+deny \(incoming\)`).MatchString(output)
+	f := panelUFW{available: true, active: regexp.MustCompile(`(?mi)^Status:\s+active\s*$`).MatchString(output), defaultDeny: defaultDeny, defaultDenyByFamily: map[string]bool{"any": defaultDeny}, lines: lines(output), backend: "ufw"}
 	f.rules = parseUFWRules(f.lines)
 	return f
 }

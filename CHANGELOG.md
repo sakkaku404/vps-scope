@@ -19,6 +19,10 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Official Outline and Marzban host-network containers are treated as deployment context while their effective listeners and management exposure are audited separately.
 - Proxy endpoint policy now consumes a typed graph instead of combining collection, product parsing, and judgment in one loop.
 - Raised the build baseline to Go 1.25.12 because opt-in TLS observation made standard-library fixes for GO-2026-5856 and GO-2026-5037 reachable.
+- Active UFW evidence is now merged with the effective nftables INPUT path, avoiding false blocked-port results when a workload installs direct nftables rules.
+- Firewall exposure reports collapse duplicate IPv4/IPv6 rules and flag public allow rules with no matching live listener.
+- Hiddify-managed Xray/sing-box listeners, WireGuard kernel listeners, path-gated HAProxy management routes, and secret-bearing generated inbound files now receive product-aware judgments.
+- Deleted proxy-core or temporary-directory executables still running are distinguished from ordinary post-upgrade interpreter processes.
 
 ## 0.8.0 - 2026-07-13
 

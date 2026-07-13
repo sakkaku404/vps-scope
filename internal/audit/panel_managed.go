@@ -16,7 +16,7 @@ func directoryExists(path string) bool {
 }
 
 func collectMarzbanFacts(_ Commander) panelSnapshot {
-	s := panelSnapshot{Product: "Marzban", Binary: "container or Python service", Database: "/opt/marzban/.env", SchemaVersion: "marzban-config-v1"}
+	s := panelSnapshot{Product: "Marzban", Binary: "container or Python service", Database: "/opt/marzban/.env", SchemaVersion: "marzban-config-v1", SensitiveFiles: []string{"/opt/marzban/.env"}}
 	values, err := readEnvWhitelist("/opt/marzban/.env", map[string]bool{
 		"UVICORN_HOST": true, "UVICORN_PORT": true, "UVICORN_UDS": true,
 		"UVICORN_SSL_CERTFILE": true, "UVICORN_SSL_KEYFILE": true,
@@ -76,6 +76,14 @@ func collectHiddifyFacts(_ Commander) panelSnapshot {
 		}
 		applyManagedProxyConfig(&s, path, product)
 	}
+	for _, path := range paths {
+		// Generated routing, DNS, logging, and outbound fragments generally do
+		// not contain client credentials. Inbound fragments can contain UUIDs,
+		// passwords, and Reality private keys and therefore need strict modes.
+		if strings.Contains(strings.ToLower(filepath.Base(path)), "inbound") {
+			s.SensitiveFiles = append(s.SensitiveFiles, path)
+		}
+	}
 	if len(paths) == 0 {
 		s.DatabaseAvailable = false
 		s.DatabaseError = "no supported generated Xray or sing-box configuration found"
@@ -106,6 +114,7 @@ func collectOutlineFacts(container dockerInspect) panelSnapshot {
 	stateDir := filepath.Clean(values["SB_STATE_DIR"])
 	if filepath.IsAbs(stateDir) && (strings.HasPrefix(stateDir, "/opt/") || strings.HasPrefix(stateDir, "/var/lib/")) {
 		s.Database = filepath.Join(stateDir, "shadowbox_server_config.json")
+		s.SensitiveFiles = append(s.SensitiveFiles, s.Database)
 		if data, err := readSmall(s.Database, 1<<20); err == nil {
 			if port, ok := parseOutlineState([]byte(data)); ok {
 				s.DatabaseAvailable = true

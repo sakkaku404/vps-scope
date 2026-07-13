@@ -37,13 +37,14 @@ type controlEndpoint struct {
 }
 
 type proxyConfigSummary struct {
-	Product   string
-	Path      string
-	Inbounds  []proxyInbound
-	Controls  []controlEndpoint
-	UsesUDP   bool
-	Parseable bool
-	Err       error
+	Product        string
+	Path           string
+	SensitiveFiles []string
+	Inbounds       []proxyInbound
+	Controls       []controlEndpoint
+	UsesUDP        bool
+	Parseable      bool
+	Err            error
 }
 
 // configuredProxyInbound keeps the source path while allowing checks to
@@ -229,7 +230,14 @@ func checkProxyControlEndpoints(ctx *Context, summaries []proxyConfigSummary) mo
 func checkProxySensitivePermissions(summaries []proxyConfigSummary) model.Finding {
 	paths := map[string]fs.FileMode{}
 	for _, summary := range summaries {
-		paths[summary.Path] = 0o027 // allow controlled group read, never group write or other access
+		if regularFile(summary.Path) {
+			paths[summary.Path] = 0o027 // allow controlled group read, never group write or other access
+		}
+		for _, path := range summary.SensitiveFiles {
+			if regularFile(path) {
+				paths[path] = 0o027
+			}
+		}
 	}
 	for _, path := range []string{
 		"/usr/local/s-ui/db/s-ui.db", "/etc/s-ui/s-ui.db", "/etc/x-ui/x-ui.db", "/etc/wireguard/wg0.conf",
@@ -243,7 +251,8 @@ func checkProxySensitivePermissions(summaries []proxyConfigSummary) model.Findin
 		return notApplicable("WORK-006", "workloads", "filesystem discovery", "no supported proxy secret-bearing file found")
 	}
 	f := model.Finding{ID: "WORK-006", Category: "workloads", Status: model.Pass, Facts: map[string]string{"files_checked": strconv.Itoa(len(paths))}}
-	problems := 0
+	problems, checked := 0, 0
+	var checkedEvidence, problemEvidence []model.Evidence
 	ordered := make([]string, 0, len(paths))
 	for path := range paths {
 		ordered = append(ordered, path)
@@ -254,15 +263,26 @@ func checkProxySensitivePermissions(summaries []proxyConfigSummary) model.Findin
 		if err != nil {
 			continue
 		}
-		f.Evidence = append(f.Evidence, model.Evidence{Source: "stat", Key: "proxy_sensitive_file", Value: fmt.Sprintf("%s mode=%s", path, modeString(info))})
+		checked++
+		checkedEvidence = append(checkedEvidence, model.Evidence{Source: "stat", Key: "proxy_sensitive_file", Value: fmt.Sprintf("%s mode=%s", path, modeString(info))})
 		if tooOpen(info, paths[path]) {
 			problems++
-			f.Evidence = append(f.Evidence, model.Evidence{Source: "stat", Key: "insecure_mode", Value: fmt.Sprintf("%s mode=%s", path, modeString(info))})
+			problemEvidence = append(problemEvidence, model.Evidence{Source: "stat", Key: "insecure_mode", Value: fmt.Sprintf("%s mode=%s", path, modeString(info))})
 		}
 	}
+	f.Facts["files_checked"] = strconv.Itoa(checked)
 	f.Facts["permission_problems"] = strconv.Itoa(problems)
 	if problems > 0 {
 		f.Status, f.Severity = model.Risk, model.High
+		f.Evidence = append(f.Evidence, problemEvidence[:min(len(problemEvidence), 20)]...)
+		if len(problemEvidence) > 20 {
+			f.Facts["evidence_omitted"] = strconv.Itoa(len(problemEvidence) - 20)
+		}
+	} else {
+		f.Evidence = append(f.Evidence, checkedEvidence[:min(len(checkedEvidence), 20)]...)
+		if len(checkedEvidence) > 20 {
+			f.Facts["evidence_omitted"] = strconv.Itoa(len(checkedEvidence) - 20)
+		}
 	}
 	return f
 }
@@ -393,6 +413,15 @@ func listenerProxyProduct(process string) (string, bool) {
 }
 
 func sameProxyProduct(a, b string) bool {
+	// Hiddify's generated Xray/sing-box inbounds may be served by its unified
+	// hiddify-core process. Treat that documented manager/core relationship as
+	// ownership, while retaining mismatch detection for unrelated processes.
+	if strings.EqualFold(a, "Hiddify") && containsAny(strings.ToLower(b), "xray", "sing-box", "hiddify") {
+		return true
+	}
+	if strings.EqualFold(b, "Hiddify") && containsAny(strings.ToLower(a), "xray", "sing-box", "hiddify") {
+		return true
+	}
 	normalize := func(value string) string {
 		value = strings.ToLower(value)
 		switch {
@@ -553,7 +582,7 @@ func panelProxySummary(panel panelSnapshot) (proxyConfigSummary, bool) {
 	} else if panel.Product == "Outline" {
 		product = "Outline"
 	}
-	s := proxyConfigSummary{Product: product, Path: panel.Database, Parseable: true}
+	s := proxyConfigSummary{Product: product, Path: panel.Database, SensitiveFiles: append([]string(nil), panel.SensitiveFiles...), Parseable: true}
 	for _, item := range panel.Inbounds {
 		if !item.Enabled {
 			continue

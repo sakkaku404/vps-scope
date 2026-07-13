@@ -49,3 +49,13 @@ func TestEndpointGraphKeepsTCPAndUDPSeparate(t *testing.T) {
 		t.Fatalf("missing=%d, want 1", missing)
 	}
 }
+
+func TestHiddifyCoreOwnsManagedXrayEndpoint(t *testing.T) {
+	inbound := configuredProxyInbound{Path: "/opt/hiddify-manager", proxyInbound: proxyInbound{Product: "Xray", Protocol: "tuic", Port: "26456", Transports: []string{"udp"}}}
+	listeners := []Listener{{Protocol: "udp", Address: "::", Port: "26456", Scope: "public-wildcard", Process: `users:(("hiddify-core",pid=1))`}}
+	firewall := parsePanelUFW("Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n26456/udp (v6) ALLOW IN Anywhere (v6)")
+	got := assessProxyEndpointGraph(buildProxyEndpointGraph([]configuredProxyInbound{inbound}, listeners, firewall), map[string]bool{"hiddify": true})
+	if len(got) != 1 || got[0].Risk || got[0].Judgment != "expected-proxy-ingress" {
+		t.Fatalf("managed endpoint=%+v", got)
+	}
+}

@@ -214,6 +214,11 @@ func checkDeletedExecutables() model.Finding {
 		// evidence to investigate or restart, not proof of compromise.
 		f.Status = model.Info
 	}
+	securityRelevant, severity := classifyDeletedExecutables(deleted)
+	f.Facts["security_relevant_deleted_executables"] = strconv.Itoa(securityRelevant)
+	if securityRelevant > 0 {
+		f.Status, f.Severity = model.Risk, severity
+	}
 	for i, item := range deleted {
 		if i >= 30 {
 			break
@@ -221,6 +226,20 @@ func checkDeletedExecutables() model.Finding {
 		f.Evidence = append(f.Evidence, model.Evidence{Source: "/proc/*/exe", Value: item})
 	}
 	return f
+}
+
+func classifyDeletedExecutables(items []string) (int, model.Severity) {
+	count, severity := 0, model.Medium
+	for _, item := range items {
+		lower := strings.ToLower(item)
+		if proxyProcessPattern.MatchString(lower) || containsAny(lower, "/tmp/", "/var/tmp/", "/dev/shm/") {
+			count++
+		}
+		if containsAny(lower, "/tmp/", "/var/tmp/", "/dev/shm/") {
+			severity = model.High
+		}
+	}
+	return count, severity
 }
 
 type dockerInspect struct {

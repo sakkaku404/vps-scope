@@ -19,6 +19,7 @@ type reverseProxyRoute struct {
 	FrontendTransport string
 	BackendAddress    string
 	BackendPort       string
+	Access            string
 }
 
 var (
@@ -161,9 +162,14 @@ func parseCaddySite(value string) (string, string, bool) {
 }
 
 func parseHAProxyRoutes(path, data string) []reverseProxyRoute {
+	type backendRef struct {
+		name       string
+		conditions []string
+	}
 	type frontend struct {
 		binds    [][2]string
-		backends map[string]bool
+		backends []backendRef
+		pathACLs map[string]bool
 	}
 	frontends := map[string]*frontend{}
 	backends := map[string][][2]string{}
@@ -178,7 +184,7 @@ func parseHAProxyRoutes(path, data string) []reverseProxyRoute {
 		case "frontend":
 			if len(fields) > 1 {
 				sectionType, sectionName = "frontend", fields[1]
-				frontends[sectionName] = &frontend{backends: map[string]bool{}}
+				frontends[sectionName] = &frontend{pathACLs: map[string]bool{}}
 			}
 		case "backend":
 			if len(fields) > 1 {
@@ -194,11 +200,15 @@ func parseHAProxyRoutes(path, data string) []reverseProxyRoute {
 			}
 		case "default_backend":
 			if sectionType == "frontend" && len(fields) > 1 {
-				frontends[sectionName].backends[fields[1]] = true
+				frontends[sectionName].backends = append(frontends[sectionName].backends, backendRef{name: fields[1]})
 			}
 		case "use_backend":
 			if sectionType == "frontend" && len(fields) > 1 && !strings.ContainsAny(fields[1], "[%]") {
-				frontends[sectionName].backends[fields[1]] = true
+				frontends[sectionName].backends = append(frontends[sectionName].backends, backendRef{name: fields[1], conditions: append([]string(nil), fields[2:]...)})
+			}
+		case "acl":
+			if sectionType == "frontend" && len(fields) > 2 && (containsAny(strings.ToLower(fields[1]), "path", "url") || containsAny(strings.ToLower(fields[2]), "path", "url")) {
+				frontends[sectionName].pathACLs[fields[1]] = true
 			}
 		case "server":
 			if sectionType == "backend" && len(fields) > 2 {
@@ -210,10 +220,20 @@ func parseHAProxyRoutes(path, data string) []reverseProxyRoute {
 	}
 	var routes []reverseProxyRoute
 	for _, frontend := range frontends {
-		for backendName := range frontend.backends {
-			for _, backend := range backends[backendName] {
+		for _, reference := range frontend.backends {
+			access := "unconditional"
+			if len(reference.conditions) > 0 {
+				access = "conditional"
+				for _, condition := range reference.conditions {
+					if frontend.pathACLs[condition] || containsAny(strings.ToLower(condition), "path", "url") {
+						access = "path-gated"
+						break
+					}
+				}
+			}
+			for _, backend := range backends[reference.name] {
 				for _, bind := range frontend.binds {
-					routes = append(routes, reverseProxyRoute{Product: "haproxy", Source: path, FrontendAddress: bind[0], FrontendPort: bind[1], FrontendTransport: "tcp", BackendAddress: backend[0], BackendPort: backend[1]})
+					routes = append(routes, reverseProxyRoute{Product: "haproxy", Source: path, FrontendAddress: bind[0], FrontendPort: bind[1], FrontendTransport: "tcp", BackendAddress: backend[0], BackendPort: backend[1], Access: access})
 				}
 			}
 		}
@@ -247,7 +267,7 @@ func uniqueReverseProxyRoutes(routes []reverseProxyRoute) []reverseProxyRoute {
 	seen := map[string]bool{}
 	out := make([]reverseProxyRoute, 0, len(routes))
 	for _, route := range routes {
-		key := strings.Join([]string{route.Product, route.FrontendAddress, route.FrontendPort, route.BackendAddress, route.BackendPort}, "\x00")
+		key := strings.Join([]string{route.Product, route.FrontendAddress, route.FrontendPort, route.BackendAddress, route.BackendPort, route.Access}, "\x00")
 		if seen[key] || !validPort(route.FrontendPort) || !validPort(route.BackendPort) {
 			continue
 		}
@@ -311,18 +331,27 @@ func assessReverseProxyRoutes(routes []reverseProxyRoute, listeners []Listener, 
 		if product := managementPorts[route.BackendPort]; product != "" && frontend != nil && (frontScope == "public" || frontScope == "public-wildcard") && (frontFW == "allow-anywhere" || frontFW == "inactive") {
 			exposedManagement++
 			managementJudgment := "public-reverse-proxy-exposes-" + strings.ToLower(product) + "-management"
+			severity := model.High
+			if route.Access == "path-gated" {
+				managementJudgment = "public-path-gated-reverse-proxy-reaches-" + strings.ToLower(product) + "-management"
+				severity = model.Medium
+			}
 			if judgment == "reverse-proxy-chain-consistent" {
 				judgment = managementJudgment
 			} else {
 				judgment += "+" + managementJudgment
 			}
-			raiseRisk(&f, model.High)
+			raiseRisk(&f, severity)
 		}
 		backScope, backProcess := "not-live", "none"
 		if backend != nil {
 			backScope, backProcess = backend.Scope, backend.Process
 		}
-		f.Evidence = append(f.Evidence, model.Evidence{Source: route.Source + " + ss + host firewall", Key: "reverse_proxy_route", Value: fmt.Sprintf("frontend=%s:%s/tcp process=%s scope=%s firewall=%s proxy=%s backend=%s:%s/tcp process=%s scope=%s judgment=%s", route.FrontendAddress, route.FrontendPort, truncate(frontProcess, 80), frontScope, frontFW, route.Product, route.BackendAddress, route.BackendPort, truncate(backProcess, 80), backScope, judgment)})
+		access := route.Access
+		if access == "" {
+			access = "unknown"
+		}
+		f.Evidence = append(f.Evidence, model.Evidence{Source: route.Source + " + ss + host firewall", Key: "reverse_proxy_route", Value: fmt.Sprintf("frontend=%s:%s/tcp process=%s scope=%s firewall=%s proxy=%s access=%s backend=%s:%s/tcp process=%s scope=%s judgment=%s", route.FrontendAddress, route.FrontendPort, truncate(frontProcess, 80), frontScope, frontFW, route.Product, access, route.BackendAddress, route.BackendPort, truncate(backProcess, 80), backScope, judgment)})
 	}
 	f.Facts["missing_frontends"] = strconv.Itoa(missingFrontends)
 	f.Facts["missing_backends"] = strconv.Itoa(missingBackends)
