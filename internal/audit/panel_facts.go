@@ -73,12 +73,12 @@ func collectSUIFacts(cmd Commander) panelSnapshot {
 	s.Version = firstVersion(version.Stdout + "\n" + version.Stderr)
 	settings := cmd.Run(8*time.Second, s.Binary, "setting", "-show")
 	if port, ok := parseNamedPort(settings.Stdout, "Panel port"); ok {
-		path := parseNamedText(settings.Stdout, "Panel path")
-		s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "management", Listen: "::", Port: port, Source: "sui setting -show", PathKnown: path != "", PathIsDefault: panelPathIsDefault(path)})
+		path, pathKnown := parseNamedTextKnown(settings.Stdout, "Panel path")
+		s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "management", Listen: "::", Port: port, Source: "sui setting -show", PathKnown: pathKnown, PathIsDefault: panelPathIsDefault(path)})
 	}
 	if port, ok := parseNamedPort(settings.Stdout, "Sub port"); ok {
-		path := parseNamedText(settings.Stdout, "Sub path")
-		s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "subscription", Listen: "::", Port: port, Source: "sui setting -show", PathKnown: path != "", PathIsDefault: subscriptionPathIsDefault(path)})
+		path, pathKnown := parseNamedTextKnown(settings.Stdout, "Sub path")
+		s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "subscription", Listen: "::", Port: port, Source: "sui setting -show", PathKnown: pathKnown, PathIsDefault: subscriptionPathIsDefault(path)})
 	}
 	if !regularFile(s.Database) {
 		s.DatabaseError = "S-UI database missing"
@@ -90,7 +90,7 @@ func collectSUIFacts(cmd Commander) panelSnapshot {
 		return s
 	}
 	s.SchemaVersion = schema
-	settingRows, err := sqliteTSV(cmd, s.Database, `SELECT key, value FROM settings WHERE key IN ('webListen','webPort','webCertFile','webKeyFile','subListen','subPort','subCertFile','subKeyFile');`)
+	settingRows, err := sqliteTSV(cmd, s.Database, `SELECT key, value FROM settings WHERE key IN ('webListen','webPort','webBasePath','webCertFile','webKeyFile','subListen','subPort','subPath','subCertFile','subKeyFile');`)
 	if err != nil {
 		s.DatabaseError = err.Error()
 		return s
@@ -130,8 +130,8 @@ func collectXUIFacts(cmd Commander) panelSnapshot {
 		settings = cmd.Run(8*time.Second, s.Binary, "setting", "-show")
 	}
 	if port, ok := parsePanelPort(s.Product, settings.Stdout); ok {
-		path := parseNamedText(settings.Stdout, "webBasePath")
-		s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "management", Listen: "::", Port: port, Source: "x-ui setting -show", PathKnown: path != "", PathIsDefault: panelPathIsDefault(path)})
+		path, pathKnown := parseNamedTextKnown(settings.Stdout, "webBasePath")
+		s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "management", Listen: "::", Port: port, Source: "x-ui setting -show", PathKnown: pathKnown, PathIsDefault: panelPathIsDefault(path)})
 	}
 	if match := regexp.MustCompile(`(?mi)^\s*hasDefaultCredential\s*:\s*(true|false)\s*$`).FindStringSubmatch(settings.Stdout); len(match) == 2 {
 		s.DefaultCredentialKnown = true
@@ -158,7 +158,10 @@ func collectXUIFacts(cmd Commander) panelSnapshot {
 	}
 	s.SchemaVersion = schema
 	s.DatabaseAvailable = true
-	settingRows, err := sqliteTSV(cmd, s.Database, `SELECT key, value FROM settings WHERE key IN ('webListen','webPort','webCertFile','webCertKey','subEnable','subListen','subPort','subCertFile','subKeyFile');`)
+	if s.Product == "3x-ui" {
+		apply3XUIDefaults(&s)
+	}
+	settingRows, err := sqliteTSV(cmd, s.Database, `SELECT key, value FROM settings WHERE key IN ('webListen','webPort','webBasePath','webCertFile','webCertKey','subEnable','subListen','subPort','subPath','subCertFile','subKeyFile');`)
 	if err == nil {
 		applyPanelSettings(&s, settingRows, "x-ui database")
 	}
@@ -180,6 +183,18 @@ func collectXUIFacts(cmd Commander) panelSnapshot {
 		s.DisabledClients, _ = strconv.Atoi(clientRows[0][1])
 	}
 	return s
+}
+
+func apply3XUIDefaults(snapshot *panelSnapshot) {
+	// 3x-ui stores only overrides in the settings table. A fresh database
+	// therefore has no subPort/subPath rows even though the built-in
+	// subscription server is enabled and listening. Seed the documented
+	// defaults, then let persisted settings override or disable them.
+	upsertPanelEndpoint(snapshot, panelEndpoint{
+		Role: "subscription", Listen: "::", Port: "2096",
+		TLS: false, TLSKnown: true, Source: "3x-ui built-in defaults",
+		PathKnown: true, PathIsDefault: true,
+	})
 }
 
 func sqliteTSV(cmd Commander, database, query string) ([][]string, error) {
@@ -243,22 +258,79 @@ func applyPanelSettings(snapshot *panelSnapshot, rows [][]string, source string)
 		}
 	}
 	for _, role := range []struct{ name, prefix string }{{"management", "web"}, {"subscription", "sub"}} {
-		port := values[role.prefix+"Port"]
+		if role.name == "subscription" && settingIsFalse(values["subEnable"]) {
+			removePanelEndpoint(snapshot, role.name)
+			continue
+		}
+		old, hasOld := panelEndpointByRole(*snapshot, role.name)
+		port, portSet := values[role.prefix+"Port"]
+		if !portSet && hasOld {
+			port = old.Port
+		}
 		if port == "" {
 			continue
 		}
-		listen := normalizeListen(values[role.prefix+"Listen"])
-		tlsKnown := true
-		certFile := values[role.prefix+"CertFile"]
-		tls := certFile != "" && (values[role.prefix+"KeyFile"] != "" || values[role.prefix+"CertKey"] != "")
-		updated := panelEndpoint{Role: role.name, Listen: listen, Port: port, TLS: tls, TLSKnown: tlsKnown, Source: source, CertFile: certFile}
-		for _, old := range snapshot.Endpoints {
-			if old.Role == role.name {
-				updated.PathKnown, updated.PathIsDefault = old.PathKnown, old.PathIsDefault
+		updated := old
+		updated.Role, updated.Port = role.name, port
+		changed := portSet
+		if listen, ok := values[role.prefix+"Listen"]; ok {
+			updated.Listen = normalizeListen(listen)
+			changed = true
+		} else if !hasOld {
+			updated.Listen = "::"
+		}
+		certFile, certSet := values[role.prefix+"CertFile"]
+		keyFile, keySet := values[role.prefix+"KeyFile"]
+		certKey, certKeySet := values[role.prefix+"CertKey"]
+		if certSet || keySet || certKeySet {
+			updated.CertFile = certFile
+			updated.TLSKnown = true
+			updated.TLS = certFile != "" && (keyFile != "" || certKey != "")
+			changed = true
+		} else if !hasOld && portSet {
+			// Preserve the previous database semantics: a configured panel
+			// endpoint without certificate settings is known plaintext.
+			updated.TLSKnown = true
+			updated.TLS = false
+		}
+		if path, ok := values[map[string]string{"web": "webBasePath", "sub": "subPath"}[role.prefix]]; ok {
+			updated.PathKnown = true
+			changed = true
+			if role.name == "management" {
+				updated.PathIsDefault = panelPathIsDefault(path)
+			} else {
+				updated.PathIsDefault = subscriptionPathIsDefault(path)
 			}
+		}
+		if changed || !hasOld {
+			updated.Source = source
 		}
 		upsertPanelEndpoint(snapshot, updated)
 	}
+}
+
+func settingIsFalse(value string) bool {
+	value = strings.TrimSpace(value)
+	return strings.EqualFold(value, "false") || value == "0"
+}
+
+func panelEndpointByRole(snapshot panelSnapshot, role string) (panelEndpoint, bool) {
+	for _, endpoint := range snapshot.Endpoints {
+		if endpoint.Role == role {
+			return endpoint, true
+		}
+	}
+	return panelEndpoint{}, false
+}
+
+func removePanelEndpoint(snapshot *panelSnapshot, role string) {
+	endpoints := snapshot.Endpoints[:0]
+	for _, endpoint := range snapshot.Endpoints {
+		if endpoint.Role != role {
+			endpoints = append(endpoints, endpoint)
+		}
+	}
+	snapshot.Endpoints = endpoints
 }
 
 func upsertPanelEndpoint(snapshot *panelSnapshot, endpoint panelEndpoint) {
@@ -289,11 +361,16 @@ func parseNamedPort(output, name string) (string, bool) {
 }
 
 func parseNamedText(output, name string) string {
-	match := regexp.MustCompile(`(?mi)^\s*` + regexp.QuoteMeta(name) + `\s*:\s*(\S+)\s*$`).FindStringSubmatch(output)
-	if len(match) == 2 {
-		return strings.TrimSpace(match[1])
+	value, _ := parseNamedTextKnown(output, name)
+	return value
+}
+
+func parseNamedTextKnown(output, name string) (string, bool) {
+	match := regexp.MustCompile(`(?mi)^\s*` + regexp.QuoteMeta(name) + `\s*:\s*(.*?)\s*$`).FindStringSubmatch(output)
+	if len(match) != 2 {
+		return "", false
 	}
-	return ""
+	return strings.TrimSpace(match[1]), true
 }
 
 func panelPathIsDefault(path string) bool {

@@ -165,3 +165,25 @@ func TestProxyOverviewShowsPanelsAndIngressWithoutVerbose(t *testing.T) {
 		t.Fatalf("removed header line is still present:\n%s", text)
 	}
 }
+
+func TestProxyOverviewShowsPostureActivityRuntimeAndDeployment(t *testing.T) {
+	r := sampleReport()
+	r.Findings = append(r.Findings,
+		model.Finding{ID: "WORK-002", Category: "workloads", Status: model.Risk, Severity: model.High, Evidence: []model.Evidence{{Key: "management_posture", Value: "product=S-UI port=2095/tcp scope=public-wildcard firewall=allow-anywhere tls=false path_default=true judgment=public-management-exposed+root-or-default-path+plaintext-panel"}}},
+		model.Finding{ID: "WORK-010", Category: "workloads", Status: model.Info, Facts: map[string]string{"suspicious_activity_signals": "3", "panel_login_failure_signals": "2", "web_probe_signals": "1"}},
+		model.Finding{ID: "WORK-012", Category: "workloads", Status: model.Risk, Severity: model.High, Evidence: []model.Evidence{{Key: "disabled_inbound_still_listening", Value: "product=S-UI protocol=hysteria2 port=8443/udp process=sing-box scope=public-wildcard"}}},
+		model.Finding{ID: "WORK-013", Category: "workloads", Status: model.Risk, Severity: model.High, Evidence: []model.Evidence{{Key: "reverse_proxy_route", Value: "frontend=:::443/tcp proxy=nginx backend=127.0.0.1:2095/tcp judgment=public-reverse-proxy-exposes-s-ui-management"}}},
+		model.Finding{ID: "DOCKER-001", Category: "docker", Status: model.Pass, Evidence: []model.Evidence{{Key: "compose_service", Value: "project=proxy service=panel container=panel image=example/panel network_mode=bridge"}}},
+	)
+	r.Recount()
+	var out bytes.Buffer
+	if err := Text(&out, r, Options{Locale: "en"}); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	for _, expected := range []string{"root/default path", "TLS disabled", "Operational and attack log signals", "panel login failures=2", "Disabled in panel but still listening", "Deployment relationships", "Docker Compose", "[INFO]", "[RISK/HIGH]"} {
+		if !strings.Contains(text, expected) {
+			t.Errorf("text missing %q:\n%s", expected, text)
+		}
+	}
+}

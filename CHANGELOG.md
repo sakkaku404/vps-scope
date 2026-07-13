@@ -6,6 +6,32 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 0.10.0 - 2026-07-13
+
+### Added
+
+- Management posture evidence for S-UI and 3x-ui/x-ui now includes root/default-path visibility, direct TLS state, host-firewall disposition, and public reverse-proxy reachability.
+- Panel/runtime policy detects management or subscription ports reused by proxy ingress, disabled inbounds that still listen, and unexplained public listeners owned by a panel or proxy core.
+- Privacy-safe panel-login, control-API, subscription-abuse, rate-limit, and web-probe signal counts, plus per-ingress established TCP connection snapshots without arbitrary count thresholds.
+- Docker Compose project/service relationships, effective mount inspection, network context, restart policy, read-only-rootfs state, and explicit high-impact ambient systemd capability checks.
+
+### Changed
+
+- The terminal proxy overview now surfaces management posture, runtime mismatches, attack/abuse counts, reverse-proxy chains, and Compose context instead of leaving them only in verbose evidence.
+- A public path-gated reverse proxy to a panel is treated as public management exposure; a non-default path can reduce scan noise but is not an access-control boundary.
+- Managed panel config trees are no longer passed to single-file native self-test commands.
+
+### Fixed
+
+- Empty S-UI and 3x-ui path settings are distinguished from missing evidence, including database-backed path settings.
+- `CapabilityBoundingSet` is no longer mistaken for a granted capability; only explicit high-impact ambient capabilities elevate service isolation risk.
+- Docker socket mounts visible through both bind and effective-mount views are counted once.
+- Later medium-severity panel/runtime mismatches no longer overwrite an earlier high-severity collision.
+- Corrected `render` and `redact` examples so Go CLI flags precede the report path.
+- Fresh 3x-ui installations now inherit the panel's built-in subscription role before database overrides are applied; explicit `subEnable=false` still removes that role.
+- Public, unrestricted plaintext subscription endpoints are reported as high risk, while loopback Xray control listeners owned by 3x-ui/x-ui are classified as internal controls instead of unknown ports.
+- Read-only panel database access now waits briefly for SQLite writers and retries schema probing, reducing transient `UNKNOWN` results while a panel is committing runtime changes.
+
 ## 0.9.1 - 2026-07-13
 
 ### Changed

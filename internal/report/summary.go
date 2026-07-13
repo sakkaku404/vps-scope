@@ -76,8 +76,26 @@ func verdictForFinding(f model.Finding, zh bool) string {
 		return choose(zh, "明确风险：SSH 密码认证已经生效。", "Confirmed risk: SSH password authentication is effective.")
 	case "SSH-002":
 		return choose(zh, "明确风险：root 可以直接通过 SSH 登录。", "Confirmed risk: root can log in directly through SSH.")
-	case "WORK-002", "WORK-005":
-		return choose(zh, "明确风险：管理面可从公网访问，应限制访问来源。", "Confirmed risk: a management plane is reachable from the public internet; restrict its access.")
+	case "WORK-002":
+		defaultPath := evidenceContains(f, "root-or-default-path")
+		plaintext := evidenceContains(f, "plaintext-panel")
+		switch {
+		case defaultPath && plaintext:
+			return choose(zh, "明确风险：管理面从公网明文开放，并使用根或默认路径；路径隐藏不能替代访问控制。", "Confirmed risk: the management panel is publicly reachable over plaintext at a root/default path; path obscurity is not access control.")
+		case defaultPath:
+			return choose(zh, "明确风险：管理面可从公网访问，并使用根或默认路径；应限制访问来源。", "Confirmed risk: the management panel is publicly reachable at a root/default path; restrict its sources.")
+		case plaintext:
+			return choose(zh, "明确风险：管理面从公网明文开放；应启用 TLS 并限制访问来源。", "Confirmed risk: the management panel is publicly reachable over plaintext; enable TLS and restrict its sources.")
+		default:
+			return choose(zh, "明确风险：管理面可从公网访问，应限制访问来源。", "Confirmed risk: a management panel is reachable from the public internet; restrict its sources.")
+		}
+	case "WORK-005":
+		return choose(zh, "明确风险：代理控制 API 可从公网访问，应改为回环监听或限制访问来源。", "Confirmed risk: a proxy control API is publicly reachable; bind it to loopback or restrict its sources.")
+	case "WORK-012":
+		if evidenceContains(f, "disabled_inbound_still_listening") {
+			return choose(zh, "明确风险：面板中已禁用的代理入口仍在监听，旧入口可能继续被使用。", "Confirmed risk: an ingress disabled in the panel is still listening, so stale access may remain usable.")
+		}
+		return choose(zh, "需要核对：面板数据库、生成配置和实际监听之间存在无法解释的差异。", "Review needed: the panel database, generated configuration, and live listeners do not agree.")
 	case "WORK-009":
 		if blocked {
 			return choose(zh, "可用性问题：已配置的代理入口被主机防火墙阻断。", "Availability issue: a configured proxy ingress is blocked by the host firewall.")

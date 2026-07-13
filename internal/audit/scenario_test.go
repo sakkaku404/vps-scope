@@ -1,7 +1,9 @@
 package audit
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -173,4 +175,169 @@ func TestScenarioPublicControlAPIAndPanelRuntimeMismatch(t *testing.T) {
 	panel := panelSnapshot{Product: "3x-ui", Database: "/etc/x-ui/x-ui.db", DatabaseAvailable: true, Inbounds: []panelInboundFact{{Enabled: true, Port: "31001", Protocol: "vless", Network: "tcp", Security: "reality"}}}
 	ctx.Facts.panelsOnce.Do(func() { ctx.Facts.panels = []panelSnapshot{panel} })
 	requireStatus(t, []model.Finding{checkPanelRuntimeConsistency(ctx, nil)}, "WORK-012", model.Risk)
+}
+
+func TestScenarioPublicPanelPostureIncludesDefaultPathAndPlaintext(t *testing.T) {
+	cmd := newScenarioCommander(nil, nil)
+	ctx := scenarioContext(cmd)
+	ctx.Facts.listenersOnce.Do(func() {
+		ctx.Facts.listeners = []Listener{{Protocol: "tcp", Address: "0.0.0.0", Port: "56709", Scope: "public-wildcard", Process: "sui"}}
+	})
+	ctx.Facts.ufwOnce.Do(func() {
+		ctx.Facts.ufw = parsePanelUFW("Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n56709/tcp ALLOW IN Anywhere")
+	})
+	panel := panelSnapshot{Product: "S-UI", DatabaseAvailable: true, Endpoints: []panelEndpoint{{Role: "management", Port: "56709", Listen: "::", Source: "fixture", TLSKnown: true, TLS: false, PathKnown: true, PathIsDefault: true}}}
+	ctx.Facts.panelsOnce.Do(func() { ctx.Facts.panels = []panelSnapshot{panel} })
+	f := checkPanelManagement(ctx)
+	if f.Status != model.Risk || f.Severity != model.High {
+		t.Fatalf("status=%s severity=%s", f.Status, f.Severity)
+	}
+	for key, want := range map[string]string{"public_unrestricted_management": "1", "public_plaintext_management": "1", "public_default_path_management": "1"} {
+		if got := f.Facts[key]; got != want {
+			t.Errorf("%s=%q, want %q", key, got, want)
+		}
+	}
+	if !evidenceHas(f, "management_posture", "public-management-exposed+root-or-default-path+plaintext-panel") {
+		t.Fatalf("management posture evidence missing: %+v", f.Evidence)
+	}
+}
+
+func TestScenarioPublicUnclassifiedPanelListenerIsRisk(t *testing.T) {
+	cmd := newScenarioCommander(nil, nil)
+	ctx := scenarioContext(cmd)
+	ctx.Facts.listenersOnce.Do(func() {
+		ctx.Facts.listeners = []Listener{{Protocol: "tcp", Address: "0.0.0.0", Port: "39999", Scope: "public-wildcard", Process: "xray"}}
+	})
+	panel := panelSnapshot{Product: "3x-ui", Database: "/etc/x-ui/x-ui.db", DatabaseAvailable: true}
+	ctx.Facts.panelsOnce.Do(func() { ctx.Facts.panels = []panelSnapshot{panel} })
+	f := checkPanelRuntimeConsistency(ctx, nil)
+	if f.Status != model.Risk || f.Severity != model.Medium {
+		t.Fatalf("status=%s severity=%s", f.Status, f.Severity)
+	}
+	if f.Facts["public_unclassified_panel_listeners"] != "1" {
+		t.Fatalf("facts=%v", f.Facts)
+	}
+}
+
+func TestScenarioPublicPlaintextSubscriptionIsHighRisk(t *testing.T) {
+	cmd := newScenarioCommander(nil, nil)
+	ctx := scenarioContext(cmd)
+	ctx.Facts.listenersOnce.Do(func() {
+		ctx.Facts.listeners = []Listener{{Protocol: "tcp", Address: "0.0.0.0", Port: "2096", Scope: "public-wildcard", Process: "x-ui"}}
+	})
+	ctx.Facts.ufwOnce.Do(func() {
+		ctx.Facts.ufw = parsePanelUFW("Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n2096/tcp ALLOW IN Anywhere")
+	})
+	panel := panelSnapshot{
+		Product: "3x-ui", Database: "/etc/x-ui/x-ui.db", DatabaseAvailable: true,
+		Endpoints: []panelEndpoint{{Role: "subscription", Port: "2096", Listen: "::", Source: "fixture", TLSKnown: true, TLS: false}},
+	}
+	ctx.Facts.panelsOnce.Do(func() { ctx.Facts.panels = []panelSnapshot{panel} })
+	f := checkPanelRuntimeConsistency(ctx, nil)
+	if f.Status != model.Risk || f.Severity != model.High || f.Facts["public_plaintext_subscription_listeners"] != "1" {
+		t.Fatalf("status=%s severity=%s facts=%v evidence=%v", f.Status, f.Severity, f.Facts, f.Evidence)
+	}
+	if !evidenceHas(f, "plaintext_public_subscription", "bearer-like subscription URLs") {
+		t.Fatalf("plaintext subscription evidence missing: %+v", f.Evidence)
+	}
+}
+
+func TestScenarioXUIInternalXrayListenersAreInferredControls(t *testing.T) {
+	ctx := scenarioContext(newScenarioCommander(nil, nil))
+	ctx.Facts.listenersOnce.Do(func() {
+		ctx.Facts.listeners = []Listener{{Protocol: "tcp", Address: "127.0.0.1", Port: "62789", Scope: "loopback", Process: "xray-linux-amd64"}}
+	})
+	panel := panelSnapshot{Product: "3x-ui", Database: "/etc/x-ui/x-ui.db", DatabaseAvailable: true}
+	ctx.Facts.panelsOnce.Do(func() { ctx.Facts.panels = []panelSnapshot{panel} })
+	f := checkPanelRuntimeConsistency(ctx, nil)
+	if f.Status != model.Pass || f.Facts["inferred_control_listeners"] != "1" || f.Facts["unclassified_panel_listeners"] != "0" {
+		t.Fatalf("status=%s facts=%v evidence=%v", f.Status, f.Facts, f.Evidence)
+	}
+}
+
+func TestScenarioPanelRoleCollisionWithProxyIngressIsHighRisk(t *testing.T) {
+	ctx := scenarioContext(newScenarioCommander(nil, nil))
+	ctx.Facts.listenersOnce.Do(func() {
+		ctx.Facts.listeners = []Listener{{Protocol: "tcp", Address: "0.0.0.0", Port: "2095", Scope: "public-wildcard", Process: "sui"}}
+	})
+	panel := panelSnapshot{
+		Product: "S-UI", Database: "/usr/local/s-ui/db/s-ui.db", DatabaseAvailable: true,
+		Endpoints: []panelEndpoint{{Role: "management", Port: "2095", Listen: "::"}},
+		Inbounds:  []panelInboundFact{{Enabled: true, Port: "2095", Protocol: "vless", Network: "tcp"}},
+	}
+	ctx.Facts.panelsOnce.Do(func() { ctx.Facts.panels = []panelSnapshot{panel} })
+	f := checkPanelRuntimeConsistency(ctx, nil)
+	if f.Status != model.Risk || f.Severity != model.High || f.Facts["role_collisions"] != "1" {
+		t.Fatalf("status=%s severity=%s facts=%v evidence=%v", f.Status, f.Severity, f.Facts, f.Evidence)
+	}
+}
+
+func TestScenarioProxyAbuseSignalsAreCountedWithoutRawLogs(t *testing.T) {
+	results := map[string]CommandResult{
+		scenarioCommandKey("systemctl", "list-units", "--type=service", "--all", "--no-legend", "--plain"):  {Stdout: "s-ui.service loaded active running S-UI"},
+		scenarioCommandKey("journalctl", "--since", "-1d", "--no-pager", "-o", "cat", "-u", "s-ui.service"): {Stdout: "panel login failed: wrong password\nAPI request unauthorized 401\n/sub/ invalid token 403\nGET /.git/config malformed request"},
+	}
+	cmd := newScenarioCommander([]string{"systemctl", "journalctl"}, results)
+	f := checkProxyLogSignals(scenarioContext(cmd))
+	if f.Status != model.Info || f.Facts["suspicious_activity_signals"] == "0" {
+		t.Fatalf("status=%s facts=%v", f.Status, f.Facts)
+	}
+	for _, evidence := range f.Evidence {
+		if strings.Contains(evidence.Value, "password") || strings.Contains(evidence.Value, "/.git/") {
+			t.Fatalf("raw log leaked: %+v", evidence)
+		}
+	}
+}
+
+func TestScenarioDockerComposeAndEffectiveMounts(t *testing.T) {
+	cmd := newScenarioCommander([]string{"docker"}, nil)
+	ctx := scenarioContext(cmd)
+	container := dockerInspect{Name: "/panel"}
+	container.Config.Image = "example/panel:latest"
+	container.Config.Labels = map[string]string{"com.docker.compose.project": "proxy", "com.docker.compose.service": "panel"}
+	container.HostConfig.RestartPolicy.Name = "unless-stopped"
+	container.NetworkSettings.Networks = map[string]json.RawMessage{"proxy_default": nil}
+	container.Mounts = append(container.Mounts, struct {
+		Type        string `json:"Type"`
+		Source      string `json:"Source"`
+		Destination string `json:"Destination"`
+		RW          bool   `json:"RW"`
+	}{Type: "bind", Source: "/var/run/docker.sock", Destination: "/var/run/docker.sock", RW: true})
+	ctx.Facts.dockerOnce.Do(func() { ctx.Facts.docker = []dockerInspect{container} })
+	f := findingByID(t, checkDocker(ctx), "DOCKER-001")
+	if f.Status != model.Risk || f.Facts["compose_projects"] != "1" || f.Facts["compose_services"] != "1" {
+		t.Fatalf("status=%s facts=%v", f.Status, f.Facts)
+	}
+	if !evidenceHas(f, "sensitive_mount", "/var/run/docker.sock") {
+		t.Fatalf("mount evidence missing: %+v", f.Evidence)
+	}
+}
+
+func TestScenarioRootProxyServiceIsContextButDangerousCapabilityIsRisk(t *testing.T) {
+	listKey := scenarioCommandKey("systemctl", "list-units", "--type=service", "--all", "--no-legend", "--plain")
+	showArgs := []string{"show", "s-ui.service", "--property=ActiveState,SubState,User,Group,NoNewPrivileges,ProtectSystem,ProtectHome,PrivateTmp,CapabilityBoundingSet,AmbientCapabilities,LimitNOFILE,NRestarts,FragmentPath"}
+	results := map[string]CommandResult{
+		listKey: {Stdout: "s-ui.service loaded active running S-UI"},
+		scenarioCommandKey("systemctl", showArgs...): {Stdout: "ActiveState=active\nSubState=running\nUser=root\nCapabilityBoundingSet=CAP_SYS_ADMIN CAP_NET_BIND_SERVICE\nAmbientCapabilities=\nLimitNOFILE=1048576\n"},
+	}
+	cmd := newScenarioCommander([]string{"systemctl"}, results)
+	f := checkProxyServiceIsolation(scenarioContext(cmd))
+	if f.Status != model.Info || f.Facts["root_services"] != "1" || f.Facts["dangerous_capability_services"] != "0" {
+		t.Fatalf("status=%s facts=%v", f.Status, f.Facts)
+	}
+
+	results[scenarioCommandKey("systemctl", showArgs...)] = CommandResult{Stdout: "ActiveState=active\nUser=root\nCapabilityBoundingSet=CAP_SYS_ADMIN CAP_NET_BIND_SERVICE\nAmbientCapabilities=CAP_SYS_ADMIN\n"}
+	f = checkProxyServiceIsolation(scenarioContext(newScenarioCommander([]string{"systemctl"}, results)))
+	if f.Status != model.Risk || f.Severity != model.High || f.Facts["dangerous_capability_services"] != "1" {
+		t.Fatalf("status=%s severity=%s facts=%v", f.Status, f.Severity, f.Facts)
+	}
+}
+
+func evidenceHas(f model.Finding, key, contains string) bool {
+	for _, evidence := range f.Evidence {
+		if evidence.Key == key && strings.Contains(evidence.Value, contains) {
+			return true
+		}
+	}
+	return false
 }

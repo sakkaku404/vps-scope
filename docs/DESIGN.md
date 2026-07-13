@@ -4,7 +4,7 @@
 
 Audit collectors do not invoke package managers in install mode, edit files, change modes, restart services, alter firewall rules, create users, or call `sudo`. The process never elevates itself. The only permitted write path is an output file or bundle explicitly selected by the user.
 
-No automatic remediation command will be added. Suggested commands are explanatory report text only.
+The tool has no remediation mode. Suggested commands are explanatory report text only.
 
 ## Evidence before policy
 
@@ -20,7 +20,7 @@ Built-in profiles are `general`, `proxy`, `web`, `docker`, `mixed`, and `custom`
 
 Explicit listener intent uses `--expect-public PORT/protocol`. Supported proxy-panel management exposure remains independent even when its port is explicitly expected.
 
-Resource use and active connections are point-in-time inventory. They do not become risks merely because a percentage or count crosses a generic threshold; event evidence such as OOM kills, core dumps, failed services, and low disk headroom drives reliability findings.
+Resource use and active connections are point-in-time inventory. Proxy ingress gets per-port established TCP connection snapshots so baselines can expose changes, but counts do not become risks merely because they cross a generic threshold. Event evidence such as OOM kills, core dumps, failed services, and low disk headroom drives reliability findings.
 
 ## Privacy
 

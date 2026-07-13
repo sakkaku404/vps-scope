@@ -59,6 +59,11 @@ func checkExternalExposure(ctx *Context) model.Finding {
 	}
 	localAddresses := localGlobalAddresses(ctx)
 	f := model.Finding{ID: "WORK-014", Category: "workloads", Status: model.Info, Facts: map[string]string{"domains": strconv.Itoa(len(ctx.ExternalDomains)), "network_access": "explicitly-enabled"}}
+	if ctx.ExpectCDN && len(localAddresses) == 0 {
+		f.Status, f.Unavailable = model.Unknown, true
+		f.Error = "CDN origin comparison requires readable local global IPv4/IPv6 addresses"
+		f.Evidence = append(f.Evidence, model.Evidence{Source: "ip -o addr show scope global", Key: "local_address_evidence", Value: "unavailable"})
+	}
 	directOrigins, failures, expiring := 0, 0, 0
 	for _, domain := range ctx.ExternalDomains {
 		probeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -83,7 +88,7 @@ func checkExternalExposure(ctx *Context) model.Finding {
 		if observation.TLSPresent {
 			tlsState = "valid-handshake"
 			if !observation.TLSNotAfter.IsZero() {
-				days := int(time.Until(observation.TLSNotAfter).Hours() / 24)
+				days := int(observation.TLSNotAfter.Sub(ctx.Now()).Hours() / 24)
 				tlsState += fmt.Sprintf(" expires_in_days=%d", days)
 				if days < 14 {
 					expiring++

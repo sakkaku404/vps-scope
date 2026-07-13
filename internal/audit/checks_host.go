@@ -59,6 +59,7 @@ func checkPanelManagement(ctx *Context) model.Finding {
 	ufw := readPanelUFW(ctx)
 	products := make([]string, 0, len(panels))
 	unknowns, inactive := 0, 0
+	publicUnrestricted, publicPlaintext, publicDefaultPath, pathUnknown, publicReverseProxy := 0, 0, 0, 0, 0
 	for _, panel := range panels {
 		products = append(products, panel.Product)
 		f.Evidence = append(f.Evidence, model.Evidence{Source: "panel discovery", Key: "product", Value: fmt.Sprintf("product=%s version=%s adapter=%s schema=%s binary=%s", panel.Product, panel.Version, panel.Adapter, panel.SchemaVersion, panel.Binary)})
@@ -75,6 +76,9 @@ func checkPanelManagement(ctx *Context) model.Finding {
 			continue
 		}
 		f.Evidence = append(f.Evidence, model.Evidence{Source: endpoint.Source, Key: "management_endpoint", Value: fmt.Sprintf("product=%s listen=%s port=%s/tcp tls=%s path_default=%s", panel.Product, endpoint.Listen, endpoint.Port, knownBool(endpoint.TLS, endpoint.TLSKnown), knownBool(endpoint.PathIsDefault, endpoint.PathKnown))})
+		if !endpoint.PathKnown {
+			pathUnknown++
+		}
 		if !ssAvailable {
 			unknowns++
 			continue
@@ -95,13 +99,55 @@ func checkPanelManagement(ctx *Context) model.Finding {
 			}
 		}
 		disposition := panelFirewallDispositionFamily(ufw, endpoint.Port, family, &f)
+		judgment := "public-management-restricted-by-host-firewall"
 		switch disposition {
 		case "allow-anywhere", "inactive":
+			publicUnrestricted++
 			f.Status, f.Severity = model.Risk, model.High
+			judgment = "public-management-exposed"
 		case "restricted", "blocked-by-default":
 			// Public binding is constrained by the host firewall.
 		default:
 			unknowns++
+			judgment = "public-management-firewall-unknown"
+		}
+		if endpoint.PathKnown && endpoint.PathIsDefault {
+			publicDefaultPath++
+			judgment += "+root-or-default-path"
+		}
+		if endpoint.TLSKnown && !endpoint.TLS {
+			publicPlaintext++
+			judgment += "+plaintext-panel"
+		}
+		f.Evidence = append(f.Evidence, model.Evidence{Source: endpoint.Source + " + ss + host firewall", Key: "management_posture", Value: fmt.Sprintf("product=%s port=%s/tcp scope=%s firewall=%s tls=%s path_default=%s judgment=%s", panel.Product, endpoint.Port, scope, disposition, knownBool(endpoint.TLS, endpoint.TLSKnown), knownBool(endpoint.PathIsDefault, endpoint.PathKnown), judgment)})
+	}
+	// A loopback-bound panel can still be Internet-facing through Nginx,
+	// Caddy, or HAProxy. Treat that as management exposure here as well as in
+	// the detailed reverse-proxy relationship check.
+	for _, route := range discoverReverseProxyRoutes() {
+		frontend := matchingListener(listeners, route.FrontendPort, route.FrontendTransport)
+		if frontend == nil || (frontend.Scope != "public" && frontend.Scope != "public-wildcard") {
+			continue
+		}
+		if classifyAddress(route.BackendAddress) == "unknown" || matchingBackendListener(listeners, route.BackendAddress, route.BackendPort, "tcp") == nil {
+			continue
+		}
+		disposition := firewallDispositionFamily(ufw, route.FrontendPort, "tcp", listenerAddressFamily(frontend.Address))
+		if disposition != "allow-anywhere" && disposition != "inactive" {
+			continue
+		}
+		for _, panel := range panels {
+			endpoint, ok := managementEndpoint(panel)
+			if !ok || endpoint.Port != route.BackendPort {
+				continue
+			}
+			publicReverseProxy++
+			raiseRisk(&f, model.High)
+			judgment := "public-reverse-proxy-management-exposed"
+			if route.Access == "path-gated" {
+				judgment = "public-path-gated-reverse-proxy-management-exposed"
+			}
+			f.Evidence = append(f.Evidence, model.Evidence{Source: route.Source + " + ss + host firewall", Key: "management_posture", Value: fmt.Sprintf("product=%s port=%s/tcp scope=%s firewall=%s tls=unknown path_default=%s judgment=%s", panel.Product, route.FrontendPort, frontend.Scope, disposition, knownBool(endpoint.PathIsDefault, endpoint.PathKnown), judgment)})
 		}
 	}
 	for _, panel := range containerPanels {
@@ -124,6 +170,11 @@ func checkPanelManagement(ctx *Context) model.Finding {
 	f.Facts["products"] = strings.Join(products, ",")
 	f.Facts["ports_unavailable"] = strconv.Itoa(unknowns)
 	f.Facts["panels_not_listening"] = strconv.Itoa(inactive)
+	f.Facts["public_unrestricted_management"] = strconv.Itoa(publicUnrestricted)
+	f.Facts["public_plaintext_management"] = strconv.Itoa(publicPlaintext)
+	f.Facts["public_default_path_management"] = strconv.Itoa(publicDefaultPath)
+	f.Facts["management_path_unknown"] = strconv.Itoa(pathUnknown)
+	f.Facts["public_reverse_proxy_management"] = strconv.Itoa(publicReverseProxy)
 	if f.Status != model.Risk {
 		if unknowns > 0 {
 			f.Status, f.Unavailable = model.Unknown, true

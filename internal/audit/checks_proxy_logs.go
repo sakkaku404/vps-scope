@@ -37,6 +37,11 @@ func checkProxyLogSignals(ctx *Context) model.Finding {
 		{"routing", regexp.MustCompile(`(?i)\b(route|routing|outbound)\b.{0,80}\b(error|fail|unreachable|refused)\b`)},
 		{"handshake", regexp.MustCompile(`(?i)\b(handshake)\b.{0,80}\b(error|fail|timeout|invalid)\b`)},
 		{"fatal", regexp.MustCompile(`(?i)\b(panic|fatal|segmentation fault)\b`)},
+		{"panel_login_failure", regexp.MustCompile(`(?i)\b(login|sign[ -]?in|auth(?:entication)?)\b.{0,100}\b(fail|invalid|wrong|denied|unauthori[sz]ed|bad password)\b`)},
+		{"api_unauthorized", regexp.MustCompile(`(?i)\b(api|rpc|clash|v2ray)\b.{0,100}\b(unauthori[sz]ed|forbidden|denied|401|403|invalid token)\b`)},
+		{"subscription_abuse", regexp.MustCompile(`(?i)\b(subscription|subscribe|sub link|/sub/)\b.{0,100}\b(unauthori[sz]ed|forbidden|denied|invalid|expired|401|403|404)\b`)},
+		{"rate_limit", regexp.MustCompile(`(?i)\b(rate.?limit|too many requests|http[^0-9]*429)\b`)},
+		{"web_probe", regexp.MustCompile(`(?i)\b(wp-login|phpmyadmin|\.env|\.git/config|cgi-bin|path traversal|malformed request)\b`)},
 	}
 	counts := map[string]int{}
 	for _, line := range lines(r.Stdout) {
@@ -47,10 +52,15 @@ func checkProxyLogSignals(ctx *Context) model.Finding {
 		}
 	}
 	f := model.Finding{ID: "WORK-010", Category: "workloads", Status: model.Info, Facts: map[string]string{"units": strconv.Itoa(len(units))}}
+	suspicious := 0
 	for _, pattern := range patterns {
 		count := counts[pattern.name]
+		if pattern.name == "panel_login_failure" || pattern.name == "api_unauthorized" || pattern.name == "subscription_abuse" || pattern.name == "rate_limit" || pattern.name == "web_probe" {
+			suspicious += count
+		}
 		f.Facts[pattern.name+"_signals"] = strconv.Itoa(count)
 		f.Evidence = append(f.Evidence, model.Evidence{Source: "journalctl proxy units", Key: pattern.name, Value: strconv.Itoa(count)})
 	}
+	f.Facts["suspicious_activity_signals"] = strconv.Itoa(suspicious)
 	return f
 }

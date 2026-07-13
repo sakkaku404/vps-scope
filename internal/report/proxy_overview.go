@@ -17,7 +17,11 @@ func writeProxyOverviewText(w io.Writer, r model.Report, zh bool, line string) {
 	inventory, inventoryOK := findingByID(r, "WORK-003")
 	relations, relationsOK := findingByID(r, "WORK-009")
 	controls, controlsOK := findingByID(r, "WORK-005")
-	if !panelOK && !inventoryOK && !relationsOK && !controlsOK {
+	runtime, runtimeOK := findingByID(r, "WORK-012")
+	activity, activityOK := findingByID(r, "WORK-010")
+	reverseProxy, reverseProxyOK := findingByID(r, "WORK-013")
+	docker, dockerOK := findingByID(r, "DOCKER-001")
+	if !panelOK && !inventoryOK && !relationsOK && !controlsOK && !runtimeOK && !activityOK && !reverseProxyOK && !dockerOK {
 		return
 	}
 
@@ -25,7 +29,10 @@ func writeProxyOverviewText(w io.Writer, r model.Report, zh bool, line string) {
 	panelLines := panelOverviewLines(panels, zh)
 	endpointLines := endpointOverviewLines(relations, zh)
 	controlLines := controlOverviewLines(controls, zh)
-	if len(components) == 0 && len(panelLines) == 0 && len(endpointLines) == 0 && len(controlLines) == 0 {
+	runtimeLines := runtimeOverviewLines(runtime, zh)
+	activityLines := activityOverviewLines(activity, zh)
+	deploymentLines := deploymentOverviewLines(reverseProxy, docker, zh)
+	if len(components) == 0 && len(panelLines) == 0 && len(endpointLines) == 0 && len(controlLines) == 0 && len(runtimeLines) == 0 && len(activityLines) == 0 && len(deploymentLines) == 0 {
 		return
 	}
 
@@ -37,7 +44,139 @@ func writeProxyOverviewText(w io.Writer, r model.Report, zh bool, line string) {
 	writeOverviewGroup(w, choose(zh, "管理面板", "Management panels"), panelLines)
 	writeOverviewGroup(w, choose(zh, "代理入口", "Proxy ingress"), endpointLines)
 	writeOverviewGroup(w, choose(zh, "控制接口", "Control APIs"), controlLines)
+	writeOverviewGroup(w, choose(zh, "运行态异常", "Runtime mismatches"), runtimeLines)
+	writeOverviewGroup(w, choose(zh, "运行与攻击日志信号", "Operational and attack log signals"), activityLines)
+	writeOverviewGroup(w, choose(zh, "部署关系", "Deployment relationships"), deploymentLines)
 	fmt.Fprintln(w)
+}
+
+func runtimeOverviewLines(f model.Finding, zh bool) []string {
+	if f.ID == "" || f.NotApplicable {
+		return nil
+	}
+	var out []string
+	for _, item := range f.Evidence {
+		switch item.Key {
+		case "disabled_inbound_still_listening":
+			out = append(out, choose(zh, "面板已禁用但仍在监听：", "Disabled in panel but still listening: ")+item.Value+" "+findingLabel(f))
+		case "unclassified_panel_listener":
+			if strings.Contains(item.Value, "scope=public") {
+				out = append(out, choose(zh, "无法解释的面板/核心公网监听：", "Unexplained public panel/core listener: ")+item.Value+" "+findingLabel(f))
+			}
+		}
+	}
+	return limitOverviewLines(out, 6, zh)
+}
+
+func activityOverviewLines(f model.Finding, zh bool) []string {
+	if f.ID == "" || f.NotApplicable {
+		return nil
+	}
+	labels := []struct{ key, zh, en string }{
+		{"authentication_signals", "认证错误", "authentication errors"},
+		{"handshake_signals", "握手错误", "handshake errors"},
+		{"dns_signals", "DNS 错误", "DNS errors"},
+		{"tls_signals", "TLS/证书错误", "TLS/certificate errors"},
+		{"routing_signals", "路由/出站错误", "routing/outbound errors"},
+		{"fatal_signals", "致命错误", "fatal errors"},
+		{"panel_login_failure_signals", "面板登录失败", "panel login failures"},
+		{"api_unauthorized_signals", "API 未授权访问", "unauthorized API access"},
+		{"subscription_abuse_signals", "订阅异常访问", "subscription abuse"},
+		{"rate_limit_signals", "限速/429", "rate limiting/429"},
+		{"web_probe_signals", "Web 扫描探测", "web probes"},
+	}
+	var parts []string
+	for _, label := range labels {
+		if value := f.Facts[label.key]; value != "" && value != "0" {
+			parts = append(parts, fmt.Sprintf("%s=%s", choose(zh, label.zh, label.en), value))
+		}
+	}
+	if len(parts) == 0 {
+		return nil
+	}
+	return []string{strings.Join(parts, choose(zh, "；", "; ")) + choose(zh, "（分类可能重叠；不导出原始日志）", " (categories may overlap; raw logs are not exported)")}
+}
+
+func deploymentOverviewLines(reverseProxy, docker model.Finding, zh bool) []string {
+	var out []string
+	for _, item := range reverseProxy.Evidence {
+		if item.Key == "reverse_proxy_route" {
+			judgment := relationValue(item.Value, "judgment")
+			label := "[INFO]"
+			switch {
+			case strings.Contains(judgment, "public-") && strings.Contains(judgment, "management"):
+				label = "[RISK/HIGH]"
+			case strings.Contains(judgment, "not-listening"), strings.Contains(judgment, "more-broadly"):
+				label = "[RISK/MEDIUM]"
+			case judgment == "reverse-proxy-chain-consistent":
+				label = "[PASS]"
+			}
+			frontend := relationValue(item.Value, "frontend", "process", "scope", "firewall", "proxy", "access", "backend", "judgment")
+			frontend = prettyEndpoint(frontend)
+			frontScope := relationValue(item.Value, "scope", "firewall", "proxy", "access", "backend", "judgment")
+			firewall := relationValue(item.Value, "firewall", "proxy", "access", "backend", "judgment")
+			proxy := relationValue(item.Value, "proxy", "access", "backend", "judgment")
+			access := relationValue(item.Value, "access", "backend", "judgment")
+			backend := relationValue(item.Value, "backend", "process", "scope", "judgment")
+			backendScope := "unknown"
+			if index := strings.Index(item.Value, " backend="); index >= 0 {
+				backendScope = relationValue(item.Value[index+1:], "scope", "judgment")
+			}
+			line := fmt.Sprintf("%s %s → %s · %s · %s · %s · %s · %s %s", frontend, proxy, backend, scopeLabel(frontScope, zh), firewallLabel(firewall, zh), scopeLabel(backendScope, zh), reverseProxyAccessLabel(access, zh), reverseProxyJudgmentLabel(judgment, zh), label)
+			out = append(out, line)
+		}
+	}
+	for _, item := range docker.Evidence {
+		if item.Key == "compose_service" {
+			out = append(out, "Docker Compose: "+item.Value+" [INFO]")
+		}
+	}
+	if problems := docker.Facts["isolation_problems"]; problems != "" && problems != "0" {
+		out = append(out, fmt.Sprintf(choose(zh, "Docker 隔离异常=%s；详见 DOCKER-001 ", "Docker isolation problems=%s; see DOCKER-001 "), problems)+findingLabel(docker))
+	}
+	return limitOverviewLines(out, 8, zh)
+}
+
+func prettyEndpoint(value string) string {
+	if strings.HasPrefix(value, ":::") {
+		return "*:" + strings.TrimPrefix(value, ":::")
+	}
+	return value
+}
+
+func reverseProxyAccessLabel(value string, zh bool) string {
+	labels := map[string][2]string{
+		"unconditional": {"无条件路由", "unconditional route"},
+		"conditional":   {"条件路由", "conditional route"},
+		"path-gated":    {"路径路由", "path route"},
+		"unknown":       {"路由条件未知", "route condition unknown"},
+	}
+	if label, ok := labels[value]; ok {
+		return choose(zh, label[0], label[1])
+	}
+	return value
+}
+
+func reverseProxyJudgmentLabel(value string, zh bool) string {
+	labels := map[string][2]string{
+		"reverse-proxy-chain-consistent":                             {"链路一致", "chain consistent"},
+		"configured-frontend-not-listening":                          {"前端未监听", "frontend not listening"},
+		"configured-backend-not-listening":                           {"后端未监听", "backend not listening"},
+		"backend-listens-more-broadly-than-configured":               {"后端监听范围过宽", "backend listens too broadly"},
+		"external-upstream-not-verified-from-local-listeners":        {"外部上游，仅作上下文", "external upstream; context only"},
+		"public-path-gated-reverse-proxy-reaches-hiddify-management": {"公网路径可到达 Hiddify 管理面", "public path reaches Hiddify management"},
+		"public-path-gated-reverse-proxy-reaches-s-ui-management":    {"公网路径可到达 S-UI 管理面", "public path reaches S-UI management"},
+		"public-path-gated-reverse-proxy-reaches-3x-ui-management":   {"公网路径可到达 3x-ui 管理面", "public path reaches 3x-ui management"},
+		"public-path-gated-reverse-proxy-reaches-x-ui-management":    {"公网路径可到达 x-ui 管理面", "public path reaches x-ui management"},
+		"public-reverse-proxy-exposes-hiddify-management":            {"公网反代暴露 Hiddify 管理面", "public reverse proxy exposes Hiddify management"},
+		"public-reverse-proxy-exposes-s-ui-management":               {"公网反代暴露 S-UI 管理面", "public reverse proxy exposes S-UI management"},
+		"public-reverse-proxy-exposes-3x-ui-management":              {"公网反代暴露 3x-ui 管理面", "public reverse proxy exposes 3x-ui management"},
+		"public-reverse-proxy-exposes-x-ui-management":               {"公网反代暴露 x-ui 管理面", "public reverse proxy exposes x-ui management"},
+	}
+	if label, ok := labels[value]; ok {
+		return choose(zh, label[0], label[1])
+	}
+	return value
 }
 
 func writeOverviewGroup(w io.Writer, title string, lines []string) {
@@ -75,6 +214,26 @@ func panelOverviewLines(f model.Finding, zh bool) []string {
 			out = append(out, line)
 		}
 	}
+	for _, evidence := range f.Evidence {
+		if evidence.Key != "management_posture" {
+			continue
+		}
+		product := relationValue(evidence.Value, "product", "port", "scope", "firewall", "tls", "path_default", "judgment")
+		port := relationValue(evidence.Value, "port", "scope", "firewall", "tls", "path_default", "judgment")
+		scope := relationValue(evidence.Value, "scope", "firewall", "tls", "path_default", "judgment")
+		firewall := relationValue(evidence.Value, "firewall", "tls", "path_default", "judgment")
+		tls := relationValue(evidence.Value, "tls", "path_default", "judgment")
+		pathDefault := relationValue(evidence.Value, "path_default", "judgment")
+		judgment := relationValue(evidence.Value, "judgment")
+		if product == "" || port == "" {
+			continue
+		}
+		line := fmt.Sprintf("%s %s · %s · %s · %s · %s · %s", product, port, scopeLabel(scope, zh), firewallLabel(firewall, zh), booleanPostureLabel("tls", tls, zh), booleanPostureLabel("path", pathDefault, zh), judgmentLabel(judgment, zh))
+		if !seen[line] {
+			seen[line] = true
+			out = append(out, line)
+		}
+	}
 	if len(out) == 0 && f.Facts["products"] != "" {
 		for _, product := range setFromCSV(f.Facts["products"]) {
 			out = append(out, product+" "+findingLabel(f))
@@ -90,6 +249,7 @@ func endpointOverviewLines(f model.Finding, zh bool) []string {
 	}
 	seen := map[string]bool{}
 	var out []string
+	var connectionLines []string
 	for _, evidence := range f.Evidence {
 		if evidence.Key != "endpoint_relation" {
 			continue
@@ -113,8 +273,24 @@ func endpointOverviewLines(f model.Finding, zh bool) []string {
 			out = append(out, line)
 		}
 	}
+	for _, evidence := range f.Evidence {
+		if evidence.Key != "connection_snapshot" {
+			continue
+		}
+		port := relationValue(evidence.Value, "port", "established")
+		count := relationValue(evidence.Value, "established")
+		if semicolon := strings.Index(count, ";"); semicolon >= 0 {
+			count = strings.TrimSpace(count[:semicolon])
+		}
+		if port != "" && count != "" {
+			line := fmt.Sprintf(choose(zh, "%s 当前已建立 TCP 连接=%s（仅快照，不按数量武断判风险）", "%s current established TCP connections=%s (snapshot only; no arbitrary risk threshold)"), port, count)
+			connectionLines = append(connectionLines, line)
+		}
+	}
 	sort.Strings(out)
-	return limitOverviewLines(out, 10, zh)
+	sort.Strings(connectionLines)
+	out = limitOverviewLines(out, 10, zh)
+	return append(out, limitOverviewLines(connectionLines, 6, zh)...)
 }
 
 func controlOverviewLines(f model.Finding, zh bool) []string {
@@ -191,6 +367,7 @@ func scopeLabel(value string, zh bool) string {
 		"loopback":        {"回环", "loopback"},
 		"private":         {"私网", "private"},
 		"none":            {"未监听", "not listening"},
+		"not-live":        {"未监听", "not listening"},
 	}
 	if label, ok := labels[value]; ok {
 		return choose(zh, label[0], label[1])
@@ -215,13 +392,37 @@ func firewallLabel(value string, zh bool) string {
 
 func judgmentLabel(value string, zh bool) string {
 	labels := map[string][2]string{
-		"expected-proxy-ingress":                             {"符合入口预期", "expected proxy ingress"},
-		"configured-public-ingress-blocked-by-host-firewall": {"被主机防火墙阻断", "blocked by host firewall"},
-		"configured-but-not-listening":                       {"未找到实际监听", "not listening"},
-		"listener-owned-by-different-product":                {"监听进程不匹配", "listener owned by another product"},
+		"expected-proxy-ingress":                                             {"符合入口预期", "expected proxy ingress"},
+		"configured-public-ingress-blocked-by-host-firewall":                 {"被主机防火墙阻断", "blocked by host firewall"},
+		"configured-but-not-listening":                                       {"未找到实际监听", "not listening"},
+		"listener-owned-by-different-product":                                {"监听进程不匹配", "listener owned by another product"},
+		"public-management-exposed":                                          {"管理面公网暴露", "public management exposure"},
+		"public-management-exposed+root-or-default-path":                     {"管理面公网暴露且使用根/默认路径", "public management exposure with root/default path"},
+		"public-management-exposed+plaintext-panel":                          {"管理面公网明文暴露", "public plaintext management exposure"},
+		"public-management-exposed+root-or-default-path+plaintext-panel":     {"管理面公网明文暴露且使用根/默认路径", "public plaintext management exposure with root/default path"},
+		"public-management-restricted-by-host-firewall":                      {"管理面受主机防火墙限制", "management restricted by host firewall"},
+		"public-management-restricted-by-host-firewall+root-or-default-path": {"管理面受限，但使用根/默认路径", "restricted management with root/default path"},
+		"public-reverse-proxy-management-exposed":                            {"管理面经公网反向代理暴露", "management exposed through a public reverse proxy"},
+		"public-path-gated-reverse-proxy-management-exposed":                 {"管理面经公网路径路由暴露；路径不是访问控制", "management exposed through a public path route; a path is not access control"},
 	}
 	if label, ok := labels[value]; ok {
 		return choose(zh, label[0], label[1])
 	}
 	return value
+}
+
+func booleanPostureLabel(kind, value string, zh bool) string {
+	if value == "unknown" || value == "" {
+		return choose(zh, map[string]string{"tls": "TLS未知", "path": "路径未知"}[kind], map[string]string{"tls": "TLS unknown", "path": "path unknown"}[kind])
+	}
+	if kind == "tls" {
+		if value == "true" {
+			return choose(zh, "TLS启用", "TLS enabled")
+		}
+		return choose(zh, "TLS未启用", "TLS disabled")
+	}
+	if value == "true" {
+		return choose(zh, "根/默认路径", "root/default path")
+	}
+	return choose(zh, "非默认路径", "non-default path")
 }

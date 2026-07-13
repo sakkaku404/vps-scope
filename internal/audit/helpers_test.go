@@ -481,6 +481,50 @@ func TestProxyProcessEvidenceNeverIncludesArguments(t *testing.T) {
 	}
 }
 
+func TestParseNamedTextKnownDistinguishesEmptyFromMissing(t *testing.T) {
+	if value, known := parseNamedTextKnown("Panel path:\n", "Panel path"); !known || value != "" {
+		t.Fatalf("empty path value=%q known=%t", value, known)
+	}
+	if _, known := parseNamedTextKnown("Panel port: 2053\n", "Panel path"); known {
+		t.Fatal("missing path was reported as known")
+	}
+}
+
+func TestApplyPanelSettingsReadsPathsFromDatabase(t *testing.T) {
+	snapshot := panelSnapshot{}
+	applyPanelSettings(&snapshot, [][]string{{"webPort", "2095"}, {"webBasePath", ""}, {"subPort", "2096"}, {"subPath", "/secret-sub/"}}, "fixture")
+	management, ok := managementEndpoint(snapshot)
+	if !ok || !management.PathKnown || !management.PathIsDefault {
+		t.Fatalf("management=%+v ok=%t", management, ok)
+	}
+	if len(snapshot.Endpoints) != 2 || !snapshot.Endpoints[1].PathKnown || snapshot.Endpoints[1].PathIsDefault {
+		t.Fatalf("endpoints=%+v", snapshot.Endpoints)
+	}
+}
+
+func TestApplyPanelSettingsMergesDefaultsAndHonorsSubscriptionDisable(t *testing.T) {
+	snapshot := panelSnapshot{}
+	apply3XUIDefaults(&snapshot)
+	applyPanelSettings(&snapshot, [][]string{{"subPath", "/private-sub/"}, {"subListen", "127.0.0.1"}}, "fixture")
+	endpoint, ok := panelEndpointByRole(snapshot, "subscription")
+	if !ok || endpoint.Port != "2096" || endpoint.Listen != "127.0.0.1" || !endpoint.PathKnown || endpoint.PathIsDefault || endpoint.Source != "fixture" {
+		t.Fatalf("merged endpoint=%+v ok=%t", endpoint, ok)
+	}
+	applyPanelSettings(&snapshot, [][]string{{"subEnable", "false"}}, "fixture")
+	if _, ok := panelEndpointByRole(snapshot, "subscription"); ok {
+		t.Fatalf("disabled subscription endpoint was retained: %+v", snapshot.Endpoints)
+	}
+}
+
+func TestProxyConnectionCountsOnlyConfiguredIngressWithoutPeers(t *testing.T) {
+	input := "tcp ESTAB 0 0 10.0.0.1:443 198.51.100.1:50000 users:((\"sing-box\",pid=1))\n" +
+		"tcp ESTAB 0 0 10.0.0.1:22 198.51.100.2:50001 users:((\"sshd\",pid=2))\n"
+	counts, total := proxyConnectionCounts(input, map[string]bool{"443": true})
+	if total != 1 || counts["443"] != 1 || counts["22"] != 0 {
+		t.Fatalf("counts=%v total=%d", counts, total)
+	}
+}
+
 func TestSudoNOPASSWDEvidenceWithholdsCommandArguments(t *testing.T) {
 	value := sudoNOPASSWDEvidence(`deploy ALL=(root) NOPASSWD: /usr/local/bin/backup --token super-secret`)
 	if !strings.Contains(value, "subject=deploy") || !strings.Contains(value, "runas=root") || !strings.Contains(value, "command_details=withheld") {

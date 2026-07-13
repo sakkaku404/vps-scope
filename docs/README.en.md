@@ -1,6 +1,6 @@
 # VPS Scope
 
-VPS Scope is a read-only security auditor for Ubuntu and Debian VPS hosts, with first-class attention to sing-box, Xray, Reality, Hysteria2, proxy panels, and Docker deployments. It collects the state of a host, points out things worth reviewing, and leaves the machine untouched.
+VPS Scope is a security and runtime auditor for Ubuntu and Debian VPS hosts used for self-hosted proxies, tunnels, and privacy networks. It understands sing-box, Xray, Reality, Hysteria2, proxy panels, reverse proxies, and Docker deployment relationships instead of treating every public port as the same kind of exposure.
 
 [![CI](https://github.com/sakkaku404/vps-scope/actions/workflows/ci.yml/badge.svg)](https://github.com/sakkaku404/vps-scope/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/sakkaku404/vps-scope/actions/workflows/codeql.yml/badge.svg)](https://github.com/sakkaku404/vps-scope/actions/workflows/codeql.yml)
@@ -25,16 +25,20 @@ Proxy hosts get additional context for:
 
 - sing-box, Xray, Hysteria2, TUIC, Trojan, and Shadowsocks cores and ingress
 - S-UI, 3x-ui/x-ui, Marzban, Hiddify, and Outline management/ingress relations
+- direct and reverse-proxied panel exposure, including root/default paths and plaintext panel endpoints; a hidden URL path is not treated as access control
 - native read-only configuration checks for sing-box and Xray
 - publicly bound Clash API, V2Ray API, and similar control endpoints
 - permissions on panel databases and proxy configuration
 - systemd identity, capabilities, isolation, and file-descriptor limits
 - UDP buffer and error-counter context for Hysteria2 and TUIC workloads
 - config-to-listener relations across TCP/UDP transport, process ownership, exposure scope, merged UFW/effective nftables INPUT policy, and stale allows left without a live listener
+- management/subscription ports reused by proxy ingress, disabled inbounds that remain live, and unexplained public listeners owned by a panel or core
 - Reality semantic completeness without exporting private keys, SNI values, targets, or short IDs
-- privacy-safe category counts for authentication, handshake, DNS, TLS, routing, and fatal log signals
+- privacy-safe category counts for authentication, handshake, DNS, TLS, routing, panel login, API/subscription abuse, web probes, and fatal log signals
+- per-ingress established TCP connection snapshots for comparison and baselines, without generic attack-count thresholds
 - WireGuard interface, UDP listener, firewall, and recent-handshake counts without peer keys or endpoints
 - Nginx, Caddy, and HAProxy chains from public frontends to panel or proxy backends, including public management routes and over-broad backend listeners
+- Docker Compose project/service context, effective mounts, Docker socket access, privileged/host namespaces, added capabilities, and published-address scope
 - optional external DNS/TLS observation, disabled by default and enabled only when domains are explicitly supplied, with CDN-origin address comparison
 
 Detecting a product is not the same as proving which port is its management plane. Container networking, reverse proxies, and unknown panel layouts remain `UNKNOWN` when the evidence cannot support a safe conclusion. See [proxy compatibility](PROXY-COMPATIBILITY.md) for the tested scope.
@@ -131,14 +135,14 @@ A bundle contains the canonical JSON report, human-readable formats, and a SHA-2
 JSON reports can be rendered again without reconnecting to the server:
 
 ```bash
-vps-scope render report.json --lang zh-CN --format html --output report.zh-CN.html
-vps-scope render report.json --lang en --format markdown --output report.en.md
+vps-scope render --lang zh-CN --format html --output report.zh-CN.html report.json
+vps-scope render --lang en --format markdown --output report.en.md report.json
 ```
 
 The `redact` command replaces hostnames, addresses, domains, usernames, and key fingerprints with stable placeholders before a report is shared:
 
 ```bash
-vps-scope redact report.json --format markdown --output public.md
+vps-scope redact --format markdown --output public.md report.json
 ```
 
 VPS Scope does not copy passwords, tokens, private keys, subscription paths, SSH key comments, or full process arguments into a report. It also refuses to export application blobs that may combine certificates with private keys. See the [privacy notes](PRIVACY.md) for the complete boundary.
