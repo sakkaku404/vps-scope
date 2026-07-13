@@ -90,7 +90,7 @@ func TestHTMLIsSelfContainedAndUsable(t *testing.T) {
 		t.Fatal(err)
 	}
 	html := out.String()
-	for _, required := range []string{`data-filter="RISK"`, `class="search"`, `data-status="UNKNOWN"`, "风险解释", "证据", "报告保存在本地"} {
+	for _, required := range []string{`data-filter="RISK"`, `class="search"`, `data-status="UNKNOWN"`, "Action summary", "风险解释", "证据", "报告保存在本地"} {
 		if !strings.Contains(html, required) {
 			t.Errorf("HTML missing %q", required)
 		}
@@ -109,5 +109,36 @@ func TestPriorityRiskShowsEvidenceWithoutVerbose(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "[ufw] inactive") {
 		t.Fatalf("priority risk evidence was hidden: %s", out.String())
+	}
+}
+
+func TestActionSummarySeparatesUrgentAvailabilityAndEvidenceGaps(t *testing.T) {
+	r := sampleReport()
+	r.Findings = append(r.Findings,
+		model.Finding{ID: "SSH-001", Category: "ssh", Status: model.Risk, Severity: model.High, Evidence: []model.Evidence{{Source: "sshd -T", Key: "passwordauthentication", Value: "yes"}}},
+		model.Finding{ID: "WORK-009", Category: "workloads", Status: model.Risk, Severity: model.Medium, Evidence: []model.Evidence{{Source: "endpoint graph", Key: "endpoint_relation", Value: "configured-public-ingress-blocked-by-host-firewall"}}},
+	)
+	r.Recount()
+	var out bytes.Buffer
+	if err := Text(&out, r, Options{Locale: "en"}); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	for _, expected := range []string{"Handle now", "Confirmed risk: SSH password authentication is effective.", "May affect availability", "Availability issue: a configured proxy ingress is blocked by the host firewall.", "Evidence gaps requiring manual confirmation"} {
+		if !strings.Contains(text, expected) {
+			t.Errorf("text missing %q:\n%s", expected, text)
+		}
+	}
+}
+
+func TestMarkdownCompressesLongEvidence(t *testing.T) {
+	r := sampleReport()
+	r.Findings[1].Evidence = []model.Evidence{{Source: "ufw", Key: "one", Value: "1"}, {Source: "ufw", Key: "two", Value: "2"}, {Source: "ufw", Key: "three", Value: "3"}}
+	var out bytes.Buffer
+	if err := Markdown(&out, r, Options{Locale: "en"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "<details><summary>All evidence (3)</summary>") {
+		t.Fatalf("long evidence was not collapsed:\n%s", out.String())
 	}
 }

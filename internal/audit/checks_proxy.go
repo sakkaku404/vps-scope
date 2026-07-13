@@ -7,7 +7,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,48 +14,6 @@ import (
 
 	"github.com/sakkaku404/vps-scope/internal/model"
 )
-
-type proxyInbound struct {
-	Product          string
-	Protocol         string
-	Listen           string
-	Port             string
-	Transports       []string
-	Security         string
-	RealityEnabled   bool
-	RealityKeySet    bool
-	RealityTargets   int
-	RealityServerIDs int
-}
-
-type controlEndpoint struct {
-	Product string
-	Kind    string
-	Listen  string
-	Port    string
-}
-
-type proxyConfigSummary struct {
-	Product        string
-	Path           string
-	SensitiveFiles []string
-	Inbounds       []proxyInbound
-	Controls       []controlEndpoint
-	UsesUDP        bool
-	Parseable      bool
-	Err            error
-}
-
-// configuredProxyInbound keeps the source path while allowing checks to
-// collapse an identical ingress described by both a panel database and its
-// generated runtime configuration. Panels such as 3x-ui intentionally keep
-// those two views in sync; counting both would make the report misleading.
-type configuredProxyInbound struct {
-	Path string
-	proxyInbound
-}
-
-var proxyProcessPattern = regexp.MustCompile(`(?i)\b(sing-box|xray|x-ui|s-ui|sui|hysteria|tuic|trojan|ss-server|sslocal|marzban|hiddify|outline-ss-server|wg-quick|openvpn)\b`)
 
 func proxyChecks(ctx *Context) []model.Finding {
 	summaries := discoverProxyConfigs(ctx)
@@ -400,42 +357,6 @@ func checkProxyEndpointRelations(ctx *Context, summaries []proxyConfigSummary) m
 	return f
 }
 
-func valueOr(value, fallback string) string {
-	if value == "" {
-		return fallback
-	}
-	return value
-}
-
-func listenerProxyProduct(process string) (string, bool) {
-	product := proxyProductFromText(process)
-	return product, product != "unknown-proxy"
-}
-
-func sameProxyProduct(a, b string) bool {
-	// Hiddify's generated Xray/sing-box inbounds may be served by its unified
-	// hiddify-core process. Treat that documented manager/core relationship as
-	// ownership, while retaining mismatch detection for unrelated processes.
-	if strings.EqualFold(a, "Hiddify") && containsAny(strings.ToLower(b), "xray", "sing-box", "hiddify") {
-		return true
-	}
-	if strings.EqualFold(b, "Hiddify") && containsAny(strings.ToLower(a), "xray", "sing-box", "hiddify") {
-		return true
-	}
-	normalize := func(value string) string {
-		value = strings.ToLower(value)
-		switch {
-		case containsAny(value, "x-ui", "xray"):
-			return "xray-family"
-		case containsAny(value, "s-ui", "sing-box"):
-			return "sing-box-family"
-		default:
-			return value
-		}
-	}
-	return normalize(a) == normalize(b)
-}
-
 func checkWireGuardRuntime(ctx *Context) model.Finding {
 	if !ctx.Commander.Exists("wg") {
 		return notApplicable("WORK-011", "workloads", "wg", "WireGuard tools are not installed")
@@ -488,39 +409,6 @@ func checkWireGuardRuntime(ctx *Context) model.Finding {
 	f.Facts["peers_with_recent_handshake"] = strconv.Itoa(recentPeers)
 	f.Evidence = append(f.Evidence, model.Evidence{Source: "wg show", Key: "peer_summary", Value: fmt.Sprintf("peers=%d recent_handshakes=%d; public keys and endpoints withheld", peers, recentPeers)})
 	return f
-}
-
-func proxyTransports(protocol, network string) []string {
-	p := strings.ToLower(protocol)
-	n := strings.ToLower(network)
-	if containsAny(p+" "+n, "hysteria", "tuic", "quic", "kcp") {
-		return []string{"udp"}
-	}
-	if strings.Contains(p, "shadowsocks") || strings.Contains(p, "mixed") {
-		if n == "tcp" || n == "udp" {
-			return []string{n}
-		}
-		return []string{"tcp", "udp"}
-	}
-	if n == "udp" {
-		return []string{"udp"}
-	}
-	return []string{"tcp"}
-}
-
-func endpointRelationValue(in proxyInbound, transport, process, scope, firewall, judgment string) string {
-	security := in.Security
-	if in.RealityEnabled {
-		security = "reality"
-	}
-	if security == "" {
-		security = "none-or-protocol-native"
-	}
-	return fmt.Sprintf("port=%s/%s process=%s purpose=%s/%s security=%s scope=%s firewall=%s judgment=%s", in.Port, transport, truncate(process, 120), in.Product, in.Protocol, security, scope, firewall, judgment)
-}
-
-func endpointFirewallDisposition(ufw panelUFW, port, protocol string) string {
-	return firewallDisposition(ufw, port, protocol)
 }
 
 func discoverProxyConfigs(ctx *Context) []proxyConfigSummary {

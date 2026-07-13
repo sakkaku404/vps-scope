@@ -112,6 +112,8 @@ External DNS/TLS observation is disabled by default. `--external-domain` explici
 
 Interactive mode defaults to showing the result in the terminal and saving a full report bundle. Saved reports go to `~/vps-scope-reports/HOST/TIMESTAMP/`; `~/vps-scope-reports/latest` points to the newest one. Each run uses a distinct directory and refuses to overwrite an existing bundle. The completion message explains each file and prints a copy-paste download command.
 
+Start with the action summary rather than the raw count: it separates confirmed high-priority risks, likely availability problems, routine maintenance, and evidence gaps. This is a reading aid only; it never changes a finding's `PASS` / `RISK` / `INFO` / `UNKNOWN` state. Terminal and Markdown reports show a small set of key evidence first, while the full evidence remains available in verbose output, JSON, and collapsible Markdown sections.
+
 ```bash
 sudo vps-scope report show  # show the latest report again
 sudo vps-scope report list  # list saved reports

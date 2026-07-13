@@ -114,6 +114,8 @@ sudo ./vps-scope audit --profile proxy --external-domain panel.example.com --exp
 
 交互模式默认会在终端显示结果，同时保存一份完整报告。报告统一放在 `~/vps-scope-reports/主机名/时间/`，其中 `~/vps-scope-reports/latest` 始终指向最近一次报告。每次运行使用独立目录，拒绝覆盖已有报告；生成完成后会解释每个文件的用途，并给出可以复制的下载命令。
 
+先看“现在优先处理”等行动摘要，而不是只看风险数量：它会区分明确的高优先级风险、可能影响可用性的问题、例行维护和证据不足项。这只是帮助阅读，不会改变任何检查的 `PASS` / `RISK` / `INFO` / `UNKNOWN` 结论。终端和 Markdown 默认先展示关键证据；完整证据仍可在详细模式、JSON 和可折叠的 Markdown 区域中查看。
+
 ```bash
 sudo vps-scope report show  # 再次显示最近一次报告
 sudo vps-scope report list  # 列出保存过的报告
