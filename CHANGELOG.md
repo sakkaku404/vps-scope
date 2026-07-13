@@ -18,6 +18,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 - Official Outline and Marzban host-network containers are treated as deployment context while their effective listeners and management exposure are audited separately.
 - Proxy endpoint policy now consumes a typed graph instead of combining collection, product parsing, and judgment in one loop.
+- Raised the build baseline to Go 1.25.12 because opt-in TLS observation made standard-library fixes for GO-2026-5856 and GO-2026-5037 reachable.
 
 ## 0.8.0 - 2026-07-13
 
