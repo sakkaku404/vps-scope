@@ -39,7 +39,7 @@ func collectHostFirewall(cmd Commander) panelUFW {
 		}
 	}
 	if cmd.Exists("iptables-save") || cmd.Exists("ip6tables-save") {
-		f := panelUFW{available: true, active: true, backend: "iptables"}
+		f := panelUFW{available: true, active: true, backend: "iptables", defaultDenyByFamily: map[string]bool{}}
 		for _, spec := range []struct{ command, family string }{{"iptables-save", "ipv4"}, {"ip6tables-save", "ipv6"}} {
 			if !cmd.Exists(spec.command) {
 				continue
@@ -48,6 +48,7 @@ func collectHostFirewall(cmd Commander) panelUFW {
 			if r.Err == nil && !r.Truncated {
 				rules, deny := parseIPTablesFirewall(r.Stdout, spec.family)
 				f.rules = append(f.rules, rules...)
+				f.defaultDenyByFamily[spec.family] = deny
 				f.defaultDeny = f.defaultDeny || deny
 				f.lines = append(f.lines, lines(r.Stdout)...)
 			}
@@ -62,7 +63,7 @@ func collectFirewalld(cmd Commander) panelUFW {
 	if zonesResult.Err != nil || zonesResult.Truncated {
 		return panelUFW{}
 	}
-	f := panelUFW{available: true, active: true, backend: "firewalld"}
+	f := panelUFW{available: true, active: true, backend: "firewalld", defaultDenyByFamily: map[string]bool{}}
 	servicePorts := map[string]string{"ssh": "22", "http": "80", "https": "443"}
 	for _, zone := range parseFirewalldActiveZones(zonesResult.Stdout) {
 		detail := cmd.Run(10*time.Second, "firewall-cmd", "--zone="+zone, "--list-all")
@@ -78,6 +79,7 @@ func collectFirewalld(cmd Commander) panelUFW {
 			}
 			if strings.HasPrefix(trimmed, "target:") && strings.EqualFold(strings.TrimSpace(strings.TrimPrefix(trimmed, "target:")), "DROP") {
 				f.defaultDeny = true
+				f.defaultDenyByFamily["any"] = true
 			}
 		}
 		analysis := parseFirewalldZone(detail.Stdout)
@@ -131,8 +133,8 @@ func parseUFWRules(input []string) []firewallRule {
 }
 
 func parseNFTFirewall(output string) panelUFW {
-	f := panelUFW{available: true, active: true, backend: "nftables", lines: lines(output)}
-	f.defaultDeny = regexp.MustCompile(`(?i)hook\s+input[^\n]*policy\s+drop`).MatchString(output)
+	f := panelUFW{available: true, active: true, backend: "nftables", lines: lines(output), defaultDenyByFamily: map[string]bool{}}
+	collectNFTDefaultPolicies(&f, output)
 	ruleRE := regexp.MustCompile(`(?i)\b(tcp|udp)\s+dport\s+([0-9]+)\b([^\n]*?)\b(accept|drop|reject)\b`)
 	for _, line := range f.lines {
 		m := ruleRE.FindStringSubmatch(line)
@@ -159,6 +161,22 @@ func parseNFTFirewall(output string) panelUFW {
 		f.rules = append(f.rules, firewallRule{Family: family, Protocol: strings.ToLower(m[1]), Port: m[2], Source: source, Action: outcome, Raw: line})
 	}
 	return f
+}
+
+func collectNFTDefaultPolicies(f *panelUFW, output string) {
+	tableFamily := ""
+	tableRE := regexp.MustCompile(`(?i)^table\s+(ip|ip6|inet)\s+`)
+	policyRE := regexp.MustCompile(`(?i)hook\s+input\b.*\bpolicy\s+(drop|reject)\b`)
+	for _, line := range lines(output) {
+		trimmed := strings.TrimSpace(line)
+		if m := tableRE.FindStringSubmatch(trimmed); len(m) > 1 {
+			tableFamily = map[string]string{"ip": "ipv4", "ip6": "ipv6", "inet": "any"}[strings.ToLower(m[1])]
+		}
+		if policyRE.MatchString(trimmed) {
+			f.defaultDeny = true
+			f.defaultDenyByFamily[tableFamily] = true
+		}
+	}
 }
 
 func parseIPTablesFirewall(output, family string) ([]firewallRule, bool) {
@@ -228,10 +246,23 @@ func firewallDispositionFamily(f panelUFW, port, protocol, family string) string
 	if restricted {
 		return "allow-restricted"
 	}
-	if f.defaultDeny {
+	if defaultDenyForFamily(f, family) {
 		return "blocked-by-default"
 	}
 	return "no-explicit-rule"
+}
+
+func defaultDenyForFamily(f panelUFW, family string) bool {
+	if len(f.defaultDenyByFamily) == 0 {
+		return f.defaultDeny
+	}
+	if f.defaultDenyByFamily["any"] {
+		return true
+	}
+	if family == "any" {
+		return f.defaultDenyByFamily["ipv4"] && f.defaultDenyByFamily["ipv6"]
+	}
+	return f.defaultDenyByFamily[family]
 }
 
 func listenerAddressFamily(address string) string {

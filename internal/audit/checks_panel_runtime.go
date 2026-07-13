@@ -19,7 +19,7 @@ func checkPanelRuntimeConsistency(ctx *Context, summaries []proxyConfigSummary) 
 	}
 	f := model.Finding{ID: "WORK-012", Category: "workloads", Status: model.Pass, Facts: map[string]string{"panels": strconv.Itoa(len(panels))}}
 	ufw := readPanelUFW(ctx)
-	databaseUnavailable, mismatches, roleCollisions, unclassified := 0, 0, 0, 0
+	databaseUnavailable, mismatches, roleCollisions, unclassified, inferredControls := 0, 0, 0, 0, 0
 	expired, exhausted := 0, 0
 	for _, panel := range panels {
 		knownPorts := map[string]bool{}
@@ -48,12 +48,18 @@ func checkPanelRuntimeConsistency(ctx *Context, summaries []proxyConfigSummary) 
 		}
 		enabledPorts := map[string]bool{}
 		for _, inbound := range panel.Inbounds {
+			if !validPort(inbound.Port) {
+				continue
+			}
 			knownPorts[inbound.Port] = true
 			if inbound.Enabled {
 				enabledPorts[inbound.Port] = true
 			}
 		}
 		for _, inbound := range panel.Inbounds {
+			if !validPort(inbound.Port) {
+				continue
+			}
 			if inbound.Expired {
 				expired++
 			}
@@ -79,11 +85,15 @@ func checkPanelRuntimeConsistency(ctx *Context, summaries []proxyConfigSummary) 
 				f.Evidence = append(f.Evidence, model.Evidence{Source: panel.Database + " + ss", Key: "panel_inbound_runtime", Value: fmt.Sprintf("product=%s enabled=%t protocol=%s security=%s port=%s/%s clients=%d live=%t process=%s scope=%s expired=%t quota_exhausted=%t", panel.Product, inbound.Enabled, inbound.Protocol, inbound.Security, inbound.Port, transport, inbound.ClientCount, live, truncate(process, 100), scope, inbound.Expired, inbound.QuotaExhausted)})
 			}
 		}
-		processNeedle := strings.ToLower(panel.Product)
 		for _, listener := range listeners {
 			process := strings.ToLower(listener.Process)
-			owned := strings.Contains(process, "x-ui") && strings.Contains(processNeedle, "ui") || strings.Contains(process, "sui") && panel.Product == "S-UI"
+			owned := panelOwnsProcess(panel.Product, process)
 			if owned && !knownPorts[listener.Port] {
+				if listener.Scope == "loopback" && strings.Contains(process, "xray") && (panel.Product == "Hiddify" || panel.Product == "Marzban") {
+					inferredControls++
+					f.Evidence = append(f.Evidence, model.Evidence{Source: "ss", Key: "inferred_control_listener", Value: fmt.Sprintf("product=%s port=%s/%s scope=loopback process=%s role=internal-xray-control", panel.Product, listener.Port, listener.Protocol, truncate(listener.Process, 100))})
+					continue
+				}
 				unclassified++
 				f.Evidence = append(f.Evidence, model.Evidence{Source: "ss", Key: "unclassified_panel_listener", Value: fmt.Sprintf("product=%s port=%s/%s scope=%s process=%s role=unknown", panel.Product, listener.Port, listener.Protocol, listener.Scope, truncate(listener.Process, 100))})
 			}
@@ -94,12 +104,29 @@ func checkPanelRuntimeConsistency(ctx *Context, summaries []proxyConfigSummary) 
 	f.Facts["runtime_mismatches"] = strconv.Itoa(mismatches)
 	f.Facts["role_collisions"] = strconv.Itoa(roleCollisions)
 	f.Facts["unclassified_panel_listeners"] = strconv.Itoa(unclassified)
+	f.Facts["inferred_control_listeners"] = strconv.Itoa(inferredControls)
 	f.Facts["expired_inbounds"] = strconv.Itoa(expired)
 	f.Facts["quota_exhausted_inbounds"] = strconv.Itoa(exhausted)
 	if f.Status != model.Risk && (databaseUnavailable > 0 || unclassified > 0) {
 		f.Status = model.Info
 	}
 	return f
+}
+
+func panelOwnsProcess(product, process string) bool {
+	product, process = strings.ToLower(product), strings.ToLower(process)
+	switch product {
+	case "s-ui":
+		return strings.Contains(process, "sui") || strings.Contains(process, "sing-box")
+	case "x-ui", "3x-ui":
+		return strings.Contains(process, "x-ui") || strings.Contains(process, "xray")
+	case "hiddify":
+		return strings.Contains(process, "hiddify-core") || strings.Contains(process, "xray")
+	case "marzban":
+		return strings.Contains(process, "marzban") || strings.Contains(process, "xray")
+	default:
+		return false
+	}
 }
 
 func listenerForPort(listeners []Listener, port, transport string) (bool, string, string) {

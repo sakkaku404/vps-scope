@@ -33,3 +33,20 @@ func TestNormalizedFirewallBackends(t *testing.T) {
 		t.Fatalf("IPv4 rule incorrectly covered IPv6: %q", got)
 	}
 }
+
+func TestIPTablesDefaultPolicyIsAddressFamilySpecific(t *testing.T) {
+	f := panelUFW{available: true, active: true, backend: "iptables", defaultDeny: true, defaultDenyByFamily: map[string]bool{"ipv4": true, "ipv6": false}}
+	if got := firewallDispositionFamily(f, "443", "tcp", "ipv4"); got != "blocked-by-default" {
+		t.Fatalf("ipv4=%q", got)
+	}
+	if got := firewallDispositionFamily(f, "443", "tcp", "ipv6"); got != "no-explicit-rule" {
+		t.Fatalf("ipv6=%q", got)
+	}
+}
+
+func TestNFTDefaultPolicyTracksTableFamily(t *testing.T) {
+	f := parseNFTFirewall("table ip filter {\n chain input { type filter hook input priority 0; policy drop; }\n}\ntable ip6 filter {\n chain input { type filter hook input priority 0; policy accept; }\n}")
+	if !defaultDenyForFamily(f, "ipv4") || defaultDenyForFamily(f, "ipv6") {
+		t.Fatalf("family policies=%v", f.defaultDenyByFamily)
+	}
+}

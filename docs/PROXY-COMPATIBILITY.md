@@ -13,7 +13,9 @@ VPS Scope 会把“识别到某个产品”和“能够可靠判断风险”分�
 | Hysteria2 | 原生 YAML 发现、sing-box Hysteria2 入口、UDP 运行上下文 | sing-box 1.13.14 真实入站与解析夹具 |
 | TUIC | JSON 入口与 UDP 上下文 | 已有解析夹具，仍需真实主机验证 |
 | Trojan / Shadowsocks | 原生 JSON 入口、TCP/UDP 语义、进程和常见配置发现 | 隐私夹具已覆盖；仍需真实主机验证 |
-| Hiddify / Marzban / Outline | 进程、容器和发布端口证据 | 无法区分管理端点时保持 `UNKNOWN`，仍需更多真实面板布局 |
+| Hiddify | 版本化托管安装适配器、回环面板/控制接口、分片 sing-box/Xray 配置、Mieru TCP/UDP 端口绑定、监听和防火墙关系 | Ubuntu 22.04 上的 Hiddify Manager 12.3.3；已验证配置与实际 TCP/UDP 关系，且不导出用户或凭据 |
+| Marzban | 版本化托管安装适配器、白名单 `.env` 语义、Uvicorn 管理端点、生成的 Xray 入口/控制接口、监听和防火墙关系 | Ubuntu 26.04 上的官方 Docker 部署；已验证管理面、Xray、TCP/UDP 和 host network 上下文 |
+| Outline | 进程、容器和发布端口证据 | 无法区分管理端点时保持 `UNKNOWN`，仍需真实面板布局 |
 | WireGuard | 活动接口、UDP 监听、防火墙、peer 数量与近期握手数量、敏感文件线索 | 不导出 peer 公钥或 endpoint；仍需更多真实拓扑验证 |
 | OpenVPN | 原生服务端配置中的监听地址、TCP/UDP 协议和端口关系 | 隐私夹具已覆盖；仍需真实主机验证 |
 | Docker | 发布地址分类、privileged、host namespace、Docker socket 和宽泛挂载 | Ubuntu 26.04 真实 VPS 上的正常与故意风险容器 |
@@ -37,7 +39,9 @@ VPS Scope separates product detection from security conclusions. A row marked "d
 | Hysteria2 | Native YAML discovery and sing-box Hysteria2 ingress; UDP runtime context | Real Hysteria2 inbound on sing-box 1.13.14 plus parser fixtures |
 | TUIC | JSON ingress and UDP context | Parser fixtures; real-host validation still needed |
 | Trojan / Shadowsocks | Native JSON ingress, TCP/UDP semantics, process and common configuration discovery | Privacy fixtures covered; real-host validation still needed |
-| Hiddify / Marzban / Outline | Process/container discovery and published-port evidence | Safe `UNKNOWN` when the management endpoint cannot be distinguished; real panel layouts still needed |
+| Hiddify | Versioned managed-install adapter, loopback panel/control roles, fragmented sing-box/Xray configs, Mieru TCP/UDP port bindings, listener and firewall relations | Real Hiddify Manager 12.3.3 on Ubuntu 22.04; configured TCP/UDP relations validated without exporting users or credentials |
+| Marzban | Versioned managed-install adapter, allowlisted `.env` semantics, Uvicorn management endpoint, generated Xray ingress/control parsing, listener and firewall relations | Real official Docker deployment on Ubuntu 26.04; management, Xray, TCP/UDP, and host-network context validated |
+| Outline | Process/container discovery and published-port evidence | Safe `UNKNOWN` when the management endpoint cannot be distinguished; real panel layouts still needed |
 | WireGuard | Active interfaces, UDP listeners, firewall, peer and recent-handshake counts, secret-file signals | Peer keys and endpoints are never exported; more real-topology validation is needed |
 | OpenVPN | Listener address, TCP/UDP protocol, and port relations from native server configuration | Privacy fixtures covered; real-host validation still needed |
 | Docker | Published-address classification, privileged mode, host namespaces, Docker socket and broad binds | Real Ubuntu 26.04 VPS with safe and deliberately risky containers |

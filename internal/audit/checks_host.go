@@ -38,6 +38,17 @@ func checkPanelManagement(ctx *Context) model.Finding {
 	if len(panels) == 0 && len(containerPanels) == 0 {
 		return notApplicable("WORK-002", "workloads", "binary and container discovery", "no supported S-UI, 3x-ui, x-ui, Hiddify, Marzban, or Outline panel found")
 	}
+	nativeProducts := map[string]bool{}
+	for _, panel := range panels {
+		nativeProducts[strings.ToLower(panel.Product)] = true
+	}
+	filteredContainers := containerPanels[:0]
+	for _, panel := range containerPanels {
+		if !nativeProducts[strings.ToLower(panel.product)] {
+			filteredContainers = append(filteredContainers, panel)
+		}
+	}
+	containerPanels = filteredContainers
 	f := model.Finding{ID: "WORK-002", Category: "workloads", Status: model.Pass, Facts: map[string]string{"panel_count": strconv.Itoa(len(panels) + len(containerPanels))}}
 
 	listeners, listenerErr := ctx.Facts.Listeners()
@@ -76,7 +87,14 @@ func checkPanelManagement(ctx *Context) model.Finding {
 		if scope != "public" && scope != "public-wildcard" {
 			continue
 		}
-		disposition := panelFirewallDisposition(ufw, endpoint.Port, &f)
+		family := "any"
+		for _, listener := range listeners {
+			if listener.Port == endpoint.Port && strings.HasPrefix(listener.Protocol, "tcp") && listener.Scope == scope {
+				family = listenerAddressFamily(listener.Address)
+				break
+			}
+		}
+		disposition := panelFirewallDispositionFamily(ufw, endpoint.Port, family, &f)
 		switch disposition {
 		case "allow-anywhere", "inactive":
 			f.Status, f.Severity = model.Risk, model.High
@@ -90,12 +108,15 @@ func checkPanelManagement(ctx *Context) model.Finding {
 		products = append(products, panel.product)
 		unknowns++
 		f.Evidence = append(f.Evidence, model.Evidence{Source: "docker ps", Key: "container_panel", Value: fmt.Sprintf("product=%s name=%s image=%s", panel.product, panel.name, panel.image)})
-		ports := ctx.Commander.Run(8*time.Second, "docker", "port", panel.name)
-		if ports.Stdout == "" {
-			f.Evidence = append(f.Evidence, model.Evidence{Source: "docker port", Key: panel.name, Value: "no directly published ports; management access may use host networking or a reverse-proxy network"})
+		if len(panel.ports) == 0 {
+			detail := "no directly published ports; management access may use a reverse-proxy network"
+			if panel.hostNetwork {
+				detail = "host network; management port requires a product adapter or listener correlation"
+			}
+			f.Evidence = append(f.Evidence, model.Evidence{Source: "docker inspect", Key: panel.name, Value: detail})
 		} else {
-			for _, line := range lines(ports.Stdout) {
-				f.Evidence = append(f.Evidence, model.Evidence{Source: "docker port", Key: panel.name, Value: truncate(line, 180)})
+			for _, line := range panel.ports {
+				f.Evidence = append(f.Evidence, model.Evidence{Source: "docker inspect", Key: panel.name, Value: truncate(line, 180)})
 			}
 		}
 	}
@@ -131,30 +152,33 @@ func knownBool(value, known bool) string {
 }
 
 type containerPanelInstall struct {
-	product string
-	name    string
-	image   string
+	product     string
+	name        string
+	image       string
+	ports       []string
+	hostNetwork bool
 }
 
 func discoverContainerPanels(ctx *Context) []containerPanelInstall {
-	if !ctx.Commander.Exists("docker") {
-		return nil
-	}
-	r := ctx.Commander.Run(10*time.Second, "docker", "ps", "--format", "{{.Names}}\t{{.Image}}")
-	if r.Err != nil {
+	containers, err := ctx.Facts.DockerContainers()
+	if err != nil {
 		return nil
 	}
 	var out []containerPanelInstall
-	for _, line := range lines(r.Stdout) {
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			continue
-		}
-		product, ok := panelProductFromContainer(fields[0] + " " + fields[1])
+	for _, container := range containers {
+		name := strings.TrimPrefix(container.Name, "/")
+		product, ok := panelProductFromContainer(name + " " + container.Config.Image)
 		if !ok {
 			continue
 		}
-		out = append(out, containerPanelInstall{product: product, name: fields[0], image: fields[1]})
+		var ports []string
+		for containerPort, bindings := range container.NetworkSettings.Ports {
+			for _, binding := range bindings {
+				ports = append(ports, fmt.Sprintf("%s -> %s:%s", containerPort, binding.HostIP, binding.HostPort))
+			}
+		}
+		sort.Strings(ports)
+		out = append(out, containerPanelInstall{product: product, name: name, image: container.Config.Image, ports: ports, hostNetwork: container.HostConfig.NetworkMode == "host"})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
 	return out
@@ -213,6 +237,7 @@ func panelListenerScope(listeners []Listener, port string, f *model.Finding) (st
 
 type panelUFW struct {
 	available, active, defaultDeny bool
+	defaultDenyByFamily            map[string]bool
 	lines                          []string
 	backend                        string
 	rules                          []firewallRule
@@ -239,7 +264,11 @@ func parsePanelUFW(output string) panelUFW {
 }
 
 func panelFirewallDisposition(ufw panelUFW, port string, f *model.Finding) string {
-	disposition := firewallDisposition(ufw, port, "tcp")
+	return panelFirewallDispositionFamily(ufw, port, "any", f)
+}
+
+func panelFirewallDispositionFamily(ufw panelUFW, port, family string, f *model.Finding) string {
+	disposition := firewallDispositionFamily(ufw, port, "tcp", family)
 	if disposition == "allow-restricted" {
 		disposition = "restricted"
 	}

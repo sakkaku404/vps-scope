@@ -4,6 +4,21 @@ Notable changes to VPS Scope are recorded here.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- Managed-install adapters for Marzban and Hiddify, including allowlisted environment parsing, generated Xray/sing-box ingress, internal control endpoints, Mieru port bindings, and runtime/firewall correlation.
+- Anonymous report golden fixture plus report v1 and baseline v1/v2 compatibility tests.
+
+### Fixed
+
+- Baseline v2 now binds to the report StableID and normalizes volatile listener PID/fd data; v1 remains readable with a weaker-identity warning.
+- iptables and nftables default input policies are tracked independently for IPv4, IPv6, and inet instead of merging both address families.
+- Standalone report and baseline JSON inputs have a 64 MiB limit and reject trailing JSON documents.
+- Deep panel adapters now take precedence over shallow container-name detection, and cached Docker facts replace repeated `docker ps`/`docker port` calls.
+- Official Marzban host networking is recorded as deployment context while privileged containers, Docker socket mounts, and unrelated host networking remain risks.
+
 ## 0.7.0 - 2026-07-13
 
 ### Added
