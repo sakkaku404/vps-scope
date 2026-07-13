@@ -4,7 +4,7 @@ Notable changes to VPS Scope are recorded here.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.8.0 - 2026-07-13
 
 ### Added
 
