@@ -13,6 +13,14 @@ Tests cover address classification, listener parsing, dpkg verification classifi
 
 Proxy-specific fixtures also verify that configuration summaries never retain UUIDs, passwords, API secrets, inbound tags, SSH key comments, APT URL credentials, or complete process arguments.
 
+## Policy scenarios
+
+`internal/audit/scenario_test.go` provides the reusable command fixture used for policy tests. Every command used by a scenario must be declared explicitly; an undeclared command fails, so a test cannot quietly inherit facts from the developer workstation or CI runner.
+
+The scenarios assert outcomes, not implementation details. They currently cover effective SSH policy, firewall and update evidence, journald-based SSH and sudo auditing, public panel exposure, expected public proxy ingress, public control APIs, panel/runtime mismatches, unsafe Docker isolation, and truncated command output. The important safety contract is that incomplete evidence produces `UNKNOWN`, never `PASS`.
+
+When adding a new decision rule, add at least one ordinary expected-state scenario and one adverse or incomplete-evidence scenario. Keep fixtures small, synthetic, and free of real host identifiers or secrets.
+
 ## Cross compilation
 
 ```bash
@@ -52,6 +60,6 @@ Regression review should verify:
 - Reality, Trojan, Shadowsocks, OpenVPN, and WireGuard summaries retain semantic facts without secret-bearing values.
 - the audit executable itself is excluded from temporary-directory process findings when using the one-command runner.
 
-The latest four-host standard run completed in 3.2–4.8 seconds. These timings are observations from 1 vCPU / 1 GB lab VPS instances, not performance guarantees.
+The latest four-host standard run completed in about 3 to 5 seconds. These timings are observations from 1 vCPU / 1 GB lab VPS instances, not performance guarantees.
 
 Never commit real host reports. They may contain IP addresses, domains, usernames, paths, and operational evidence.
