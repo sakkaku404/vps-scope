@@ -9,7 +9,7 @@ Check IDs are stable across languages and report formats. A status is separate f
 | SSH | `SSH-001`–`SSH-005` | `sshd -T`, filesystem ownership/modes, privacy-safe SHA-256 authorized-key fingerprints |
 | Privileges | `PRIV-001`–`PRIV-002` | sudoers; deep-mode SUID/SGID, `getcap`, `dpkg-query -S` |
 | Network | `NET-001`–`NET-003` | listeners and established connections from `ss`, address classification, profile intent |
-| Firewall | `FW-001`–`FW-002` | UFW and firewalld policy/rules; nftables and iptables inventory |
+| Firewall | `FW-001`–`FW-002` | Normalized UFW, firewalld, nftables, and iptables/ip6tables policy and port/source rules |
 | Authentication | `AUTH-001`–`AUTH-003` | journald/auth.log, sudo journal, Fail2ban and CrowdSec clients |
 | Updates | `UPD-001`–`UPD-002` | simulated APT upgrade, reboot marker, timers |
 | Packages | `PKG-001`–`PKG-002` | APT sources; deep-mode `dpkg --verify` classification |

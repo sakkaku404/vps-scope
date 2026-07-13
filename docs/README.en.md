@@ -30,7 +30,7 @@ Proxy hosts get additional context for:
 - permissions on panel databases and proxy configuration
 - systemd identity, capabilities, isolation, and file-descriptor limits
 - UDP buffer and error-counter context for Hysteria2 and TUIC workloads
-- config-to-listener relations across TCP/UDP transport, process ownership, exposure scope, and UFW policy
+- config-to-listener relations across TCP/UDP transport, process ownership, exposure scope, and normalized UFW, firewalld, nftables, or iptables/ip6tables policy
 - Reality semantic completeness without exporting private keys, SNI values, targets, or short IDs
 - privacy-safe category counts for authentication, handshake, DNS, TLS, routing, and fatal log signals
 - WireGuard interface, UDP listener, firewall, and recent-handshake counts without peer keys or endpoints
@@ -143,6 +143,13 @@ Use `diff` to see what changed on one server, or `fleet` for a quick comparison 
 ```bash
 vps-scope diff old.json new.json
 vps-scope fleet west.json sgp.json tw.json japan.json
+```
+
+For long-lived hosts, create a baseline and highlight added or removed public listeners, SSH keys, firewall rules, panel/proxy endpoints, containers, and proxy services:
+
+```bash
+vps-scope baseline create report.json baseline.json
+vps-scope baseline check baseline.json report-new.json
 ```
 
 Checks keep the same IDs in Chinese and English, so reports remain comparable regardless of display language.

@@ -162,14 +162,37 @@ func checkFirewallBase(ctx *Context) []model.Finding {
 			f.Status, f.Severity = model.Risk, model.High
 			f.Evidence = []model.Evidence{{Source: "nft list ruleset", Value: "empty ruleset"}}
 		} else {
-			// Rules exist, but a generic parser cannot safely claim they protect every path.
+			normalized := parseNFTFirewall(r.Stdout)
 			f.Status = model.Info
+			if normalized.defaultDeny {
+				f.Status = model.Pass
+			}
 			f.Facts["backend"] = "nftables"
+			f.Facts["default_deny_incoming"] = strconv.FormatBool(normalized.defaultDeny)
+			f.Facts["normalized_rules"] = strconv.Itoa(len(normalized.rules))
 			for i, line := range lines(r.Stdout) {
 				if i >= 60 {
 					break
 				}
 				f.Evidence = append(f.Evidence, model.Evidence{Source: "nft list ruleset", Value: line})
+			}
+		}
+		return []model.Finding{f}
+	}
+	if ctx.Commander.Exists("iptables-save") || ctx.Commander.Exists("ip6tables-save") {
+		normalized := collectHostFirewall(ctx.Commander)
+		f.Facts["backend"] = normalized.backend
+		f.Facts["active"] = strconv.FormatBool(normalized.active)
+		f.Facts["default_deny_incoming"] = strconv.FormatBool(normalized.defaultDeny)
+		f.Facts["normalized_rules"] = strconv.Itoa(len(normalized.rules))
+		if normalized.active && normalized.defaultDeny {
+			f.Status = model.Pass
+		} else {
+			f.Status = model.Info
+		}
+		for _, rule := range normalized.rules {
+			if len(f.Evidence) < 60 {
+				f.Evidence = append(f.Evidence, model.Evidence{Source: "normalized host firewall", Value: rule.Raw})
 			}
 		}
 		return []model.Finding{f}
@@ -196,10 +219,24 @@ func checkFirewallBase(ctx *Context) []model.Finding {
 
 func checkFirewallExposure(ctx *Context) model.Finding {
 	if !ctx.Commander.Exists("ufw") || !ufwRunning(ctx) {
-		if ctx.Commander.Exists("firewall-cmd") {
+		if ctx.Commander.Exists("firewall-cmd") && firewalldRunning(ctx) {
 			return checkFirewalldExposure(ctx)
 		}
-		return notApplicable("FW-002", "firewall", "backend", "detailed exposure parser currently supports UFW and firewalld")
+		normalized := ctx.Facts.UFW()
+		if !normalized.available {
+			return notApplicable("FW-002", "firewall", "backend", "no readable active host-firewall backend")
+		}
+		f := model.Finding{ID: "FW-002", Category: "firewall", Status: model.Pass, Facts: map[string]string{"backend": normalized.backend, "normalized_rules": strconv.Itoa(len(normalized.rules))}}
+		for _, rule := range normalized.rules {
+			if rule.Action != "allow" {
+				continue
+			}
+			f.Evidence = append(f.Evidence, model.Evidence{Source: firewallEvidenceSource(normalized), Key: "allow_rule", Value: rule.Raw})
+		}
+		if !normalized.defaultDeny {
+			f.Status = model.Info
+		}
+		return f
 	}
 	r := ctx.Commander.Run(15*time.Second, "ufw", "status", "verbose")
 	if r.Err != nil {

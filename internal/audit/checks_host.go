@@ -50,7 +50,7 @@ func checkPanelManagement(ctx *Context) model.Finding {
 	unknowns, inactive := 0, 0
 	for _, panel := range panels {
 		products = append(products, panel.Product)
-		f.Evidence = append(f.Evidence, model.Evidence{Source: "panel discovery", Key: "product", Value: fmt.Sprintf("product=%s version=%s binary=%s", panel.Product, panel.Version, panel.Binary)})
+		f.Evidence = append(f.Evidence, model.Evidence{Source: "panel discovery", Key: "product", Value: fmt.Sprintf("product=%s version=%s adapter=%s schema=%s binary=%s", panel.Product, panel.Version, panel.Adapter, panel.SchemaVersion, panel.Binary)})
 		if panel.DefaultCredentialKnown {
 			f.Evidence = append(f.Evidence, model.Evidence{Source: panel.Product + " settings", Key: "default_credential", Value: strconv.FormatBool(panel.DefaultCredential)})
 			if panel.DefaultCredential {
@@ -214,6 +214,8 @@ func panelListenerScope(listeners []Listener, port string, f *model.Finding) (st
 type panelUFW struct {
 	available, active, defaultDeny bool
 	lines                          []string
+	backend                        string
+	rules                          []firewallRule
 }
 
 func readPanelUFW(ctx *Context) panelUFW {
@@ -231,47 +233,18 @@ func readPanelUFW(ctx *Context) panelUFW {
 }
 
 func parsePanelUFW(output string) panelUFW {
-	return panelUFW{available: true, active: regexp.MustCompile(`(?mi)^Status:\s+active\s*$`).MatchString(output), defaultDeny: regexp.MustCompile(`(?mi)^Default:\s+deny \(incoming\)`).MatchString(output), lines: lines(output)}
+	f := panelUFW{available: true, active: regexp.MustCompile(`(?mi)^Status:\s+active\s*$`).MatchString(output), defaultDeny: regexp.MustCompile(`(?mi)^Default:\s+deny \(incoming\)`).MatchString(output), lines: lines(output), backend: "ufw"}
+	f.rules = parseUFWRules(f.lines)
+	return f
 }
 
 func panelFirewallDisposition(ufw panelUFW, port string, f *model.Finding) string {
-	if !ufw.available {
-		return "unknown"
+	disposition := firewallDisposition(ufw, port, "tcp")
+	if disposition == "allow-restricted" {
+		disposition = "restricted"
 	}
-	if !ufw.active {
-		f.Evidence = append(f.Evidence, model.Evidence{Source: "ufw status verbose", Key: "panel_firewall", Value: "inactive"})
-		return "inactive"
-	}
-	anywhere, restricted := false, false
-	for _, line := range ufw.lines {
-		idx := strings.Index(line, "ALLOW IN")
-		if idx < 0 {
-			continue
-		}
-		target := strings.TrimSpace(line[:idx])
-		if target != port && target != port+"/tcp" && target != port+"/tcp (v6)" {
-			continue
-		}
-		from := strings.TrimSpace(line[idx+len("ALLOW IN"):])
-		f.Evidence = append(f.Evidence, model.Evidence{Source: "ufw status verbose", Key: "panel_rule", Value: line})
-		if strings.HasPrefix(from, "Anywhere") {
-			anywhere = true
-		} else {
-			restricted = true
-		}
-	}
-	if anywhere {
-		return "allow-anywhere"
-	}
-	if restricted {
-		f.Evidence = append(f.Evidence, model.Evidence{Source: "ufw status verbose", Key: "panel_firewall", Value: "active; matching allow rule is source-restricted"})
-		return "restricted"
-	}
-	if ufw.defaultDeny {
-		f.Evidence = append(f.Evidence, model.Evidence{Source: "ufw status verbose", Key: "panel_firewall", Value: "active; default deny incoming; no matching allow rule"})
-		return "blocked-by-default"
-	}
-	return "unknown"
+	f.Evidence = append(f.Evidence, model.Evidence{Source: firewallEvidenceSource(ufw), Key: "panel_firewall", Value: disposition})
+	return disposition
 }
 
 func checkFilesystem(ctx *Context) []model.Finding {
