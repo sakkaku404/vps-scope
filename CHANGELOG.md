@@ -6,6 +6,21 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 0.13.0 - 2026-07-15
+
+### Added
+
+- Optional, language-neutral `reason_code` values explain why each stable check ID produced its current state; same-status reason changes now appear in semantic diffs without breaking older report-v1 readers.
+- `vps-scope support REPORT.json` creates a non-overwriting, privacy-safe compatibility bundle with a redacted report, allowlisted panel schema/capability metadata, a review notice, and a verifiable SHA-256 manifest.
+- A guarded disposable-host laboratory under `scripts/lab` exercises bounded TCP/UDP IPv4/IPv6 listeners and cross-host probes with exact authorization markers, reserved ports, locks, and automatic UFW/process cleanup.
+- A fixed-lab readiness contract documents the OS, panel, Docker, TLS, dual-stack, compatibility, performance, and release evidence required before 1.0.
+
+### Changed
+
+- Redaction now covers finding facts and errors, profile reasons, metadata, and UUIDs in addition to host identifiers and evidence text.
+- TLS renewal evidence uses the latest explicit journal outcome when success and failure signals coexist; ordinary Caddy service health no longer counts as proof of certificate renewal.
+- CI syntax-checks the lab shell guard and cross-builds the lab-only network helper without adding it to release assets.
+
 ## 0.12.0 - 2026-07-15
 
 ### Added

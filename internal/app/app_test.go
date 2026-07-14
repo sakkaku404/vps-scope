@@ -87,6 +87,24 @@ func TestChecksBilingual(t *testing.T) {
 	}
 }
 
+func TestSupportAcceptsOutputFlagBeforeOrAfterReport(t *testing.T) {
+	reportPath := filepath.Join("testdata", "golden-report-v1.json")
+	for _, after := range []bool{false, true} {
+		outDir := filepath.Join(t.TempDir(), "support")
+		args := []string{"support", "--output", outDir, reportPath}
+		if after {
+			args = []string{"support", reportPath, "--output", outDir}
+		}
+		var out bytes.Buffer
+		if err := Run(args, bytes.NewReader(nil), &out, &out, BuildInfo{Version: "test"}); err != nil {
+			t.Fatalf("after=%t: %v", after, err)
+		}
+		if _, err := os.Stat(filepath.Join(outDir, "compatibility.json")); err != nil {
+			t.Fatalf("after=%t: %v", after, err)
+		}
+	}
+}
+
 func TestParseExpectedPublic(t *testing.T) {
 	got, err := parseExpectedPublic("22/tcp, 443/tcp,8443/udp")
 	if err != nil {

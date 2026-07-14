@@ -79,3 +79,9 @@ Regression review should verify:
 The latest four-host standard run completed in about 4 to 8 seconds with the expanded workload graph. Deep runs on the two busiest lab hosts took about 37 to 54 seconds. These timings are observations from 1 vCPU / 1 GB lab VPS instances, not performance guarantees.
 
 Never commit real host reports. They may contain IP addresses, domains, usernames, paths, and operational evidence.
+
+## Disposable connectivity laboratory
+
+The opt-in helpers under `scripts/lab` are separate from the audit binary. They require an exact disposable-host marker, accept only ports 39000-39999, serialize scenarios with a lock, and remove their process and optional UFW rule on every normal or signalled exit. Existing rules on the selected port cause a refusal. `/opt/vps-scope-lab` is used for executables because a valid lab host may mount `/run` with `noexec`; `/run/vps-scope-lab` contains state only.
+
+The fixed matrix exercises cross-host TCP/UDP IPv4 reachability and local IPv6 listener parsing. External IPv6 reachability is recorded only on hosts with a usable IPv6 route; its absence is not converted into a pass. Matrix artifacts contain aliases and outcomes, not resolved addresses, and are never committed.

@@ -20,6 +20,8 @@ SSH 授权只保留账户、算法、位数和 SHA-256 指纹。代理配置只�
 
 公开提交 issue 前，请先运行 `vps-scope redact report.json`。脱敏会用稳定代号替换重复标识，保留它们之间的关系。发布前仍应人工看一遍结果，因为自动脱敏无法理解每一种应用自定义字符串。
 
+面板兼容性问题优先使用 `vps-scope support report.json`。支持包不会访问原始面板数据库或配置文件，只从现有报告生成脱敏报告和允许字段清单，并附带 SHA-256 校验清单。它仍然需要在分享前人工检查。
+
 ## English
 
 VPS Scope runs locally and does not upload reports or contact a telemetry service. Audit reports are written only when the user selects an output format or accepts the interactive default.
@@ -41,3 +43,5 @@ SSH access is represented by account name, key algorithm, bit length, and SHA-25
 A complete local report can contain hostnames, public and private IP addresses, domains from certificates, usernames, file paths, service/container names, listener ports, firewall rules, package sources, and operational log evidence. Treat it as administrative data.
 
 Use `vps-scope redact report.json` before attaching a report to a public issue. Redaction replaces repeated identifiers with stable placeholders so relationships remain readable. Review the result yourself before publishing it; no automatic redactor can understand every application-specific string.
+
+Prefer `vps-scope support report.json` for panel compatibility issues. It does not access raw panel databases or configuration files; it derives an already-redacted report and allowlisted compatibility metadata from an existing report, with a SHA-256 manifest. Review it before sharing.

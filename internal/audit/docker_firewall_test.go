@@ -72,3 +72,38 @@ func TestCheckDockerFirewallPathFindsInputPolicyBypass(t *testing.T) {
 		t.Fatalf("unexpected finding: %#v", f)
 	}
 }
+
+func TestCheckDockerFirewallPathKeepsMissingIPv6EvidenceUnknown(t *testing.T) {
+	results := map[string]CommandResult{
+		scenarioCommandKey("iptables-save"): {Stdout: "*filter\n:FORWARD DROP [0:0]\n:DOCKER-USER - [0:0]\n-A FORWARD -j DOCKER-USER\n-A FORWARD -j DOCKER\nCOMMIT\n"},
+	}
+	ctx := scenarioContext(newScenarioCommander([]string{"iptables-save"}, results))
+	var container dockerInspect
+	container.Name = "/v6-web"
+	container.NetworkSettings.Ports = map[string][]struct {
+		HostIP   string `json:"HostIp"`
+		HostPort string `json:"HostPort"`
+	}{"443/tcp": {{HostIP: "::", HostPort: "8443"}}}
+	f := checkDockerFirewallPath(ctx, []dockerInspect{container})
+	if f.Status != model.Unknown || !f.Unavailable || f.Facts["unknown_forward_paths"] != "1" {
+		t.Fatalf("unexpected finding: %#v", f)
+	}
+}
+
+func TestCheckDockerFirewallPathAcceptsSourceRestrictedDockerUserRule(t *testing.T) {
+	results := map[string]CommandResult{
+		scenarioCommandKey("iptables-save"):            {Stdout: "*filter\n:FORWARD DROP [0:0]\n:DOCKER-USER - [0:0]\n-A FORWARD -j DOCKER-USER\n-A FORWARD -j DOCKER\n-A DOCKER-USER -p tcp -s 203.0.113.0/24 --dport 8443 -j ACCEPT\nCOMMIT\n"},
+		scenarioCommandKey("ufw", "status", "verbose"): {Stdout: "Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n"},
+	}
+	ctx := scenarioContext(newScenarioCommander([]string{"iptables-save", "ufw"}, results))
+	var container dockerInspect
+	container.Name = "/restricted-web"
+	container.NetworkSettings.Ports = map[string][]struct {
+		HostIP   string `json:"HostIp"`
+		HostPort string `json:"HostPort"`
+	}{"443/tcp": {{HostIP: "0.0.0.0", HostPort: "8443"}}}
+	f := checkDockerFirewallPath(ctx, []dockerInspect{container})
+	if f.Status != model.Pass || f.Facts["input_policy_bypass_paths"] != "0" {
+		t.Fatalf("unexpected finding: %#v", f)
+	}
+}

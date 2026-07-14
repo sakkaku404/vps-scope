@@ -57,6 +57,13 @@ func semanticDiff(oldReport, newReport model.Report) ([]semanticChange, map[stri
 			out = append(out, semanticChange{Kind: "CHANGE", ID: id, MessageZH: messageZH, MessageEN: messageEN})
 			continue
 		}
+		if oldFinding.Status == newFinding.Status && oldFinding.ReasonCode != "" && newFinding.ReasonCode != "" && oldFinding.ReasonCode != newFinding.ReasonCode {
+			covered[id] = true
+			out = append(out, semanticChange{Kind: "CHANGE", ID: id,
+				MessageZH: "主要原因变化：" + oldFinding.ReasonCode + " → " + newFinding.ReasonCode,
+				MessageEN: "primary reason changed: " + oldFinding.ReasonCode + " -> " + newFinding.ReasonCode})
+			continue
+		}
 		if oldFinding.Status == newFinding.Status {
 			continue
 		}

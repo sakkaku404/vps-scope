@@ -28,6 +28,7 @@ type Evidence struct {
 
 type Finding struct {
 	ID            string            `json:"id"`
+	ReasonCode    string            `json:"reason_code,omitempty"`
 	Category      string            `json:"category"`
 	Status        Status            `json:"status"`
 	Severity      Severity          `json:"severity,omitempty"`

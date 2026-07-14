@@ -43,7 +43,7 @@ body:
     id: safe_evidence
     attributes:
       label: Redacted evidence
-      description: Include service/container names and sanitized listener evidence. Use `vps-scope redact` before sharing a report.
+      description: Include service/container names and sanitized listener evidence. Prefer the output of `vps-scope support report.json`; review every file before sharing.
   - type: checkboxes
     id: privacy
     attributes:

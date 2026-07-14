@@ -38,7 +38,7 @@ jobs:
         run: test -z "$(gofmt -l .)"
 
       - name: Check installer scripts
-        run: bash -n install.sh run.sh
+        run: bash -n install.sh run.sh scripts/check-coverage.sh scripts/regression.sh scripts/lab/scenario.sh
 
       - name: Vet
         run: go vet ./...
@@ -53,4 +53,5 @@ jobs:
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o /tmp/vps-scope-amd64 ./cmd/vps-scope
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o /tmp/vps-scope-arm64 ./cmd/vps-scope
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o /tmp/vps-scope-lab-helper ./scripts/lab/net-helper.go
           /tmp/vps-scope-amd64 version
