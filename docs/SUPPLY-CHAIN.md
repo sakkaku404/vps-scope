@@ -8,7 +8,7 @@ VPS Scope 的发布二进制带有两层可验证信息：
 `install.sh` 和 `run.sh` 始终校验 SHA-256。若系统已有 `cosign`，它们还会自动验证签名。需要强制签名校验时：
 
 ```bash
-VPS_SCOPE_REQUIRE_SIGNATURE=1 curl -fsSL https://sakkaku404.github.io/vps-scope/run.sh | sudo -E bash
+curl -fsSL https://sakkaku404.github.io/vps-scope/run.sh | sudo env VPS_SCOPE_REQUIRE_SIGNATURE=1 bash
 ```
 
 `VPS_SCOPE_REQUIRE_SIGNATURE=1` 会在未安装 `cosign`、签名缺失或身份不匹配时停止；它不会自动安装任何软件。
