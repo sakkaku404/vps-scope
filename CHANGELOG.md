@@ -6,6 +6,22 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 0.12.0 - 2026-07-15
+
+### Added
+
+- `DOCKER-002` correlates public container publications with host INPUT policy and the effective FORWARD/DOCKER-USER path for IPv4 and IPv6; unavailable forwarding evidence is `UNKNOWN`.
+- TLS renewal closure records schedules, recent success and failure signals, deployment/reload hooks, renewal methods, and a stable minimum-days fact.
+- Panel adapters now expose privacy-safe database schema fingerprints and capability sets. Unknown native-panel schemas stop specialized queries and make runtime conclusions incomplete.
+- `diff` emits semantic `REGRESSION`, `IMPROVEMENT`, and `CHANGE` events for panel exposure, stale ingress, Docker isolation/forwarding, TLS lifetime/renewal, SSH keys, and workload inventory.
+- A published report-v1 JSON Schema, an explicit 51-ID compatibility contract, coverage ratchets, and a one-command reproducible regression suite.
+
+### Changed
+
+- Text, Markdown, and HTML reports begin with a plain-language overall verdict and explain that `UNKNOWN` is an evidence gap rather than a safe result.
+- Firewall hook parsing is shared by INPUT and FORWARD collectors without allowing one hook to become evidence for another.
+- TLS and Docker evidence collection now use typed, cached facts instead of embedding all acquisition logic in presentation checks.
+
 ## 0.11.0 - 2026-07-15
 
 ### Added

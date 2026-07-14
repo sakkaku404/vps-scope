@@ -17,7 +17,7 @@ curl -fsSL https://sakkaku404.github.io/vps-scope/run.sh | sudo bash
 [![Release](https://img.shields.io/github/v/release/sakkaku404/vps-scope)](https://github.com/sakkaku404/vps-scope/releases)
 [![License](https://img.shields.io/github/license/sakkaku404/vps-scope)](LICENSE)
 
-[English](docs/README.en.md) · [代理兼容性](docs/PROXY-COMPATIBILITY.md) · [检查项目](docs/CHECKS.md) · [隐私说明](docs/PRIVACY.md) · [设计说明](docs/DESIGN.md) · [测试说明](docs/TESTING.md)
+[English](docs/README.en.md) · [代理兼容性](docs/PROXY-COMPATIBILITY.md) · [兼容矩阵](docs/COMPATIBILITY-MATRIX.md) · [检查项目](docs/CHECKS.md) · [隐私说明](docs/PRIVACY.md) · [设计说明](docs/DESIGN.md) · [测试说明](docs/TESTING.md)
 
 ## 它和普通端口扫描有什么不同
 
@@ -98,13 +98,13 @@ VPS Scope 不是 vps-audit 的分支，代码与检测实现均为独立实现�
 
 - 面板数据库、代理配置、WireGuard/Reality 等敏感材料相关文件的权限
 - 代理 systemd 服务的运行用户、capabilities、隔离选项和文件描述符限制
-- Docker 的 privileged、host network、Docker socket 挂载和端口发布情况
+- Docker 的 privileged、host network、Docker socket 挂载和端口发布情况，并关联 INPUT、FORWARD 与 DOCKER-USER 实际链路
 - 已删除但仍在运行的代理核心或临时目录程序
 
 ### 可用性、异常与系统底座
 
 - sing-box 与 Xray 的原生只读配置自检
-- TLS 证书有效期、续期线索、OOM、core dump、磁盘、inode 与日志持久性
+- TLS 证书有效期，以及续期计划、近期成功/失败和部署后 reload 是否形成闭环；另检查 OOM、core dump、磁盘、inode 与日志持久性
 - Hysteria2、TUIC 等 UDP 场景的缓冲区和错误计数上下文
 - SSH、账户、sudo、Fail2ban/CrowdSec、更新、服务失败与可疑持久化线索
 - 认证、握手、DNS、TLS、路由和致命错误的日志分类计数；不导出原始日志内容
@@ -216,7 +216,8 @@ vps-scope redact --format markdown --output public.md report.json
 对比同一服务器的两次检查，或集中查看多台服务器：
 
 ```bash
-vps-scope diff old.json new.json
+vps-scope diff old.json new.json  # 优先显示安全回归与改善，而非原始 JSON 噪声
+vps-scope diff --all old.json new.json  # 需要时再显示同状态下的原始证据变化
 vps-scope fleet west.json sgp.json tw.json japan.json
 ```
 

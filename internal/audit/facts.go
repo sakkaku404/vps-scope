@@ -28,6 +28,9 @@ type FactStore struct {
 	docker     []dockerInspect
 	dockerErr  error
 
+	dockerFirewallOnce sync.Once
+	dockerFirewall     dockerFirewallFacts
+
 	panelsOnce sync.Once
 	panels     []panelSnapshot
 }
@@ -145,4 +148,11 @@ func (f *FactStore) DockerContainers() ([]dockerInspect, error) {
 		}
 	})
 	return append([]dockerInspect(nil), f.docker...), f.dockerErr
+}
+
+func (f *FactStore) DockerFirewall() dockerFirewallFacts {
+	f.dockerFirewallOnce.Do(func() {
+		f.dockerFirewall = collectDockerFirewall(f.cmd)
+	})
+	return f.dockerFirewall.clone()
 }

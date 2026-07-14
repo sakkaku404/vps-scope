@@ -19,11 +19,14 @@ func checkPanelRuntimeConsistency(ctx *Context, summaries []proxyConfigSummary) 
 	}
 	f := model.Finding{ID: "WORK-012", Category: "workloads", Status: model.Pass, Facts: map[string]string{"panels": strconv.Itoa(len(panels))}}
 	ufw := readPanelUFW(ctx)
-	databaseUnavailable, mismatches, roleCollisions, unclassified, publicUnclassified, inferredControls := 0, 0, 0, 0, 0, 0
+	databaseUnavailable, unsupportedSchemas, mismatches, roleCollisions, unclassified, publicUnclassified, inferredControls := 0, 0, 0, 0, 0, 0, 0
 	publicSubscriptions, publicPlaintextSubscriptions := 0, 0
 	disabledStillListening := 0
 	expired, exhausted := 0, 0
 	for _, panel := range panels {
+		if panel.Database != "" && !panel.SchemaSupported && panel.SchemaFingerprint != "" {
+			unsupportedSchemas++
+		}
 		knownPorts := map[string]bool{}
 		for _, endpoint := range panel.Endpoints {
 			knownPorts[endpoint.Port] = true
@@ -128,6 +131,7 @@ func checkPanelRuntimeConsistency(ctx *Context, summaries []proxyConfigSummary) 
 		f.Evidence = append(f.Evidence, model.Evidence{Source: panel.Database, Key: "panel_client_summary", Value: fmt.Sprintf("product=%s enabled_clients=%d disabled_clients=%d", panel.Product, panel.EnabledClients, panel.DisabledClients)})
 	}
 	f.Facts["database_unavailable"] = strconv.Itoa(databaseUnavailable)
+	f.Facts["unsupported_panel_schemas"] = strconv.Itoa(unsupportedSchemas)
 	f.Facts["runtime_mismatches"] = strconv.Itoa(mismatches)
 	f.Facts["role_collisions"] = strconv.Itoa(roleCollisions)
 	f.Facts["unclassified_panel_listeners"] = strconv.Itoa(unclassified)
@@ -138,7 +142,13 @@ func checkPanelRuntimeConsistency(ctx *Context, summaries []proxyConfigSummary) 
 	f.Facts["disabled_inbounds_still_listening"] = strconv.Itoa(disabledStillListening)
 	f.Facts["expired_inbounds"] = strconv.Itoa(expired)
 	f.Facts["quota_exhausted_inbounds"] = strconv.Itoa(exhausted)
-	if f.Status != model.Risk && (databaseUnavailable > 0 || unclassified > 0) {
+	if unsupportedSchemas > 0 {
+		f.Unavailable = true
+		f.Error = "one or more panel database schemas are not supported; runtime conclusions are incomplete"
+		if f.Status != model.Risk {
+			f.Status = model.Unknown
+		}
+	} else if f.Status != model.Risk && (databaseUnavailable > 0 || unclassified > 0) {
 		f.Status = model.Info
 	}
 	return f

@@ -10,6 +10,10 @@ The tool has no remediation mode. Suggested commands are explanatory report text
 
 Collectors obtain typed facts. Policy evaluates those facts under an effective profile. Renderers translate stable check IDs into Chinese or English. This separation lets one canonical JSON report be rendered in either language and compared across tool versions.
 
+The canonical JSON contract is `schema_version: 1.0` and is published in [`schemas/report-v1.schema.json`](../schemas/report-v1.schema.json). Within this schema, existing check IDs are permanent: releases may append an ID, but cannot reuse an ID for another meaning or silently remove it. Optional facts and evidence may grow without breaking older readers. A breaking field or semantic change requires a new report schema.
+
+Panel adapters expose a versioned adapter ID, a recognized database schema ID, a privacy-safe fingerprint made only from table and column names, and an explicit capability list. An unknown fingerprint stops schema-specific queries and produces incomplete/`UNKNOWN` evidence instead of applying a nearby version optimistically.
+
 Proxy and web adapters emit configured endpoints into a shared graph. Runtime listeners and normalized host-firewall facts are attached separately; active UFW is combined with the effective nftables INPUT path so workload-managed rules are not hidden by a frontend summary. Policy then evaluates configuration-to-listener ownership, TCP/UDP transport, reverse-proxy frontends and backends, path-gated management routes, exposure scope, and firewall disposition. Product parsers do not decide whether an endpoint is safe.
 
 Network access is disabled by default. The only current opt-in path is `--external-domain`, which performs bounded DNS and TLS observations for the supplied domains. `--expect-cdn` adds an explicit policy expectation; it is never inferred from software names.

@@ -63,6 +63,8 @@ func Text(w io.Writer, r model.Report, opts Options) error {
 	} else {
 		fmt.Fprintf(w, "Completed %d   Unavailable %d   Not applicable %d\n\n", r.Summary.Completed, r.Summary.Unavailable, r.Summary.NotApplicable)
 	}
+	verdict := overallVerdictFor(r, opts.Locale)
+	fmt.Fprintf(w, "%s\n  %s\n\n", verdict.Headline, verdict.Detail)
 	writeExposureText(w, r, zh, line)
 	writeResourceText(w, r, zh, line)
 	writeProxyOverviewText(w, r, zh, line)
@@ -203,6 +205,8 @@ func Markdown(w io.Writer, r model.Report, opts Options) error {
 	fmt.Fprintf(w, "\n> %s\n\n", choose(zh, "本工具永不修改系统配置；只在明确指定位置写入报告。", "This tool never modifies system configuration; it writes only to an explicitly selected report path."))
 	fmt.Fprintf(w, "## %s\n\n", choose(zh, "摘要", "Summary"))
 	fmt.Fprintf(w, "| RISK | PASS | INFO | UNKNOWN |\n|---:|---:|---:|---:|\n| %d | %d | %d | %d |\n\n", r.Summary.Risk, r.Summary.Pass, r.Summary.Info, r.Summary.Unknown)
+	verdict := overallVerdictFor(r, opts.Locale)
+	fmt.Fprintf(w, "**%s**  \n%s\n\n", escapeMD(verdict.Headline), escapeMD(verdict.Detail))
 	writeActionSummaryMarkdown(w, summarizeActions(r, opts.Locale), zh)
 	writeExposureMarkdown(w, r, zh)
 	for _, category := range audit.CategoryOrder {
@@ -363,6 +367,7 @@ func HTML(w io.Writer, r model.Report, opts Options) error {
 		Report   model.Report
 		Findings []localizedFinding
 		Actions  actionSummary
+		Verdict  overallVerdict
 		Locale   string
 		ZH       bool
 	}
@@ -374,7 +379,7 @@ func HTML(w io.Writer, r model.Report, opts Options) error {
 		"cat": func(category string) string { return i18n.Pick(i18n.Categories[category], opts.Locale) },
 		"t":   func(zh, en string) string { return choose(opts.Locale == "zh-CN", zh, en) },
 	}).Parse(htmlTemplate))
-	return t.Execute(w, page{Report: r, Findings: items, Actions: summarizeActions(r, opts.Locale), Locale: opts.Locale, ZH: opts.Locale == "zh-CN"})
+	return t.Execute(w, page{Report: r, Findings: items, Actions: summarizeActions(r, opts.Locale), Verdict: overallVerdictFor(r, opts.Locale), Locale: opts.Locale, ZH: opts.Locale == "zh-CN"})
 }
 
 func filterCategory(findings []model.Finding, category string) []model.Finding {
@@ -640,6 +645,7 @@ const htmlTemplate = `<!doctype html>
 <header class="hero"><div><div class="eyebrow">Evidence-first VPS audit</div><h1>VPS Scope</h1><div class="subtitle">{{t "代理服务器与通用 VPS 安全审计" "Security audit for proxy and general-purpose VPS hosts"}}</div></div><div class="readonly">{{t "只读 · 永不自动修复" "Read-only · never remediates"}}</div></header>
 <section class="host-grid" aria-label="host context"><div class="host-item"><span>{{t "主机" "Host"}}</span><strong>{{.Report.Host.Hostname}}</strong></div><div class="host-item"><span>{{t "系统" "System"}}</span><strong>{{.Report.Host.OS}} {{.Report.Host.OSVersion}}</strong></div><div class="host-item"><span>Profile</span><strong>{{.Report.Profile.Effective}}</strong></div><div class="host-item"><span>{{t "完成时间" "Finished"}}</span><strong>{{.Report.FinishedAt.Format "2006-01-02 15:04 UTC"}}</strong></div></section>
 <section class="summary" aria-label="summary"><div class="card risk"><div class="label">RISK</div><div class="number">{{.Report.Summary.Risk}}</div></div><div class="card pass"><div class="label">PASS</div><div class="number">{{.Report.Summary.Pass}}</div></div><div class="card info"><div class="label">INFO</div><div class="number">{{.Report.Summary.Info}}</div></div><div class="card unknown"><div class="label">UNKNOWN</div><div class="number">{{.Report.Summary.Unknown}}</div></div></section>
+<section class="card"><h2>{{.Verdict.Headline}}</h2><p>{{.Verdict.Detail}}</p><p class="muted">PASS = {{t "证据支持当前判断" "evidence supports the current judgment"}} · INFO = {{t "事实与上下文" "facts and context"}} · UNKNOWN = {{t "证据不足，不代表安全" "insufficient evidence, not safe by default"}}</p></section>
 {{if or .Actions.Urgent .Actions.Availability .Actions.Maintenance .Actions.EvidenceGaps}}<section class="card"><h2>Action summary / 处理摘要</h2>{{if .Actions.Urgent}}<h3>Handle now / 优先处理</h3><ul>{{range .Actions.Urgent}}<li>{{.Localized.Title}} ({{.Localized.ID}}) — {{.Verdict}}</li>{{end}}</ul>{{end}}{{if .Actions.Availability}}<h3>May affect availability / 可用性</h3><ul>{{range .Actions.Availability}}<li>{{.Localized.Title}} ({{.Localized.ID}}) — {{.Verdict}}</li>{{end}}</ul>{{end}}{{if .Actions.Maintenance}}<h3>Maintenance and review / 维护复核</h3><ul>{{range .Actions.Maintenance}}<li>{{.Localized.Title}} ({{.Localized.ID}}) — {{.Verdict}}</li>{{end}}</ul>{{end}}{{if .Actions.EvidenceGaps}}<h3>Evidence gaps / 证据不足</h3><ul>{{range .Actions.EvidenceGaps}}<li>{{.Localized.Title}} ({{.Localized.ID}}) — {{.Verdict}}</li>{{end}}</ul>{{end}}</section>{{end}}
 <div class="toolbar"><div class="filters" role="group" aria-label="status filters"><button class="filter" data-filter="ALL" aria-pressed="true">{{t "全部" "All"}}</button><button class="filter" data-filter="RISK" aria-pressed="false">RISK</button><button class="filter" data-filter="UNKNOWN" aria-pressed="false">UNKNOWN</button><button class="filter" data-filter="PASS" aria-pressed="false">PASS</button><button class="filter" data-filter="INFO" aria-pressed="false">INFO</button></div><input class="search" type="search" placeholder="{{t "搜索检查、证据或 ID" "Search checks, evidence, or IDs"}}" aria-label="{{t "搜索报告" "Search report"}}"></div>
 <section class="findings" aria-label="findings">{{range .Findings}}<article class="finding" data-status="{{.Status}}" data-na="{{.NotApplicable}}"><header class="finding-head"><div class="pill">{{.Status}}</div><div><h2>{{.Title}}</h2><div class="finding-meta">{{.ID}} · {{cat .Category}}{{if .NotApplicable}} · {{t "不适用" "Not applicable"}}{{end}}</div></div>{{if .Severity}}<div class="severity">{{.Severity}}</div>{{end}}</header><div class="finding-body">{{if .Error}}<p class="error">{{.Error}}</p>{{end}}{{if or (eq .Status "RISK") (eq .Status "UNKNOWN")}}<div class="explain"><p><b>{{t "风险解释" "Why it matters"}}</b>{{.Why}}</p><p><b>{{t "建议" "Suggestion"}}</b>{{.Recommendation}}</p></div>{{end}}{{if .Evidence}}<details {{if or (eq .Status "RISK") (eq .Status "UNKNOWN")}}open{{end}}><summary>{{t "证据" "Evidence"}} · {{len .Evidence}}</summary><div class="evidence-list">{{range .Evidence}}<div class="evidence"><span class="source">[{{.Source}}]</span> {{if .Key}}{{.Key}}={{end}}{{.Value}}</div>{{end}}</div></details>{{end}}</div></article>{{end}}</section>

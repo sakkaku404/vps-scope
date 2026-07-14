@@ -16,7 +16,7 @@ func directoryExists(path string) bool {
 }
 
 func collectMarzbanFacts(_ Commander) panelSnapshot {
-	s := panelSnapshot{Product: "Marzban", Binary: "container or Python service", Database: "/opt/marzban/.env", SchemaVersion: "marzban-config-v1", SensitiveFiles: []string{"/opt/marzban/.env"}}
+	s := panelSnapshot{Product: "Marzban", Binary: "container or Python service", Database: "/opt/marzban/.env", SchemaVersion: "marzban-config-v1", SchemaSupported: true, SchemaCapabilities: []string{"management-endpoint", "generated-xray", "container-context"}, SensitiveFiles: []string{"/opt/marzban/.env"}}
 	values, err := readEnvWhitelist("/opt/marzban/.env", map[string]bool{
 		"UVICORN_HOST": true, "UVICORN_PORT": true, "UVICORN_UDS": true,
 		"UVICORN_SSL_CERTFILE": true, "UVICORN_SSL_KEYFILE": true,
@@ -51,7 +51,7 @@ func collectMarzbanFacts(_ Commander) panelSnapshot {
 }
 
 func collectHiddifyFacts(_ Commander) panelSnapshot {
-	s := panelSnapshot{Product: "Hiddify", Binary: "/opt/hiddify-manager", Database: "/opt/hiddify-manager", SchemaVersion: "hiddify-config-v1", DatabaseAvailable: true}
+	s := panelSnapshot{Product: "Hiddify", Binary: "/opt/hiddify-manager", Database: "/opt/hiddify-manager", SchemaVersion: "hiddify-config-v1", SchemaSupported: true, SchemaCapabilities: []string{"management-endpoint", "generated-xray", "generated-sing-box", "reverse-proxy-context"}, DatabaseAvailable: true}
 	if data, err := readSmall("/opt/hiddify-manager/VERSION", 1024); err == nil {
 		s.Version = strings.TrimSpace(data)
 	}
@@ -105,7 +105,7 @@ func collectContainerPanelSnapshots(containers []dockerInspect) []panelSnapshot 
 
 func collectOutlineFacts(container dockerInspect) panelSnapshot {
 	name := strings.TrimPrefix(container.Name, "/")
-	s := panelSnapshot{Product: "Outline", Binary: name, Adapter: "outline/container-v1", SchemaVersion: "outline-shadowbox-v1"}
+	s := panelSnapshot{Product: "Outline", Binary: name, Adapter: "outline/container-v1", SchemaVersion: "outline-shadowbox-v1", SchemaSupported: true, SchemaCapabilities: []string{"management-endpoint", "shadowsocks-ingress", "container-context"}}
 	values := outlineEnvValues(container.Config.Env)
 	apiPort := values["SB_API_PORT"]
 	if validPort(apiPort) {

@@ -287,14 +287,14 @@ func decodeDockerInspect(input string, out *[]dockerInspect) error {
 
 func checkDocker(ctx *Context) []model.Finding {
 	if !ctx.Commander.Exists("docker") {
-		return []model.Finding{notApplicable("DOCKER-001", "docker", "command", "docker not installed")}
+		return []model.Finding{notApplicable("DOCKER-001", "docker", "command", "docker not installed"), notApplicable("DOCKER-002", "docker", "command", "docker not installed")}
 	}
 	containers, err := ctx.Facts.DockerContainers()
 	if err != nil {
-		return []model.Finding{unknown("DOCKER-001", "docker", "docker inspect", err.Error())}
+		return []model.Finding{unknown("DOCKER-001", "docker", "docker inspect", err.Error()), unknown("DOCKER-002", "docker", "docker inspect", err.Error())}
 	}
 	if len(containers) == 0 {
-		return []model.Finding{{ID: "DOCKER-001", Category: "docker", Status: model.Info, Evidence: []model.Evidence{{Source: "docker ps", Value: "no running containers"}}}}
+		return []model.Finding{{ID: "DOCKER-001", Category: "docker", Status: model.Info, Evidence: []model.Evidence{{Source: "docker ps", Value: "no running containers"}}}, notApplicable("DOCKER-002", "docker", "docker ps", "no running containers")}
 	}
 	f := model.Finding{ID: "DOCKER-001", Category: "docker", Status: model.Pass, Facts: map[string]string{"running_containers": strconv.Itoa(len(containers))}}
 	problemKeys := map[string]bool{}
@@ -369,7 +369,7 @@ func checkDocker(ctx *Context) []model.Finding {
 	if len(problemKeys) > 0 {
 		f.Status, f.Severity = model.Risk, model.High
 	}
-	return []model.Finding{f}
+	return []model.Finding{f, checkDockerFirewallPath(ctx, containers)}
 }
 
 func checkTLS(ctx *Context) []model.Finding {
@@ -392,6 +392,7 @@ func checkFileTLS(ctx *Context) model.Finding {
 	}
 	f := model.Finding{ID: "TLS-001", Category: "tls", Status: model.Pass, Facts: map[string]string{"certificates": strconv.Itoa(len(paths))}}
 	now := ctx.Now()
+	minimumDays := int(^uint(0) >> 1)
 	if discoveryTruncated {
 		f.Status, f.Unavailable = model.Unknown, true
 		f.Error = "nginx configuration output exceeded the capture limit; certificate discovery may be incomplete"
@@ -418,6 +419,9 @@ func checkFileTLS(ctx *Context) model.Finding {
 			continue
 		}
 		days := int(cert.NotAfter.Sub(now).Hours() / 24)
+		if days < minimumDays {
+			minimumDays = days
+		}
 		value := fmt.Sprintf("subject=%s not_after=%s days_remaining=%d", cert.Subject.CommonName, cert.NotAfter.UTC().Format(time.RFC3339), days)
 		f.Evidence = append(f.Evidence, model.Evidence{Source: path, Value: value})
 		if days < 0 {
@@ -426,61 +430,36 @@ func checkFileTLS(ctx *Context) model.Finding {
 			f.Status, f.Severity = model.Risk, model.High
 		}
 	}
-	renewalEvidence, renewalFailures := 0, 0
-	if ctx.Commander.Exists("systemctl") {
-		for _, timer := range []string{"certbot.timer", "acme.timer"} {
-			r := ctx.Commander.Run(6*time.Second, "systemctl", "is-enabled", timer)
-			if strings.TrimSpace(r.Stdout) == "enabled" {
-				renewalEvidence++
-				f.Evidence = append(f.Evidence, model.Evidence{Source: "systemctl is-enabled", Key: timer, Value: "enabled"})
-			}
-		}
-		for _, service := range []string{"certbot.service", "acme.service", "acme-renew.service"} {
-			r := ctx.Commander.Run(6*time.Second, "systemctl", "show", service, "--property=LoadState,Result,ExecMainStatus,ActiveEnterTimestamp")
-			values := parseKeyValues(r.Stdout)
-			if values["LoadState"] != "loaded" {
-				continue
-			}
-			renewalEvidence++
-			result := values["Result"]
-			f.Evidence = append(f.Evidence, model.Evidence{Source: "systemctl show", Key: service, Value: fmt.Sprintf("result=%s exit_status=%s last_active=%s", result, values["ExecMainStatus"], values["ActiveEnterTimestamp"])})
-			if result != "" && result != "success" {
-				renewalFailures++
-			}
-		}
+	if minimumDays != int(^uint(0)>>1) {
+		f.Facts["minimum_certificate_days"] = strconv.Itoa(minimumDays)
 	}
-	for _, path := range existingFiles("/etc/cron.d/*", "/etc/cron.daily/*", "/var/spool/cron/crontabs/*") {
-		data, err := readSmall(path, 1<<20)
-		if err == nil && regexp.MustCompile(`(?i)\b(certbot|acme\.sh|lego)\b`).MatchString(data) {
-			renewalEvidence++
-			f.Evidence = append(f.Evidence, model.Evidence{Source: path, Key: "renewal_schedule", Value: "detected"})
-		}
+	renewal := collectTLSRenewalFacts(ctx)
+	f.Evidence = append(f.Evidence, renewal.Evidence...)
+	f.Facts["renewal_schedules"] = strconv.Itoa(renewal.Schedules)
+	f.Facts["renewal_success_signals"] = strconv.Itoa(renewal.SuccessSignals)
+	f.Facts["renewal_failure_signals"] = strconv.Itoa(renewal.FailureSignals)
+	f.Facts["renewal_reload_hooks"] = strconv.Itoa(renewal.ReloadHooks)
+	f.Facts["renewal_methods"] = strings.Join(renewal.Methods, ",")
+	switch {
+	case renewal.FailureSignals > 0 && renewal.SuccessSignals == 0:
+		f.Facts["renewal_state"] = "failing"
+	case renewal.SuccessSignals > 0 && renewal.ReloadHooks > 0:
+		f.Facts["renewal_state"] = "verified-with-reload"
+	case renewal.SuccessSignals > 0:
+		f.Facts["renewal_state"] = "verified"
+	case renewal.Schedules > 0:
+		f.Facts["renewal_state"] = "scheduled-unverified"
+	default:
+		f.Facts["renewal_state"] = "not-established"
 	}
-	// Caddy's managed HTTPS renews certificates internally rather than through
-	// certbot/acme timers. Its service state is evidence of that automation,
-	// while a failed unit remains an availability concern rather than a guessed
-	// successful renewal.
-	if ctx.Commander.Exists("systemctl") {
-		r := ctx.Commander.Run(6*time.Second, "systemctl", "show", "caddy.service", "--property=LoadState,ActiveState,Result,ExecMainStatus,ActiveEnterTimestamp")
-		values := parseKeyValues(r.Stdout)
-		if values["LoadState"] == "loaded" {
-			renewalEvidence++
-			f.Evidence = append(f.Evidence, model.Evidence{Source: "systemctl show", Key: "caddy.service", Value: fmt.Sprintf("active=%s result=%s exit_status=%s since=%s", values["ActiveState"], values["Result"], values["ExecMainStatus"], values["ActiveEnterTimestamp"])})
-			if values["ActiveState"] != "active" || (values["Result"] != "" && values["Result"] != "success") {
-				renewalFailures++
-			}
-		}
-	}
-	f.Facts["renewal_evidence"] = strconv.Itoa(renewalEvidence)
-	f.Facts["renewal_failures"] = strconv.Itoa(renewalFailures)
-	if renewalFailures > 0 && f.Severity != model.Critical && f.Severity != model.High {
+	if renewal.FailureSignals > 0 && renewal.SuccessSignals == 0 && f.Severity != model.Critical && f.Severity != model.High {
 		f.Status, f.Severity = model.Risk, model.Medium
 	}
 	usesLetsEncrypt := false
 	for _, path := range paths {
 		usesLetsEncrypt = usesLetsEncrypt || strings.HasPrefix(path, "/etc/letsencrypt/")
 	}
-	if usesLetsEncrypt && renewalEvidence == 0 && f.Status != model.Risk {
+	if usesLetsEncrypt && renewal.Schedules == 0 && renewal.SuccessSignals == 0 && f.Status != model.Risk {
 		f.Status, f.Unavailable = model.Unknown, true
 		f.Error = "certificate renewal scheduling or recent execution could not be established"
 	}

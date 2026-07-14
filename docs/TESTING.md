@@ -7,9 +7,12 @@ go test -count=1 ./...
 go test -race ./...
 go vet ./...
 govulncheck ./...
+bash scripts/regression.sh
 ```
 
 Tests cover address classification, listener parsing, dpkg verification classification, explicit port intent, bilingual catalogs, redaction stability, all renderers, report manifests, tamper detection, command-output limits, fact caching, sudo evidence privacy, and CLI parsing. Short fuzz runs cover proxy parser panic safety and report-bundle file-name boundaries.
+
+`scripts/check-coverage.sh` enforces per-package ratchets rather than one misleading repository-wide percentage. The current floors are app 40%, audit 51%, redact 80%, and report 80%; they may only move upward as more OS collectors gain deterministic fixtures.
 
 Proxy-specific fixtures also verify that configuration summaries never retain UUIDs, passwords, API secrets, inbound tags, SSH key comments, APT URL credentials, or complete process arguments.
 
@@ -47,6 +50,7 @@ Regression review should verify:
 - normal `/etc/shadow` group-readable policy is accepted on Ubuntu/Debian.
 - masked systemd symlinks are not treated as world-writable unit files.
 - Docker loopback publication remains loopback.
+- Docker public publications are evaluated through FORWARD/DOCKER-USER rather than inferred from host INPUT alone; unreadable forwarding policy is `UNKNOWN`.
 - S-UI, 3x-ui, and x-ui management listeners are distinguished from proxy ingress.
 - Empty/root panel paths are distinguished from unavailable path evidence, and a public path-gated reverse proxy remains management exposure.
 - Management/subscription and proxy-ingress role collisions, disabled inbounds that still listen, and unexplained public panel/core listeners elevate the panel-runtime finding.
@@ -56,6 +60,7 @@ Regression review should verify:
 - Resource, password-context, active-connection, firewalld, and CrowdSec parsers have deterministic fixtures.
 - Per-ingress TCP connection snapshots exclude peer addresses from the workload summary and never become a risk solely from a generic count threshold.
 - file-backed TLS and embedded TLS visibility are reported separately.
+- TLS automation distinguishes a configured schedule from a recent success, a failure signal, and a post-renewal reload hook.
 - JSON, text, Markdown, HTML, manifest verification, `diff`, and `fleet` agree.
 - SSH fingerprint evidence excludes key material and comments; empty placeholder files are not `UNKNOWN`.
 - process, persistence, and APT evidence cannot retain command-line secrets or repository credentials.

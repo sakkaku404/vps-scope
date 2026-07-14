@@ -7,7 +7,7 @@ VPS Scope is a security and runtime auditor for Ubuntu and Debian VPS hosts used
 [![Release](https://img.shields.io/github/v/release/sakkaku404/vps-scope)](https://github.com/sakkaku404/vps-scope/releases)
 [![License](https://img.shields.io/github/license/sakkaku404/vps-scope)](../LICENSE)
 
-[中文](../README.md) · [Proxy compatibility](PROXY-COMPATIBILITY.md) · [Privacy](PRIVACY.md) · [Checks](CHECKS.md) · [Design notes](DESIGN.md) · [Testing](TESTING.md)
+[中文](../README.md) · [Proxy compatibility](PROXY-COMPATIBILITY.md) · [Compatibility matrix](COMPATIBILITY-MATRIX.md) · [Privacy](PRIVACY.md) · [Checks](CHECKS.md) · [Design notes](DESIGN.md) · [Testing](TESTING.md)
 
 ## Why VPS Scope exists
 
@@ -38,7 +38,7 @@ Proxy hosts get additional context for:
 - per-ingress established TCP connection snapshots for comparison and baselines, without generic attack-count thresholds
 - WireGuard interface, UDP listener, firewall, and recent-handshake counts without peer keys or endpoints
 - Nginx, Caddy, and HAProxy chains from public frontends to panel or proxy backends, including public management routes and over-broad backend listeners
-- Docker Compose project/service context, effective mounts, Docker socket access, privileged/host namespaces, added capabilities, and published-address scope
+- Docker Compose project/service context, effective mounts, Docker socket access, privileged/host namespaces, added capabilities, and published paths across INPUT, FORWARD, and DOCKER-USER
 - optional external DNS/TLS observation, disabled by default and enabled only when domains are explicitly supplied, with CDN-origin address comparison
 
 Detecting a product is not the same as proving which port is its management plane. Container networking, reverse proxies, and unknown panel layouts remain `UNKNOWN` when the evidence cannot support a safe conclusion. See [proxy compatibility](PROXY-COMPATIBILITY.md) for the tested scope.
@@ -152,7 +152,8 @@ VPS Scope does not copy passwords, tokens, private keys, subscription paths, SSH
 Use `diff` to see what changed on one server, or `fleet` for a quick comparison across several machines:
 
 ```bash
-vps-scope diff old.json new.json
+vps-scope diff old.json new.json  # security regressions and improvements first
+vps-scope diff --all old.json new.json  # also include same-status raw evidence changes
 vps-scope fleet west.json sgp.json tw.json japan.json
 ```
 

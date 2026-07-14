@@ -14,8 +14,8 @@ Check IDs are stable across languages and report formats. A status is separate f
 | Updates | `UPD-001`–`UPD-002` | simulated APT upgrade, reboot marker, timers |
 | Packages | `PKG-001`–`PKG-002` | APT sources; deep-mode `dpkg --verify` classification |
 | Processes | `PROC-001`–`PROC-002` | failed systemd units, `/proc/*/exe` |
-| Docker | `DOCKER-001` | Docker inspect isolation and port bindings |
-| TLS | `TLS-001`–`TLS-002` | file-backed X.509 parsing; privacy-safe embedded-material detection |
+| Docker | `DOCKER-001`–`DOCKER-002` | container isolation and publication; published-port path through INPUT, FORWARD and DOCKER-USER |
+| TLS | `TLS-001`–`TLS-002` | file-backed X.509 parsing, renewal schedule/success/failure/reload closure; privacy-safe embedded-material detection |
 | Workloads | `WORK-001`–`WORK-014` | proxy processes/configs, management/control exposure, native self-tests, permissions, service isolation, UDP context, config-to-listener/firewall relations, privacy-safe log counts, WireGuard runtime, panel role/runtime consistency, reverse-proxy chains, and opt-in external DNS/TLS observation |
 | Filesystem | `FS-001` | sensitive paths, modes, sticky bits |
 | Persistence | `PERSIST-001`–`PERSIST-002` | systemd, timers, cron, startup files, executables running from temporary directories |

@@ -160,6 +160,17 @@ func TestScenarioIncompleteEvidenceNeverBecomesPass(t *testing.T) {
 	requireStatus(t, []model.Finding{checkProxyEndpointRelations(ctx, []proxyConfigSummary{summary})}, "WORK-009", model.Unknown)
 }
 
+func TestScenarioUnknownPanelSchemaIsUnknown(t *testing.T) {
+	ctx := scenarioContext(newScenarioCommander(nil, nil))
+	ctx.Facts.listenersOnce.Do(func() {})
+	panel := panelSnapshot{Product: "3x-ui", Database: "/etc/x-ui/x-ui.db", SchemaFingerprint: "0123456789abcdef", DatabaseError: "unsupported 3x-ui database schema"}
+	ctx.Facts.panelsOnce.Do(func() { ctx.Facts.panels = []panelSnapshot{panel} })
+	f := checkPanelRuntimeConsistency(ctx, nil)
+	if f.Status != model.Unknown || !f.Unavailable || f.Facts["unsupported_panel_schemas"] != "1" {
+		t.Fatalf("status=%s unavailable=%t facts=%v", f.Status, f.Unavailable, f.Facts)
+	}
+}
+
 func TestScenarioPublicControlAPIAndPanelRuntimeMismatch(t *testing.T) {
 	cmd := newScenarioCommander(nil, nil)
 	ctx := scenarioContext(cmd)

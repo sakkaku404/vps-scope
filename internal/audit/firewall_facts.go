@@ -156,7 +156,7 @@ func parseUFWRules(input []string) []firewallRule {
 func parseNFTFirewall(output string) panelUFW {
 	f := panelUFW{available: true, active: true, backend: "nftables", lines: lines(output), defaultDenyByFamily: map[string]bool{}}
 	collectNFTDefaultPolicies(&f, output)
-	f.rules = parseNFTInputRules(f.lines)
+	f.rules = parseNFTHookRules(f.lines, "input")
 	if len(f.rules) > 0 {
 		return f
 	}
@@ -199,7 +199,9 @@ type nftInputChain struct {
 // parseNFTInputRules follows only base chains with hook input and chains they
 // jump or go to. Parsing every accept statement in a ruleset would mistake
 // OUTPUT, FORWARD, Docker NAT, and unrelated tables for host ingress policy.
-func parseNFTInputRules(input []string) []firewallRule {
+func parseNFTInputRules(input []string) []firewallRule { return parseNFTHookRules(input, "input") }
+
+func parseNFTHookRules(input []string, hook string) []firewallRule {
 	tableRE := regexp.MustCompile(`(?i)^table\s+(ip|ip6|inet)\s+([^\s{]+)\s*\{`)
 	chainRE := regexp.MustCompile(`(?i)^chain\s+([^\s{]+)\s*\{`)
 	tableFamily, tableName := "", ""
@@ -216,7 +218,7 @@ func parseNFTInputRules(input []string) []firewallRule {
 			if tableFamily != "" {
 				if m := chainRE.FindStringSubmatch(trimmed); len(m) > 1 {
 					current = &nftInputChain{family: tableFamily, table: tableName, name: m[1]}
-					current.baseInput = strings.Contains(strings.ToLower(trimmed), "hook input")
+					current.baseInput = strings.Contains(strings.ToLower(trimmed), "hook "+hook)
 					chains[nftChainKey(tableFamily, tableName, m[1])] = current
 					continue
 				}
@@ -231,7 +233,7 @@ func parseNFTInputRules(input []string) []firewallRule {
 			continue
 		}
 		current.lines = append(current.lines, trimmed)
-		if strings.Contains(strings.ToLower(trimmed), "hook input") {
+		if strings.Contains(strings.ToLower(trimmed), "hook "+hook) {
 			current.baseInput = true
 		}
 	}
@@ -265,7 +267,7 @@ func parseNFTInputRules(input []string) []firewallRule {
 		chain := chains[key]
 		origin := "nft-reachable"
 		if chain.baseInput {
-			origin = "nft-input"
+			origin = "nft-" + hook
 		}
 		for _, line := range chain.lines {
 			out = append(out, parseNFTRuleLine(line, chain.family, origin, portSets)...)
@@ -372,17 +374,23 @@ func expandNFTPortSet(line string, portSets map[string]nftPortSet) string {
 }
 
 func collectNFTDefaultPolicies(f *panelUFW, output string) {
+	collectNFTHookDefaultPolicies(f.defaultDenyByFamily, output, "input")
+	for _, deny := range f.defaultDenyByFamily {
+		f.defaultDeny = f.defaultDeny || deny
+	}
+}
+
+func collectNFTHookDefaultPolicies(target map[string]bool, output, hook string) {
 	tableFamily := ""
 	tableRE := regexp.MustCompile(`(?i)^table\s+(ip|ip6|inet)\s+`)
-	policyRE := regexp.MustCompile(`(?i)hook\s+input\b.*\bpolicy\s+(drop|reject)\b`)
+	policyRE := regexp.MustCompile(`(?i)hook\s+` + regexp.QuoteMeta(hook) + `\b.*\bpolicy\s+(drop|reject)\b`)
 	for _, line := range lines(output) {
 		trimmed := strings.TrimSpace(line)
 		if m := tableRE.FindStringSubmatch(trimmed); len(m) > 1 {
 			tableFamily = map[string]string{"ip": "ipv4", "ip6": "ipv6", "inet": "any"}[strings.ToLower(m[1])]
 		}
 		if policyRE.MatchString(trimmed) {
-			f.defaultDeny = true
-			f.defaultDenyByFamily[tableFamily] = true
+			target[tableFamily] = true
 		}
 	}
 }

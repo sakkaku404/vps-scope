@@ -46,6 +46,9 @@ jobs:
       - name: Test with race detector
         run: go test -race -count=1 ./...
 
+      - name: Enforce coverage ratchet
+        run: bash scripts/check-coverage.sh
+
       - name: Cross-build Linux targets
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o /tmp/vps-scope-amd64 ./cmd/vps-scope
