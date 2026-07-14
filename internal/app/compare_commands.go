@@ -16,6 +16,7 @@ import (
 func (e environment) diff(args []string) error {
 	fs := flag.NewFlagSet("diff", flag.ContinueOnError)
 	lang := fs.String("lang", "auto", "language")
+	all := fs.Bool("all", false, "include same-status raw evidence changes")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -32,6 +33,14 @@ func (e environment) diff(args []string) error {
 	}
 	locale := i18n.Locale(*lang)
 	oldMap, newMap := findingMap(oldReport), findingMap(newReport)
+	semantic, covered := semanticDiff(oldReport, newReport)
+	for _, change := range semantic {
+		message := change.MessageEN
+		if locale == "zh-CN" {
+			message = change.MessageZH
+		}
+		fmt.Fprintf(e.out, "%-11s %-12s %s\n", change.Kind, change.ID, message)
+	}
 	var ids []string
 	seen := map[string]bool{}
 	for id := range oldMap {
@@ -45,6 +54,9 @@ func (e environment) diff(args []string) error {
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
+		if covered[id] {
+			continue
+		}
 		o, okOld := oldMap[id]
 		n, okNew := newMap[id]
 		switch {
@@ -52,7 +64,7 @@ func (e environment) diff(args []string) error {
 			fmt.Fprintf(e.out, "NEW      %-12s %-8s %s\n", id, n.Status, i18n.Pick(i18n.RuleFor(id).Title, locale))
 		case !okNew:
 			fmt.Fprintf(e.out, "REMOVED  %-12s %-8s %s\n", id, o.Status, i18n.Pick(i18n.RuleFor(id).Title, locale))
-		case o.Status != n.Status || evidenceFingerprint(o) != evidenceFingerprint(n):
+		case o.Status != n.Status || (*all && evidenceFingerprint(o) != evidenceFingerprint(n)):
 			fmt.Fprintf(e.out, "CHANGED  %-12s %s -> %s  %s\n", id, o.Status, n.Status, i18n.Pick(i18n.RuleFor(id).Title, locale))
 		}
 	}

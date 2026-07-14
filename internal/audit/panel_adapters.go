@@ -1,7 +1,10 @@
 package audit
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -37,24 +40,42 @@ func panelAdapters() []panelAdapter {
 }
 
 func detectPanelSchema(cmd Commander, database, product string) (string, error) {
+	inspection, err := inspectPanelSchema(cmd, database, product)
+	return inspection.Version, err
+}
+
+type panelSchemaInspection struct {
+	Version      string
+	Fingerprint  string
+	Capabilities []string
+}
+
+func inspectPanelSchema(cmd Commander, database, product string) (panelSchemaInspection, error) {
 	var lastErr error
+	var last panelSchemaInspection
 	for attempt, delay := range []time.Duration{0, 100 * time.Millisecond, 250 * time.Millisecond} {
 		if attempt > 0 {
 			time.Sleep(delay)
 		}
-		schema, err := detectPanelSchemaOnce(cmd, database, product)
+		inspection, err := inspectPanelSchemaOnce(cmd, database, product)
 		if err == nil {
-			return schema, nil
+			return inspection, nil
 		}
+		last = inspection
 		lastErr = err
 	}
-	return "", lastErr
+	return last, lastErr
 }
 
 func detectPanelSchemaOnce(cmd Commander, database, product string) (string, error) {
+	inspection, err := inspectPanelSchemaOnce(cmd, database, product)
+	return inspection.Version, err
+}
+
+func inspectPanelSchemaOnce(cmd Commander, database, product string) (panelSchemaInspection, error) {
 	rows, err := sqliteTSV(cmd, database, `SELECT name FROM sqlite_master WHERE type='table';`)
 	if err != nil {
-		return "", fmt.Errorf("panel schema tables: %w", err)
+		return panelSchemaInspection{}, fmt.Errorf("panel schema tables: %w", err)
 	}
 	tables := map[string]map[string]bool{}
 	for _, row := range rows {
@@ -73,7 +94,37 @@ func detectPanelSchemaOnce(cmd Commander, database, product string) (string, err
 			}
 		}
 	}
-	return classifyPanelSchema(product, tables)
+	fingerprint := panelSchemaFingerprint(tables)
+	version, err := classifyPanelSchema(product, tables)
+	inspection := panelSchemaInspection{Version: version, Fingerprint: fingerprint}
+	if err != nil {
+		return inspection, fmt.Errorf("%w (fingerprint=%s)", err, fingerprint)
+	}
+	inspection.Capabilities = panelSchemaCapabilities(version)
+	return inspection, nil
+}
+
+func panelSchemaFingerprint(tables map[string]map[string]bool) string {
+	var names []string
+	for table, columns := range tables {
+		for column := range columns {
+			names = append(names, table+"."+column)
+		}
+	}
+	sort.Strings(names)
+	sum := sha256.Sum256([]byte(strings.Join(names, "\n")))
+	return hex.EncodeToString(sum[:8])
+}
+
+func panelSchemaCapabilities(version string) []string {
+	switch version {
+	case "s-ui-db-v1":
+		return []string{"management-endpoint", "subscription-endpoint", "inbound-state", "reality-metadata", "client-state", "certificate-path"}
+	case "x-ui-db-v1":
+		return []string{"management-endpoint", "subscription-endpoint", "inbound-state", "reality-metadata", "client-state", "certificate-path"}
+	default:
+		return nil
+	}
 }
 
 func classifyPanelSchema(product string, tables map[string]map[string]bool) (string, error) {

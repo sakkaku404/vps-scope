@@ -1,6 +1,7 @@
 package report
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
@@ -19,6 +20,25 @@ type actionSummary struct {
 type actionItem struct {
 	Localized localizedFinding
 	Verdict   string
+}
+
+type overallVerdict struct {
+	Headline string
+	Detail   string
+}
+
+func overallVerdictFor(r model.Report, locale string) overallVerdict {
+	actions := summarizeActions(r, locale)
+	zh := locale == "zh-CN"
+	confirmed := len(actions.Urgent) + len(actions.Availability) + len(actions.Maintenance)
+	gaps := len(actions.EvidenceGaps)
+	if confirmed == 0 && gaps == 0 {
+		return overallVerdict{choose(zh, "本次未发现明确风险", "No confirmed risks in this run"), choose(zh, "这不等于服务器绝对安全；它表示本次可读取证据未触发风险判断。", "This is not proof of an uncompromised host; available evidence did not trigger a risk finding.")}
+	}
+	if confirmed == 0 {
+		return overallVerdict{choose(zh, "没有明确风险，但存在证据缺口", "No confirmed risks, with evidence gaps"), fmt.Sprintf(choose(zh, "%d 项检查无法形成可靠结论，应先查看 UNKNOWN。", "%d checks could not reach a reliable conclusion; review UNKNOWN first."), gaps)}
+	}
+	return overallVerdict{fmt.Sprintf(choose(zh, "发现 %d 项需要处理的问题", "%d findings need attention"), confirmed), fmt.Sprintf(choose(zh, "其中 %d 项优先处理，%d 项可能影响可用性，另有 %d 项证据不足。", "%d urgent, %d availability-related, and %d evidence gaps."), len(actions.Urgent), len(actions.Availability), gaps)}
 }
 
 func summarizeActions(r model.Report, locale string) actionSummary {

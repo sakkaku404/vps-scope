@@ -23,3 +23,15 @@ func TestPanelSchemaAdapters(t *testing.T) {
 		t.Fatal("unsupported schema accepted")
 	}
 }
+
+func TestPanelSchemaFingerprintIsOrderIndependentAndCapabilityBound(t *testing.T) {
+	a := map[string]map[string]bool{"settings": {"value": true, "key": true}, "inbounds": {"protocol": true}}
+	b := map[string]map[string]bool{"inbounds": {"protocol": true}, "settings": {"key": true, "value": true}}
+	if panelSchemaFingerprint(a) != panelSchemaFingerprint(b) || len(panelSchemaFingerprint(a)) != 16 {
+		t.Fatal("schema fingerprint must be stable and privacy-safe")
+	}
+	capabilities := panelSchemaCapabilities("x-ui-db-v1")
+	if len(capabilities) < 5 || len(panelSchemaCapabilities("future-schema")) != 0 {
+		t.Fatalf("unexpected capabilities: %#v", capabilities)
+	}
+}

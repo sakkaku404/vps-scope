@@ -62,7 +62,7 @@ func checkPanelManagement(ctx *Context) model.Finding {
 	publicUnrestricted, publicPlaintext, publicDefaultPath, pathUnknown, publicReverseProxy := 0, 0, 0, 0, 0
 	for _, panel := range panels {
 		products = append(products, panel.Product)
-		f.Evidence = append(f.Evidence, model.Evidence{Source: "panel discovery", Key: "product", Value: fmt.Sprintf("product=%s version=%s adapter=%s schema=%s binary=%s", panel.Product, panel.Version, panel.Adapter, panel.SchemaVersion, panel.Binary)})
+		f.Evidence = append(f.Evidence, model.Evidence{Source: "panel discovery", Key: "product", Value: fmt.Sprintf("product=%s version=%s adapter=%s schema=%s schema_supported=%t schema_fingerprint=%s capabilities=%s binary=%s", panel.Product, panel.Version, panel.Adapter, panel.SchemaVersion, panel.SchemaSupported, panel.SchemaFingerprint, strings.Join(panel.SchemaCapabilities, ","), panel.Binary)})
 		if panel.RuntimeCommandError != "" {
 			unknowns++
 			f.Evidence = append(f.Evidence, model.Evidence{Source: panel.Binary, Key: "runtime_command", Value: panel.RuntimeCommandError})

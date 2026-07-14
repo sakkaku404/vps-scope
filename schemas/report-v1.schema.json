@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sakkaku404/vps-scope/schemas/report-v1.schema.json",
+  "title": "VPS Scope report schema 1.0",
+  "type": "object",
+  "required": ["schema_version", "tool_version", "locale", "started_at", "finished_at", "host", "profile", "summary", "findings"],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "tool_version": { "type": "string" },
+    "tool_commit": { "type": "string" },
+    "locale": { "type": "string" },
+    "started_at": { "type": "string", "format": "date-time" },
+    "finished_at": { "type": "string", "format": "date-time" },
+    "log_since": { "type": "string" },
+    "host": {
+      "type": "object",
+      "required": ["stable_id", "hostname", "os", "os_version", "kernel", "architecture", "is_root"],
+      "properties": {
+        "stable_id": { "type": "string" }, "hostname": { "type": "string" }, "os": { "enum": ["ubuntu", "debian"] },
+        "os_version": { "type": "string" }, "kernel": { "type": "string" }, "architecture": { "type": "string" },
+        "virtualization": { "type": "string" }, "is_root": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "profile": {
+      "type": "object",
+      "required": ["requested", "detected", "effective"],
+      "properties": {
+        "requested": { "type": "string" }, "detected": { "type": "string" }, "effective": { "type": "string" },
+        "reasons": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": true
+    },
+    "summary": {
+      "type": "object",
+      "required": ["pass", "risk", "info", "unknown", "completed", "unavailable", "not_applicable"],
+      "additionalProperties": { "type": "integer", "minimum": 0 }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "category", "status"],
+        "properties": {
+          "id": { "pattern": "^[A-Z]+-[0-9]{3}$" }, "category": { "type": "string" },
+          "status": { "enum": ["PASS", "RISK", "INFO", "UNKNOWN"] },
+          "severity": { "enum": ["critical", "high", "medium", "low"] },
+          "evidence": { "type": "array", "items": { "$ref": "#/$defs/evidence" } },
+          "facts": { "type": "object", "additionalProperties": { "type": "string" } },
+          "unavailable": { "type": "boolean" }, "not_applicable": { "type": "boolean" }, "error": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "metadata": { "type": "object", "additionalProperties": { "type": "string" } }
+  },
+  "$defs": {
+    "evidence": {
+      "type": "object", "required": ["source", "value"],
+      "properties": { "source": { "type": "string" }, "key": { "type": "string" }, "value": { "type": "string" } },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

@@ -40,6 +40,9 @@ type panelSnapshot struct {
 	Version                string
 	Adapter                string
 	SchemaVersion          string
+	SchemaFingerprint      string
+	SchemaCapabilities     []string
+	SchemaSupported        bool
 	Binary                 string
 	Database               string
 	Endpoints              []panelEndpoint
@@ -89,12 +92,15 @@ func collectSUIFacts(cmd Commander) panelSnapshot {
 		s.DatabaseError = "S-UI database missing"
 		return s
 	}
-	schema, err := detectPanelSchema(cmd, s.Database, "S-UI")
+	inspection, err := inspectPanelSchema(cmd, s.Database, "S-UI")
+	s.SchemaFingerprint = inspection.Fingerprint
 	if err != nil {
 		s.DatabaseError = err.Error()
 		return s
 	}
-	s.SchemaVersion = schema
+	s.SchemaVersion = inspection.Version
+	s.SchemaCapabilities = inspection.Capabilities
+	s.SchemaSupported = true
 	settingRows, err := sqliteTSV(cmd, s.Database, `SELECT key, value FROM settings WHERE key IN ('webListen','webPort','webBasePath','webCertFile','webKeyFile','subListen','subPort','subPath','subCertFile','subKeyFile');`)
 	if err != nil {
 		s.DatabaseError = err.Error()
@@ -163,12 +169,15 @@ func collectXUIFacts(cmd Commander) panelSnapshot {
 		s.DatabaseError = "x-ui database missing"
 		return s
 	}
-	schema, err := detectPanelSchema(cmd, s.Database, s.Product)
+	inspection, err := inspectPanelSchema(cmd, s.Database, s.Product)
+	s.SchemaFingerprint = inspection.Fingerprint
 	if err != nil {
 		s.DatabaseError = err.Error()
 		return s
 	}
-	s.SchemaVersion = schema
+	s.SchemaVersion = inspection.Version
+	s.SchemaCapabilities = inspection.Capabilities
+	s.SchemaSupported = true
 	s.DatabaseAvailable = true
 	if s.Product == "3x-ui" {
 		apply3XUIDefaults(&s)
