@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 0.13.0 - 2026-07-15
+
 ### Added
 
 - Optional, language-neutral `reason_code` values explain why each stable check ID produced its current state; same-status reason changes now appear in semantic diffs without breaking older report-v1 readers.
