@@ -81,6 +81,9 @@ func Text(w io.Writer, r model.Report, opts Options) error {
 			lf := localize(f, opts.Locale)
 			label := string(f.Status) + "/" + strings.ToUpper(string(f.Severity))
 			fmt.Fprintf(w, "[%s] %s  (%s)\n", colorStatus(label, f.Status, opts.Color), lf.Title, f.ID)
+			if f.ReasonCode != "" {
+				fmt.Fprintf(w, "  Reason: %s\n", f.ReasonCode)
+			}
 			writeEvidence(w, f, "  ", true, 8)
 			if zh {
 				fmt.Fprintf(w, "  风险: %s\n  建议: %s\n\n", lf.Why, lf.Recommendation)
@@ -100,6 +103,9 @@ func Text(w io.Writer, r model.Report, opts Options) error {
 		for _, f := range sortedFindings(r.Findings, model.Unknown) {
 			lf := localize(f, opts.Locale)
 			fmt.Fprintf(w, "[%s] %s (%s)\n", colorStatus("UNKNOWN", model.Unknown, opts.Color), lf.Title, f.ID)
+			if f.ReasonCode != "" {
+				fmt.Fprintf(w, "  Reason: %s\n", f.ReasonCode)
+			}
 			if f.Error != "" {
 				fmt.Fprintf(w, "  %s\n", f.Error)
 			}
@@ -220,6 +226,9 @@ func Markdown(w io.Writer, r model.Report, opts Options) error {
 			fmt.Fprintf(w, "### `%s` %s — %s\n\n", f.Status, escapeMD(lf.Title), f.ID)
 			if f.Severity != "" {
 				fmt.Fprintf(w, "**%s:** `%s`\n\n", choose(zh, "优先级", "Severity"), f.Severity)
+			}
+			if f.ReasonCode != "" {
+				fmt.Fprintf(w, "**Reason code:** `%s`\n\n", f.ReasonCode)
 			}
 			if len(f.Evidence) > 0 {
 				fmt.Fprintf(w, "**%s**\n\n", choose(zh, "关键证据", "Key evidence"))
@@ -506,10 +515,13 @@ func VerifyBundle(dir string) (Manifest, []string, error) {
 	if len(manifest.Files) > 16 {
 		return Manifest{}, nil, fmt.Errorf("manifest declares too many files")
 	}
+	if manifest.SchemaVersion != "1.0" && manifest.SchemaVersion != SupportSchema {
+		return Manifest{}, nil, fmt.Errorf("unsupported manifest schema %q", manifest.SchemaVersion)
+	}
 	var failures []string
 	seen := map[string]bool{}
 	for _, item := range manifest.Files {
-		if !safeBundleFileName(item.Name) {
+		if !safeBundleFileName(manifest.SchemaVersion, item.Name) {
 			failures = append(failures, item.Name+": invalid manifest file name")
 			continue
 		}
@@ -534,7 +546,10 @@ func VerifyBundle(dir string) (Manifest, []string, error) {
 	return manifest, failures, nil
 }
 
-func safeBundleFileName(name string) bool {
+func safeBundleFileName(schema, name string) bool {
+	if schema == SupportSchema {
+		return name == "report.redacted.json" || name == "compatibility.json" || name == "README.txt"
+	}
 	if name == "report.json" {
 		return true
 	}
@@ -648,7 +663,7 @@ const htmlTemplate = `<!doctype html>
 <section class="card"><h2>{{.Verdict.Headline}}</h2><p>{{.Verdict.Detail}}</p><p class="muted">PASS = {{t "证据支持当前判断" "evidence supports the current judgment"}} · INFO = {{t "事实与上下文" "facts and context"}} · UNKNOWN = {{t "证据不足，不代表安全" "insufficient evidence, not safe by default"}}</p></section>
 {{if or .Actions.Urgent .Actions.Availability .Actions.Maintenance .Actions.EvidenceGaps}}<section class="card"><h2>Action summary / 处理摘要</h2>{{if .Actions.Urgent}}<h3>Handle now / 优先处理</h3><ul>{{range .Actions.Urgent}}<li>{{.Localized.Title}} ({{.Localized.ID}}) — {{.Verdict}}</li>{{end}}</ul>{{end}}{{if .Actions.Availability}}<h3>May affect availability / 可用性</h3><ul>{{range .Actions.Availability}}<li>{{.Localized.Title}} ({{.Localized.ID}}) — {{.Verdict}}</li>{{end}}</ul>{{end}}{{if .Actions.Maintenance}}<h3>Maintenance and review / 维护复核</h3><ul>{{range .Actions.Maintenance}}<li>{{.Localized.Title}} ({{.Localized.ID}}) — {{.Verdict}}</li>{{end}}</ul>{{end}}{{if .Actions.EvidenceGaps}}<h3>Evidence gaps / 证据不足</h3><ul>{{range .Actions.EvidenceGaps}}<li>{{.Localized.Title}} ({{.Localized.ID}}) — {{.Verdict}}</li>{{end}}</ul>{{end}}</section>{{end}}
 <div class="toolbar"><div class="filters" role="group" aria-label="status filters"><button class="filter" data-filter="ALL" aria-pressed="true">{{t "全部" "All"}}</button><button class="filter" data-filter="RISK" aria-pressed="false">RISK</button><button class="filter" data-filter="UNKNOWN" aria-pressed="false">UNKNOWN</button><button class="filter" data-filter="PASS" aria-pressed="false">PASS</button><button class="filter" data-filter="INFO" aria-pressed="false">INFO</button></div><input class="search" type="search" placeholder="{{t "搜索检查、证据或 ID" "Search checks, evidence, or IDs"}}" aria-label="{{t "搜索报告" "Search report"}}"></div>
-<section class="findings" aria-label="findings">{{range .Findings}}<article class="finding" data-status="{{.Status}}" data-na="{{.NotApplicable}}"><header class="finding-head"><div class="pill">{{.Status}}</div><div><h2>{{.Title}}</h2><div class="finding-meta">{{.ID}} · {{cat .Category}}{{if .NotApplicable}} · {{t "不适用" "Not applicable"}}{{end}}</div></div>{{if .Severity}}<div class="severity">{{.Severity}}</div>{{end}}</header><div class="finding-body">{{if .Error}}<p class="error">{{.Error}}</p>{{end}}{{if or (eq .Status "RISK") (eq .Status "UNKNOWN")}}<div class="explain"><p><b>{{t "风险解释" "Why it matters"}}</b>{{.Why}}</p><p><b>{{t "建议" "Suggestion"}}</b>{{.Recommendation}}</p></div>{{end}}{{if .Evidence}}<details {{if or (eq .Status "RISK") (eq .Status "UNKNOWN")}}open{{end}}><summary>{{t "证据" "Evidence"}} · {{len .Evidence}}</summary><div class="evidence-list">{{range .Evidence}}<div class="evidence"><span class="source">[{{.Source}}]</span> {{if .Key}}{{.Key}}={{end}}{{.Value}}</div>{{end}}</div></details>{{end}}</div></article>{{end}}</section>
+<section class="findings" aria-label="findings">{{range .Findings}}<article class="finding" data-status="{{.Status}}" data-na="{{.NotApplicable}}"><header class="finding-head"><div class="pill">{{.Status}}</div><div><h2>{{.Title}}</h2><div class="finding-meta">{{.ID}} · {{cat .Category}}{{if .ReasonCode}} · {{.ReasonCode}}{{end}}{{if .NotApplicable}} · {{t "不适用" "Not applicable"}}{{end}}</div></div>{{if .Severity}}<div class="severity">{{.Severity}}</div>{{end}}</header><div class="finding-body">{{if .Error}}<p class="error">{{.Error}}</p>{{end}}{{if or (eq .Status "RISK") (eq .Status "UNKNOWN")}}<div class="explain"><p><b>{{t "风险解释" "Why it matters"}}</b>{{.Why}}</p><p><b>{{t "建议" "Suggestion"}}</b>{{.Recommendation}}</p></div>{{end}}{{if .Evidence}}<details {{if or (eq .Status "RISK") (eq .Status "UNKNOWN")}}open{{end}}><summary>{{t "证据" "Evidence"}} · {{len .Evidence}}</summary><div class="evidence-list">{{range .Evidence}}<div class="evidence"><span class="source">[{{.Source}}]</span> {{if .Key}}{{.Key}}={{end}}{{.Value}}</div>{{end}}</div></details>{{end}}</div></article>{{end}}</section>
 <div class="empty">{{t "没有符合当前筛选条件的结果。" "No findings match the current filters."}}</div><footer class="footer">VPS Scope {{.Report.ToolVersion}} · schema {{.Report.SchemaVersion}} · {{t "报告保存在本地" "Report remains local"}}</footer>
 </main><script>
 (()=>{const buttons=[...document.querySelectorAll('[data-filter]')],items=[...document.querySelectorAll('.finding')],input=document.querySelector('.search'),empty=document.querySelector('.empty');let filter='ALL';const apply=()=>{const q=input.value.trim().toLowerCase();let shown=0;for(const item of items){const visible=(filter==='ALL'||item.dataset.status===filter)&&(!q||item.textContent.toLowerCase().includes(q));item.hidden=!visible;if(visible)shown++}empty.style.display=shown?'none':'block'};for(const button of buttons)button.addEventListener('click',()=>{filter=button.dataset.filter;for(const other of buttons)other.setAttribute('aria-pressed',String(other===button));apply()});input.addEventListener('input',apply)})();

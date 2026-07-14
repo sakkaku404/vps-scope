@@ -26,6 +26,15 @@ func TestSemanticDiffClassifiesProxyRegressions(t *testing.T) {
 	}
 }
 
+func TestSemanticDiffReportsReasonChangeWithoutStatusChange(t *testing.T) {
+	oldReport := model.Report{Findings: []model.Finding{{ID: "WORK-002", Status: model.Risk, ReasonCode: "work.002.public-default-path-management"}}}
+	newReport := model.Report{Findings: []model.Finding{{ID: "WORK-002", Status: model.Risk, ReasonCode: "work.002.public-plaintext-management"}}}
+	changes, covered := semanticDiff(oldReport, newReport)
+	if len(changes) != 1 || changes[0].Kind != "CHANGE" || !covered["WORK-002"] {
+		t.Fatalf("unexpected changes: %#v covered=%#v", changes, covered)
+	}
+}
+
 func TestSemanticDiffDoesNotCallNewDeepEvidenceARegression(t *testing.T) {
 	oldReport := model.Report{Metadata: map[string]string{"audit_depth": "standard"}, Findings: []model.Finding{{ID: "PKG-002", Status: model.Info, NotApplicable: true}}}
 	newReport := model.Report{Metadata: map[string]string{"audit_depth": "deep"}, Findings: []model.Finding{{ID: "PKG-002", Status: model.Risk, Severity: model.Medium}}}

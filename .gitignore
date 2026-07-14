@@ -4,6 +4,7 @@
 /test-reports/
 /.agents/
 /.codex/
+/.tmp-lab/
 *.exe
 *.test
 coverage.out

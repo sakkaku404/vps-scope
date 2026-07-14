@@ -482,8 +482,11 @@ func defaultDenyForFamily(f panelUFW, family string) bool {
 }
 
 func listenerAddressFamily(address string) string {
-	if address == "*" || address == "::" || address == "0.0.0.0" {
+	if address == "*" {
 		return "any"
+	}
+	if address == "::" {
+		return "ipv6"
 	}
 	if strings.Contains(address, ":") && !strings.Contains(address, ".") {
 		return "ipv6"

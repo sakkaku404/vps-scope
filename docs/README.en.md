@@ -145,6 +145,14 @@ The `redact` command replaces hostnames, addresses, domains, usernames, and key 
 vps-scope redact --format markdown --output public.md report.json
 ```
 
+For a panel compatibility report, create the narrower support bundle:
+
+```bash
+vps-scope support report.json
+```
+
+It contains an already-redacted report, allowlisted OS and panel schema/capability metadata, a privacy notice, and a SHA-256 manifest. It does not read or package raw databases, configuration files, private keys, tokens, or UUIDs. Review every file before sharing.
+
 VPS Scope does not copy passwords, tokens, private keys, subscription paths, SSH key comments, or full process arguments into a report. It also refuses to export application blobs that may combine certificates with private keys. See the [privacy notes](PRIVACY.md) for the complete boundary.
 
 ## Comparing runs
@@ -174,6 +182,7 @@ checks      list checks and their IDs
 explain     explain a check and its recommendation
 render      turn a JSON report into another language or format
 redact      make a report safer to share
+support     create a privacy-safe compatibility support bundle
 report      view and manage saved reports
 verify      verify the files in a report bundle
 version     show build information

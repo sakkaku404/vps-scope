@@ -211,6 +211,14 @@ vps-scope render --lang en --format markdown --output report.en.md report.json
 vps-scope redact --format markdown --output public.md report.json
 ```
 
+如果要提交面板兼容性问题，建议生成更严格的支持包：
+
+```bash
+vps-scope support report.json
+```
+
+它只包含已脱敏报告、系统与面板 schema/能力摘要、隐私说明和 SHA-256 清单，不会读取或打包原始数据库、配置、私钥、令牌或 UUID。分享前仍应检查目录内的每个文件。
+
 同一地址或用户名会保留同一个代号，方便看懂关系。密码、token、私钥、订阅路径、SSH key 注释和完整进程参数不会写进报告；可能同时装有证书和私钥的应用数据也不会为了检查而导出。完整边界见[隐私说明](docs/PRIVACY.md)。
 
 对比同一服务器的两次检查，或集中查看多台服务器：

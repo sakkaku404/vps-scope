@@ -12,6 +12,8 @@ Collectors obtain typed facts. Policy evaluates those facts under an effective p
 
 The canonical JSON contract is `schema_version: 1.0` and is published in [`schemas/report-v1.schema.json`](../schemas/report-v1.schema.json). Within this schema, existing check IDs are permanent: releases may append an ID, but cannot reuse an ID for another meaning or silently remove it. Optional facts and evidence may grow without breaking older readers. A breaking field or semantic change requires a new report schema.
 
+Each new finding also carries a language-neutral `reason_code`. The check ID states what was evaluated; the reason code states why the current status was selected. Existing reason codes are stable within report schema 1.0. Older 1.0 reports without this optional field remain valid. A history comparison reports a reason change even when the top-level status remains unchanged.
+
 Panel adapters expose a versioned adapter ID, a recognized database schema ID, a privacy-safe fingerprint made only from table and column names, and an explicit capability list. An unknown fingerprint stops schema-specific queries and produces incomplete/`UNKNOWN` evidence instead of applying a nearby version optimistically.
 
 Proxy and web adapters emit configured endpoints into a shared graph. Runtime listeners and normalized host-firewall facts are attached separately; active UFW is combined with the effective nftables INPUT path so workload-managed rules are not hidden by a frontend summary. Policy then evaluates configuration-to-listener ownership, TCP/UDP transport, reverse-proxy frontends and backends, path-gated management routes, exposure scope, and firewall disposition. Product parsers do not decide whether an endpoint is safe.
@@ -29,6 +31,8 @@ Resource use and active connections are point-in-time inventory. Proxy ingress g
 ## Privacy
 
 Local reports retain host evidence but never intentionally collect secret values. Redaction uses stable placeholders so relationships remain readable. Private keys, passwords, tokens, subscription paths, SSH key comments, full process arguments, command-bearing persistence lines, credential-bearing repository URLs, and private-key-bearing application blobs are outside the evidence boundary. Authorized SSH keys are represented only by algorithm, size, account, and SHA-256 fingerprint.
+
+`vps-scope support REPORT.json` creates a new, non-overwriting compatibility bundle. It contains an already-redacted report, an allowlisted OS/product/panel-schema capability summary, a privacy notice, and a SHA-256 manifest. It never reads a live panel database or configuration file. Users must still review every generated file before sharing it.
 
 ## Known limitations
 

@@ -18,6 +18,7 @@ type tlsRenewalFacts struct {
 	SuccessSignals int
 	FailureSignals int
 	ReloadHooks    int
+	LastOutcome    string
 	Methods        []string
 	Evidence       []model.Evidence
 }
@@ -46,13 +47,19 @@ func collectTLSRenewalFacts(ctx *Context) tlsRenewalFacts {
 			methods[renewalMethod(service)] = true
 			result := strings.TrimSpace(v["Result"])
 			exit := strings.TrimSpace(v["ExecMainStatus"])
-			if result == "success" && (exit == "" || exit == "0") {
-				f.SuccessSignals++
-			} else if result != "" && result != "success" {
-				f.FailureSignals++
-			}
-			if strings.TrimSpace(v["ExecReload"]) != "" && strings.TrimSpace(v["ExecReload"]) != "{}" {
-				f.ReloadHooks++
+			// A running Caddy service is not, by itself, proof that an ACME
+			// renewal completed. Only explicit renewal journal signals count.
+			if service != "caddy.service" {
+				if result == "success" && (exit == "" || exit == "0") {
+					f.SuccessSignals++
+					f.LastOutcome = "success"
+				} else if result != "" && result != "success" {
+					f.FailureSignals++
+					f.LastOutcome = "failure"
+				}
+				if strings.TrimSpace(v["ExecReload"]) != "" && strings.TrimSpace(v["ExecReload"]) != "{}" {
+					f.ReloadHooks++
+				}
 			}
 			f.Evidence = append(f.Evidence, model.Evidence{Source: "systemctl", Key: service, Value: fmt.Sprintf("active=%s result=%s exit_status=%s last_active=%s reload_hook=%t", valueOrUnknown(v["ActiveState"]), valueOrUnknown(result), valueOrUnknown(exit), valueOrUnknown(v["ActiveEnterTimestamp"]), strings.TrimSpace(v["ExecReload"]) != "")})
 		}
@@ -83,9 +90,12 @@ func collectTLSRenewalFacts(ctx *Context) tlsRenewalFacts {
 	if ctx.Commander.Exists("journalctl") {
 		r := ctx.Commander.Run(8*time.Second, "journalctl", "--since", "30 days ago", "-u", "certbot.service", "-u", "acme.service", "-u", "acme-renew.service", "-u", "lego.service", "-u", "caddy.service", "--no-pager", "-o", "cat")
 		if r.Err == nil && !r.Truncated {
-			success, failure := renewalJournalSignals(r.Stdout)
+			success, failure, last := renewalJournalSummary(r.Stdout)
 			f.SuccessSignals += success
 			f.FailureSignals += failure
+			if last != "" {
+				f.LastOutcome = last
+			}
 			if success+failure > 0 {
 				f.Evidence = append(f.Evidence, model.Evidence{Source: "journalctl (30 days, content withheld)", Key: "renewal_signals", Value: fmt.Sprintf("success=%d failure=%d", success, failure)})
 			}
@@ -121,15 +131,22 @@ func renewalCommandMethod(data string) string {
 }
 
 func renewalJournalSignals(data string) (success, failure int) {
+	success, failure, _ = renewalJournalSummary(data)
+	return success, failure
+}
+
+func renewalJournalSummary(data string) (success, failure int, last string) {
 	for _, line := range strings.Split(strings.ToLower(data), "\n") {
 		switch {
 		case strings.Contains(line, "renew") && (strings.Contains(line, "success") || strings.Contains(line, "not due for renewal")):
 			success++
+			last = "success"
 		case strings.Contains(line, "renew") && (strings.Contains(line, "fail") || strings.Contains(line, "error")):
 			failure++
+			last = "failure"
 		}
 	}
-	return success, failure
+	return success, failure, last
 }
 
 func valueOrUnknown(value string) string {

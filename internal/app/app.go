@@ -53,6 +53,8 @@ func Run(args []string, in io.Reader, out, errOut io.Writer, build BuildInfo) er
 		return e.render(args[1:])
 	case "redact":
 		return e.redact(args[1:])
+	case "support":
+		return e.support(args[1:])
 	case "report":
 		return e.report(args[1:])
 	case "verify":
@@ -82,6 +84,7 @@ Usage:
   vps-scope fleet REPORTS...        compare multiple hosts
   vps-scope render REPORT.json      render another language or format
   vps-scope redact REPORT.json      create a shareable redacted report
+  vps-scope support REPORT.json     create a privacy-safe compatibility bundle
   vps-scope report list|show|path   manage saved local reports
   vps-scope verify BUNDLE_DIR       verify report SHA-256 values
   vps-scope version                 show build information
@@ -513,6 +516,42 @@ func (e environment) redact(args []string) error {
 	locale := i18n.Locale(*lang)
 	r.Locale = locale
 	return e.writeReport(*format, *output, r, report.Options{Locale: locale})
+}
+
+func (e environment) support(args []string) error {
+	fs := flag.NewFlagSet("support", flag.ContinueOnError)
+	output := fs.String("output", "", "new output directory")
+	input := ""
+	// Accept both common CLI styles: `support report.json --output dir`
+	// and the Go flag package's native `support --output dir report.json`.
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		input, args = args[0], args[1:]
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if input == "" && fs.NArg() == 1 {
+		input = fs.Arg(0)
+	} else if fs.NArg() != 0 {
+		return errors.New("usage: vps-scope support REPORT.json [--output DIR]")
+	}
+	if input == "" {
+		return errors.New("usage: vps-scope support REPORT.json [--output DIR]")
+	}
+	r, err := readReport(input)
+	if err != nil {
+		return err
+	}
+	if *output == "" {
+		*output = "vps-scope-support-" + time.Now().UTC().Format("20060102T150405Z")
+	}
+	manifest, err := report.SupportBundle(*output, r)
+	if err != nil {
+		return fmt.Errorf("create support bundle: %w", err)
+	}
+	fmt.Fprintf(e.out, "support bundle: %s (%d files)\n", *output, len(manifest.Files))
+	fmt.Fprintln(e.out, "Review every file before sharing. Raw configuration, databases, credentials, keys, UUIDs and host addresses are not included.")
+	return nil
 }
 
 func (e environment) verify(args []string) error {

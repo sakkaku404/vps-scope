@@ -98,6 +98,7 @@ func Run(opts Options) (model.Report, error) {
 		}
 		findings = append(findings, safeCheck(fn, ctx, category)...)
 	}
+	assignReasonCodes(findings)
 	report := model.Report{
 		SchemaVersion: SchemaVersion,
 		ToolVersion:   opts.Build.Version,

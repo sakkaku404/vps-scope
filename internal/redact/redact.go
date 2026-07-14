@@ -4,14 +4,16 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/sakkaku404/vps-scope/internal/model"
 )
 
 type Redactor struct {
-	values map[string]string
-	counts map[string]int
+	values  map[string]string
+	counts  map[string]int
+	literal map[string]string
 }
 
 var (
@@ -19,19 +21,33 @@ var (
 	ipv6RE        = regexp.MustCompile(`(?i)\b[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,7}\b`)
 	domainRE      = regexp.MustCompile(`(?i)\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\b`)
 	fingerprintRE = regexp.MustCompile(`SHA256:[A-Za-z0-9+/=]+`)
+	uuidRE        = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b`)
 	homeUserRE    = regexp.MustCompile(`/home/([a-z_][a-z0-9_-]*)`)
 	userFieldRE   = regexp.MustCompile(`(?i)\b(user(?:name)?=)([a-z_][a-z0-9_-]*)`)
 )
 
-func New() *Redactor { return &Redactor{values: map[string]string{}, counts: map[string]int{}} }
+func New() *Redactor {
+	return &Redactor{values: map[string]string{}, counts: map[string]int{}, literal: map[string]string{}}
+}
 
 func (r *Redactor) Report(in model.Report) model.Report {
 	out := in
-	out.Host.Hostname = r.token("HOST", in.Host.Hostname)
-	out.Host.StableID = r.token("HOST_ID", in.Host.StableID)
+	out.Host.Hostname = r.sensitiveToken("HOST", in.Host.Hostname)
+	out.Host.StableID = r.sensitiveToken("HOST_ID", in.Host.StableID)
+	out.Profile.Reasons = make([]string, len(in.Profile.Reasons))
+	for i, reason := range in.Profile.Reasons {
+		out.Profile.Reasons[i] = r.text(reason)
+	}
 	out.Findings = make([]model.Finding, len(in.Findings))
 	for i, finding := range in.Findings {
 		out.Findings[i] = finding
+		out.Findings[i].Error = r.text(finding.Error)
+		if finding.Facts != nil {
+			out.Findings[i].Facts = make(map[string]string, len(finding.Facts))
+			for key, value := range finding.Facts {
+				out.Findings[i].Facts[r.text(key)] = r.text(value)
+			}
+		}
 		out.Findings[i].Evidence = make([]model.Evidence, len(finding.Evidence))
 		for j, evidence := range finding.Evidence {
 			out.Findings[i].Evidence[j] = evidence
@@ -49,12 +65,26 @@ func (r *Redactor) Report(in model.Report) model.Report {
 	}
 	if out.Metadata == nil {
 		out.Metadata = map[string]string{}
+	} else {
+		out.Metadata = make(map[string]string, len(in.Metadata)+1)
+		for key, value := range in.Metadata {
+			out.Metadata[r.text(key)] = r.text(value)
+		}
 	}
 	out.Metadata["redacted"] = "true"
 	return out
 }
 
 func (r *Redactor) text(value string) string {
+	literals := make([]string, 0, len(r.literal))
+	for sensitive := range r.literal {
+		literals = append(literals, sensitive)
+	}
+	sort.Slice(literals, func(i, j int) bool { return len(literals[i]) > len(literals[j]) })
+	for _, sensitive := range literals {
+		replacement := r.literal[sensitive]
+		value = strings.ReplaceAll(value, sensitive, replacement)
+	}
 	value = ipv4RE.ReplaceAllStringFunc(value, func(candidate string) string {
 		ip := net.ParseIP(candidate)
 		if ip == nil || ip.IsLoopback() {
@@ -77,6 +107,7 @@ func (r *Redactor) text(value string) string {
 		return r.token("DOMAIN", lower)
 	})
 	value = fingerprintRE.ReplaceAllStringFunc(value, func(candidate string) string { return r.token("SSH_KEY", candidate) })
+	value = uuidRE.ReplaceAllStringFunc(value, func(candidate string) string { return r.token("UUID", strings.ToLower(candidate)) })
 	value = homeUserRE.ReplaceAllStringFunc(value, func(candidate string) string {
 		user := strings.TrimPrefix(candidate, "/home/")
 		return "/home/" + r.token("USER", user)
@@ -86,6 +117,17 @@ func (r *Redactor) text(value string) string {
 		return parts[0] + "=" + r.token("USER", parts[1])
 	})
 	return value
+}
+
+func (r *Redactor) sensitiveToken(kind, value string) string {
+	token := r.token(kind, value)
+	// Very short hostnames are too ambiguous to replace safely in free text:
+	// replacing a host named "1" would corrupt every count, timestamp and IP.
+	// The structured host field is still always tokenized.
+	if len(value) >= 3 {
+		r.literal[value] = token
+	}
+	return token
 }
 
 func containsSafeDomain(value string) bool {

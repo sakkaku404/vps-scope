@@ -440,8 +440,9 @@ func checkFileTLS(ctx *Context) model.Finding {
 	f.Facts["renewal_failure_signals"] = strconv.Itoa(renewal.FailureSignals)
 	f.Facts["renewal_reload_hooks"] = strconv.Itoa(renewal.ReloadHooks)
 	f.Facts["renewal_methods"] = strings.Join(renewal.Methods, ",")
+	f.Facts["renewal_last_outcome"] = valueOrUnknown(renewal.LastOutcome)
 	switch {
-	case renewal.FailureSignals > 0 && renewal.SuccessSignals == 0:
+	case renewal.LastOutcome == "failure" || renewal.FailureSignals > 0 && renewal.SuccessSignals == 0:
 		f.Facts["renewal_state"] = "failing"
 	case renewal.SuccessSignals > 0 && renewal.ReloadHooks > 0:
 		f.Facts["renewal_state"] = "verified-with-reload"
@@ -452,7 +453,7 @@ func checkFileTLS(ctx *Context) model.Finding {
 	default:
 		f.Facts["renewal_state"] = "not-established"
 	}
-	if renewal.FailureSignals > 0 && renewal.SuccessSignals == 0 && f.Severity != model.Critical && f.Severity != model.High {
+	if (renewal.LastOutcome == "failure" || renewal.FailureSignals > 0 && renewal.SuccessSignals == 0) && f.Severity != model.Critical && f.Severity != model.High {
 		f.Status, f.Severity = model.Risk, model.Medium
 	}
 	usesLetsEncrypt := false
