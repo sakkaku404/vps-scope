@@ -216,6 +216,7 @@ func parseNFTInputRules(input []string) []firewallRule {
 			if tableFamily != "" {
 				if m := chainRE.FindStringSubmatch(trimmed); len(m) > 1 {
 					current = &nftInputChain{family: tableFamily, table: tableName, name: m[1]}
+					current.baseInput = strings.Contains(strings.ToLower(trimmed), "hook input")
 					chains[nftChainKey(tableFamily, tableName, m[1])] = current
 					continue
 				}
@@ -258,6 +259,7 @@ func parseNFTInputRules(input []string) []firewallRule {
 		}
 	}
 
+	portSets := parseNFTPortSets(strings.Join(input, "\n"))
 	var out []firewallRule
 	for key := range reachable {
 		chain := chains[key]
@@ -266,7 +268,7 @@ func parseNFTInputRules(input []string) []firewallRule {
 			origin = "nft-input"
 		}
 		for _, line := range chain.lines {
-			out = append(out, parseNFTRuleLine(line, chain.family, origin)...)
+			out = append(out, parseNFTRuleLine(line, chain.family, origin, portSets)...)
 		}
 	}
 	return out
@@ -276,8 +278,40 @@ func nftChainKey(family, table, chain string) string {
 	return family + "\x00" + table + "\x00" + chain
 }
 
-func parseNFTRuleLine(line, family, origin string) []firewallRule {
-	ruleRE := regexp.MustCompile(`(?i)\b(tcp|udp)\s+dport\s+(\{[^}]+\}|[0-9]+)\b?([^\n]*?)\b(accept|drop|reject)\b`)
+type nftPortSet struct {
+	ports   []string
+	actions map[string]string
+}
+
+// parseNFTPortSets supports the common nftables set/map forms used by UFW
+// companions and container stacks. It deliberately extracts only numeric
+// inet_service ports; unknown expressions stay unknown instead of being
+// promoted to public allows.
+func parseNFTPortSets(input string) map[string]nftPortSet {
+	sets := map[string]nftPortSet{}
+	blockRE := regexp.MustCompile(`(?is)\b(?:set|map)\s+([A-Za-z0-9_.-]+)\s*\{.*?\belements\s*=\s*\{(.*?)\}`)
+	entryRE := regexp.MustCompile(`\b([0-9]{1,5})\b\s*(?::\s*(accept|drop|reject))?`)
+	for _, block := range blockRE.FindAllStringSubmatch(input, -1) {
+		set := nftPortSet{actions: map[string]string{}}
+		for _, entry := range entryRE.FindAllStringSubmatch(block[2], -1) {
+			if !validPort(entry[1]) {
+				continue
+			}
+			set.ports = append(set.ports, entry[1])
+			if entry[2] != "" {
+				set.actions[entry[1]] = strings.ToLower(entry[2])
+			}
+		}
+		if len(set.ports) > 0 {
+			sets[block[1]] = set
+		}
+	}
+	return sets
+}
+
+func parseNFTRuleLine(line, family, origin string, portSets map[string]nftPortSet) []firewallRule {
+	line = expandNFTPortSet(line, portSets)
+	ruleRE := regexp.MustCompile(`(?i)\b(tcp|udp)\s+dport\s+(\{[^}]+\}|[0-9]+)(?:\s|$)([^\n]*?)\b(accept|drop|reject)\b`)
 	m := ruleRE.FindStringSubmatch(line)
 	if len(m) == 0 {
 		return nil
@@ -305,6 +339,36 @@ func parseNFTRuleLine(line, family, origin string) []firewallRule {
 		}
 	}
 	return out
+}
+
+func expandNFTPortSet(line string, portSets map[string]nftPortSet) string {
+	pattern := regexp.MustCompile(`(?i)\b(tcp|udp)\s+dport\s+(vmap\s+)?@([A-Za-z0-9_.-]+)`)
+	match := pattern.FindStringSubmatch(line)
+	if len(match) != 4 {
+		return line
+	}
+	set, ok := portSets[match[3]]
+	if !ok || len(set.ports) == 0 {
+		return line
+	}
+	// Verdict maps can contain mixed actions. Expand only uniform maps; a
+	// mixed map is intentionally left unresolved rather than guessing.
+	action := ""
+	for _, port := range set.ports {
+		if set.actions[port] == "" {
+			continue
+		}
+		if action == "" {
+			action = set.actions[port]
+		} else if action != set.actions[port] {
+			return line
+		}
+	}
+	if action == "" {
+		return strings.Replace(line, match[0], match[1]+" dport { "+strings.Join(set.ports, ", ")+" }", 1)
+	}
+	replacement := match[1] + " dport { " + strings.Join(set.ports, ", ") + " } " + action
+	return strings.Replace(line, match[0], replacement, 1)
 }
 
 func collectNFTDefaultPolicies(f *panelUFW, output string) {

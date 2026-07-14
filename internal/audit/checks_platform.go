@@ -300,6 +300,7 @@ func checkDocker(ctx *Context) []model.Finding {
 	problemKeys := map[string]bool{}
 	recordProblem := func(key string) { problemKeys[key] = true }
 	composeProjects, composeServices := map[string]bool{}, 0
+	publishedPorts := 0
 	for _, c := range containers {
 		name := strings.TrimPrefix(c.Name, "/")
 		project, service := c.Config.Labels["com.docker.compose.project"], c.Config.Labels["com.docker.compose.service"]
@@ -355,13 +356,15 @@ func checkDocker(ctx *Context) []model.Finding {
 		}
 		for containerPort, bindings := range c.NetworkSettings.Ports {
 			for _, b := range bindings {
+				publishedPorts++
 				scope := classifyAddress(b.HostIP)
-				f.Evidence = append(f.Evidence, model.Evidence{Source: "docker inspect", Key: "published_port", Value: fmt.Sprintf("%s %s:%s->%s scope=%s", name, b.HostIP, b.HostPort, containerPort, scope)})
+				f.Evidence = append(f.Evidence, model.Evidence{Source: "docker inspect", Key: "published_port", Value: fmt.Sprintf("%s %s:%s->%s scope=%s host-firewall-and-cloud-perimeter=not-inferred", name, b.HostIP, b.HostPort, containerPort, scope)})
 			}
 		}
 	}
 	f.Facts["compose_projects"] = strconv.Itoa(len(composeProjects))
 	f.Facts["compose_services"] = strconv.Itoa(composeServices)
+	f.Facts["published_ports"] = strconv.Itoa(publishedPorts)
 	f.Facts["isolation_problems"] = strconv.Itoa(len(problemKeys))
 	if len(problemKeys) > 0 {
 		f.Status, f.Severity = model.Risk, model.High
@@ -395,14 +398,14 @@ func checkFileTLS(ctx *Context) model.Finding {
 		f.Evidence = append(f.Evidence, model.Evidence{Source: "nginx -T", Key: "unavailable", Value: f.Error})
 	}
 	for _, path := range paths {
-		data, err := os.ReadFile(path)
+		data, err := readSmall(path, 2<<20)
 		if err != nil {
 			f.Status = model.Unknown
 			f.Unavailable = true
 			f.Evidence = append(f.Evidence, model.Evidence{Source: path, Value: err.Error()})
 			continue
 		}
-		block, _ := pem.Decode(data)
+		block, _ := pem.Decode([]byte(data))
 		if block == nil {
 			f.Status = model.Unknown
 			f.Evidence = append(f.Evidence, model.Evidence{Source: path, Value: "no PEM certificate block"})
@@ -446,11 +449,26 @@ func checkFileTLS(ctx *Context) model.Finding {
 			}
 		}
 	}
-	for _, path := range existingFiles("/etc/cron.d/*", "/etc/cron.daily/*") {
+	for _, path := range existingFiles("/etc/cron.d/*", "/etc/cron.daily/*", "/var/spool/cron/crontabs/*") {
 		data, err := readSmall(path, 1<<20)
 		if err == nil && regexp.MustCompile(`(?i)\b(certbot|acme\.sh|lego)\b`).MatchString(data) {
 			renewalEvidence++
 			f.Evidence = append(f.Evidence, model.Evidence{Source: path, Key: "renewal_schedule", Value: "detected"})
+		}
+	}
+	// Caddy's managed HTTPS renews certificates internally rather than through
+	// certbot/acme timers. Its service state is evidence of that automation,
+	// while a failed unit remains an availability concern rather than a guessed
+	// successful renewal.
+	if ctx.Commander.Exists("systemctl") {
+		r := ctx.Commander.Run(6*time.Second, "systemctl", "show", "caddy.service", "--property=LoadState,ActiveState,Result,ExecMainStatus,ActiveEnterTimestamp")
+		values := parseKeyValues(r.Stdout)
+		if values["LoadState"] == "loaded" {
+			renewalEvidence++
+			f.Evidence = append(f.Evidence, model.Evidence{Source: "systemctl show", Key: "caddy.service", Value: fmt.Sprintf("active=%s result=%s exit_status=%s since=%s", values["ActiveState"], values["Result"], values["ExecMainStatus"], values["ActiveEnterTimestamp"])})
+			if values["ActiveState"] != "active" || (values["Result"] != "" && values["Result"] != "success") {
+				renewalFailures++
+			}
 		}
 	}
 	f.Facts["renewal_evidence"] = strconv.Itoa(renewalEvidence)

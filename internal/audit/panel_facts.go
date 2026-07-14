@@ -2,7 +2,6 @@ package audit
 
 import (
 	"fmt"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -47,6 +46,7 @@ type panelSnapshot struct {
 	Inbounds               []panelInboundFact
 	DatabaseAvailable      bool
 	DatabaseError          string
+	RuntimeCommandError    string
 	DefaultCredential      bool
 	DefaultCredentialKnown bool
 	EnabledClients         int
@@ -69,16 +69,21 @@ func collectPanelSnapshots(cmd Commander) []panelSnapshot {
 
 func collectSUIFacts(cmd Commander) panelSnapshot {
 	s := panelSnapshot{Product: "S-UI", Binary: "/usr/local/s-ui/sui", Database: "/usr/local/s-ui/db/s-ui.db"}
-	version := cmd.Run(8*time.Second, s.Binary, "-v")
-	s.Version = firstVersion(version.Stdout + "\n" + version.Stderr)
-	settings := cmd.Run(8*time.Second, s.Binary, "setting", "-show")
-	if port, ok := parseNamedPort(settings.Stdout, "Panel port"); ok {
-		path, pathKnown := parseNamedTextKnown(settings.Stdout, "Panel path")
-		s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "management", Listen: "::", Port: port, Source: "sui setting -show", PathKnown: pathKnown, PathIsDefault: panelPathIsDefault(path)})
-	}
-	if port, ok := parseNamedPort(settings.Stdout, "Sub port"); ok {
-		path, pathKnown := parseNamedTextKnown(settings.Stdout, "Sub path")
-		s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "subscription", Listen: "::", Port: port, Source: "sui setting -show", PathKnown: pathKnown, PathIsDefault: subscriptionPathIsDefault(path)})
+	binary, trustErr := trustedExecutable(cmd, s.Binary)
+	if trustErr != nil {
+		s.RuntimeCommandError = "panel command skipped: " + truncate(trustErr.Error(), 240)
+	} else {
+		version := cmd.Run(8*time.Second, binary, "-v")
+		s.Version = firstVersion(version.Stdout + "\n" + version.Stderr)
+		settings := cmd.Run(8*time.Second, binary, "setting", "-show")
+		if port, ok := parseNamedPort(settings.Stdout, "Panel port"); ok {
+			path, pathKnown := parseNamedTextKnown(settings.Stdout, "Panel path")
+			s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "management", Listen: "::", Port: port, Source: "sui setting -show", PathKnown: pathKnown, PathIsDefault: panelPathIsDefault(path)})
+		}
+		if port, ok := parseNamedPort(settings.Stdout, "Sub port"); ok {
+			path, pathKnown := parseNamedTextKnown(settings.Stdout, "Sub path")
+			s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "subscription", Listen: "::", Port: port, Source: "sui setting -show", PathKnown: pathKnown, PathIsDefault: subscriptionPathIsDefault(path)})
+		}
 	}
 	if !regularFile(s.Database) {
 		s.DatabaseError = "S-UI database missing"
@@ -117,35 +122,42 @@ func collectSUIFacts(cmd Commander) panelSnapshot {
 
 func collectXUIFacts(cmd Commander) panelSnapshot {
 	s := panelSnapshot{Product: "x-ui", Binary: "/usr/local/x-ui/x-ui", Database: "/etc/x-ui/x-ui.db"}
-	version := cmd.Run(8*time.Second, s.Binary, "-v")
-	s.Version = firstVersion(version.Stdout + "\n" + version.Stderr)
-	if containsAny(version.Stdout+"\n"+version.Stderr, "3x-ui", "3X-UI") {
-		s.Product = "3x-ui"
-	}
-	if script, err := os.ReadFile("/usr/local/x-ui/x-ui.sh"); err == nil && containsAny(string(script), "MHSanaei/3x-ui", "3X-UI", "3x-ui") {
-		s.Product = "3x-ui"
-	}
-	settings := cmd.Run(8*time.Second, s.Binary, "setting", "-show", "true")
-	if settings.Err != nil {
-		settings = cmd.Run(8*time.Second, s.Binary, "setting", "-show")
-	}
-	if port, ok := parsePanelPort(s.Product, settings.Stdout); ok {
-		path, pathKnown := parseNamedTextKnown(settings.Stdout, "webBasePath")
-		s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "management", Listen: "::", Port: port, Source: "x-ui setting -show", PathKnown: pathKnown, PathIsDefault: panelPathIsDefault(path)})
-	}
-	if match := regexp.MustCompile(`(?mi)^\s*hasDefaultCredential\s*:\s*(true|false)\s*$`).FindStringSubmatch(settings.Stdout); len(match) == 2 {
-		s.DefaultCredentialKnown = true
-		s.DefaultCredential = strings.EqualFold(match[1], "true")
-	}
-	for i := range s.Endpoints {
-		if s.Endpoints[i].Role == "management" {
-			s.Endpoints[i].TLSKnown = true
-			s.Endpoints[i].TLS = !regexp.MustCompile(`(?mi)panel is not secure with SSL`).MatchString(settings.Stdout)
+	binary, trustErr := trustedExecutable(cmd, s.Binary)
+	if trustErr != nil {
+		s.RuntimeCommandError = "panel command skipped: " + truncate(trustErr.Error(), 240)
+	} else {
+		version := cmd.Run(8*time.Second, binary, "-v")
+		s.Version = firstVersion(version.Stdout + "\n" + version.Stderr)
+		if containsAny(version.Stdout+"\n"+version.Stderr, "3x-ui", "3X-UI") {
+			s.Product = "3x-ui"
 		}
 	}
-	listen := cmd.Run(6*time.Second, s.Binary, "setting", "-getListen")
-	if value := parseListenValue(listen.Stdout); value != "" {
-		setPanelEndpointListen(&s, "management", value)
+	if script, err := readSmall("/usr/local/x-ui/x-ui.sh", 1<<20); err == nil && containsAny(script, "MHSanaei/3x-ui", "3X-UI", "3x-ui") {
+		s.Product = "3x-ui"
+	}
+	if trustErr == nil {
+		settings := cmd.Run(8*time.Second, binary, "setting", "-show", "true")
+		if settings.Err != nil {
+			settings = cmd.Run(8*time.Second, binary, "setting", "-show")
+		}
+		if port, ok := parsePanelPort(s.Product, settings.Stdout); ok {
+			path, pathKnown := parseNamedTextKnown(settings.Stdout, "webBasePath")
+			s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "management", Listen: "::", Port: port, Source: "x-ui setting -show", PathKnown: pathKnown, PathIsDefault: panelPathIsDefault(path)})
+		}
+		if match := regexp.MustCompile(`(?mi)^\s*hasDefaultCredential\s*:\s*(true|false)\s*$`).FindStringSubmatch(settings.Stdout); len(match) == 2 {
+			s.DefaultCredentialKnown = true
+			s.DefaultCredential = strings.EqualFold(match[1], "true")
+		}
+		for i := range s.Endpoints {
+			if s.Endpoints[i].Role == "management" {
+				s.Endpoints[i].TLSKnown = true
+				s.Endpoints[i].TLS = !regexp.MustCompile(`(?mi)panel is not secure with SSL`).MatchString(settings.Stdout)
+			}
+		}
+		listen := cmd.Run(6*time.Second, binary, "setting", "-getListen")
+		if value := parseListenValue(listen.Stdout); value != "" {
+			setPanelEndpointListen(&s, "management", value)
+		}
 	}
 	if !regularFile(s.Database) {
 		s.DatabaseError = "x-ui database missing"

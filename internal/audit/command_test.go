@@ -26,3 +26,16 @@ func TestCommandErrorExplainsTruncation(t *testing.T) {
 		t.Fatalf("commandError = %q", got)
 	}
 }
+
+func TestCommandDiagnosticRedactsCredentialLikeValues(t *testing.T) {
+	input := "invalid password=correct-horse token: abc123 privateKey=private-data UUID deadbeef https://example.test/sub/secret"
+	got := commandError(CommandResult{Err: errCommandOutputTruncated, Stderr: input})
+	for _, secret := range []string{"correct-horse", "abc123", "private-data", "deadbeef", "example.test"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("diagnostic leaked %q: %q", secret, got)
+		}
+	}
+	if !strings.Contains(got, "[redacted]") {
+		t.Fatalf("diagnostic was not redacted: %q", got)
+	}
+}

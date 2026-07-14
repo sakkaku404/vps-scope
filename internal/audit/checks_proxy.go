@@ -109,19 +109,26 @@ func checkProxyConfiguration(ctx *Context, summaries []proxyConfigSummary) model
 		if binary == "" || !ctx.Commander.Exists(binary) {
 			continue
 		}
+		trustedBinary, err := trustedExecutable(ctx.Commander, binary)
+		if err != nil {
+			errorsFound++
+			f.Status, f.Unavailable = model.Unknown, true
+			f.Evidence = append(f.Evidence, model.Evidence{Source: binary, Key: "self_test_skipped", Value: "binary trust check failed: " + truncate(err.Error(), 240)})
+			continue
+		}
 		if summary.Product == "sing-box" && !strings.Contains(summary.Path, "/usr/local/s-ui/") {
 			args = []string{"check", "-C", filepath.Dir(summary.Path)}
 		}
-		command := strings.Join(append([]string{binary}, args...), " ")
+		command := strings.Join(append([]string{trustedBinary}, args...), " ")
 		if testedCommands[command] {
 			continue
 		}
 		testedCommands[command] = true
 		selfTests++
-		r := ctx.Commander.Run(15*time.Second, binary, args...)
+		r := ctx.Commander.Run(15*time.Second, trustedBinary, args...)
 		if r.Err != nil {
 			errorsFound++
-			f.Evidence = append(f.Evidence, model.Evidence{Source: command, Key: "self_test_failed", Value: commandError(r)})
+			f.Evidence = append(f.Evidence, model.Evidence{Source: command, Key: "self_test_failed", Value: nativeCommandError(r)})
 			if active[strings.ToLower(summary.Product)] {
 				f.Status, f.Severity = model.Risk, model.Medium
 			} else if f.Status != model.Risk {

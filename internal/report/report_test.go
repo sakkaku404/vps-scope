@@ -84,6 +84,18 @@ func TestVerifyBundleRejectsTraversalAndDuplicateNames(t *testing.T) {
 	}
 }
 
+func TestVerifyBundleRejectsOversizedDeclaredFileBeforeReading(t *testing.T) {
+	dir := t.TempDir()
+	manifest := `{"schema_version":"1.0","files":[{"name":"report.json","size":67108865,"sha256":""}]}`
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, failures, err := VerifyBundle(dir)
+	if err != nil || len(failures) != 1 || !strings.Contains(failures[0], "safety limit") {
+		t.Fatalf("verify err=%v failures=%v", err, failures)
+	}
+}
+
 func TestHTMLIsSelfContainedAndUsable(t *testing.T) {
 	var out bytes.Buffer
 	if err := HTML(&out, sampleReport(), Options{Locale: "zh-CN"}); err != nil {

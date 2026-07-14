@@ -95,3 +95,20 @@ func TestActiveUFWIncludesDirectNFTInputRules(t *testing.T) {
 		t.Fatal("UFW default deny was lost while merging nftables")
 	}
 }
+
+func TestNFTParserExpandsReachablePortSetsAndUniformVerdictMaps(t *testing.T) {
+	input := `table inet filter {
+ set proxy_ports { type inet_service; elements = { 8443, 9443 } }
+ map allowed_ports { type inet_service : verdict; elements = { 2053 : accept, 2096 : accept } }
+ chain input { type filter hook input priority filter; policy drop;
+   tcp dport @proxy_ports accept
+   tcp dport vmap @allowed_ports
+ }
+}`
+	f := parseNFTFirewall(input)
+	for _, port := range []string{"8443", "9443", "2053", "2096"} {
+		if got := firewallDisposition(f, port, "tcp"); got != "allow-anywhere" {
+			t.Fatalf("port %s = %q; rules=%+v", port, got, f.rules)
+		}
+	}
+}

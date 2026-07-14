@@ -439,6 +439,7 @@ type ManifestFile struct {
 }
 
 const maxManifestBytes = 1 << 20
+const maxBundleFileBytes = 64 << 20
 
 var bundleFileNameRE = regexp.MustCompile(`^report\.[A-Za-z0-9-]+\.(txt|md|html)$`)
 
@@ -469,17 +470,16 @@ func Bundle(dir string, r model.Report, opts Options) (Manifest, error) {
 	sort.Strings(names)
 	for _, name := range names {
 		path := filepath.Join(dir, name)
-		if err := atomicWrite(path, files[name]); err != nil {
+		if err := atomicWriteLimited(path, maxBundleFileBytes, files[name]); err != nil {
 			return Manifest{}, err
 		}
-		data, err := os.ReadFile(path)
+		size, digest, err := fileDigest(path, maxBundleFileBytes)
 		if err != nil {
 			return Manifest{}, err
 		}
-		hash := sha256.Sum256(data)
-		manifest.Files = append(manifest.Files, ManifestFile{Name: name, Size: len(data), SHA256: hex.EncodeToString(hash[:])})
+		manifest.Files = append(manifest.Files, ManifestFile{Name: name, Size: int(size), SHA256: digest})
 	}
-	if err := atomicWrite(filepath.Join(dir, "manifest.json"), func(w io.Writer) error {
+	if err := atomicWriteLimited(filepath.Join(dir, "manifest.json"), maxManifestBytes, func(w io.Writer) error {
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
 		return enc.Encode(manifest)
@@ -490,14 +490,7 @@ func Bundle(dir string, r model.Report, opts Options) (Manifest, error) {
 }
 
 func VerifyBundle(dir string) (Manifest, []string, error) {
-	info, err := os.Stat(filepath.Join(dir, "manifest.json"))
-	if err != nil {
-		return Manifest{}, nil, err
-	}
-	if info.Size() > maxManifestBytes {
-		return Manifest{}, nil, fmt.Errorf("manifest exceeds %d bytes", maxManifestBytes)
-	}
-	data, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
+	data, err := readFileLimited(filepath.Join(dir, "manifest.json"), maxManifestBytes)
 	if err != nil {
 		return Manifest{}, nil, err
 	}
@@ -520,13 +513,16 @@ func VerifyBundle(dir string) (Manifest, []string, error) {
 			continue
 		}
 		seen[item.Name] = true
-		data, err := os.ReadFile(filepath.Join(dir, item.Name))
+		if item.Size < 0 || item.Size > maxBundleFileBytes {
+			failures = append(failures, item.Name+": declared size exceeds safety limit")
+			continue
+		}
+		size, digest, err := fileDigest(filepath.Join(dir, item.Name), int64(item.Size))
 		if err != nil {
 			failures = append(failures, item.Name+": "+err.Error())
 			continue
 		}
-		hash := sha256.Sum256(data)
-		if len(data) != item.Size || hex.EncodeToString(hash[:]) != item.SHA256 {
+		if size != int64(item.Size) || digest != item.SHA256 {
 			failures = append(failures, item.Name+": size or SHA-256 mismatch")
 		}
 	}
@@ -540,7 +536,7 @@ func safeBundleFileName(name string) bool {
 	return filepath.Base(name) == name && bundleFileNameRE.MatchString(name)
 }
 
-func atomicWrite(path string, write func(io.Writer) error) error {
+func atomicWriteLimited(path string, maxBytes int64, write func(io.Writer) error) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".vps-scope-*")
 	if err != nil {
@@ -552,7 +548,7 @@ func atomicWrite(path string, write func(io.Writer) error) error {
 		tmp.Close()
 		return err
 	}
-	if err := write(tmp); err != nil {
+	if err := write(&limitedWriter{Writer: tmp, remaining: maxBytes}); err != nil {
 		tmp.Close()
 		return err
 	}
@@ -564,6 +560,70 @@ func atomicWrite(path string, write func(io.Writer) error) error {
 		return err
 	}
 	return os.Rename(tmpName, path)
+}
+
+type limitedWriter struct {
+	io.Writer
+	remaining int64
+}
+
+func (w *limitedWriter) Write(p []byte) (int, error) {
+	if int64(len(p)) > w.remaining {
+		return 0, fmt.Errorf("report exceeds %d byte bundle safety limit", w.remaining+int64(len(p)))
+	}
+	n, err := w.Writer.Write(p)
+	w.remaining -= int64(n)
+	return n, err
+}
+
+func fileDigest(path string, maxBytes int64) (int64, string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, "", err
+	}
+	if !info.Mode().IsRegular() {
+		return 0, "", fmt.Errorf("not a regular file")
+	}
+	if info.Size() < 0 || info.Size() > maxBytes {
+		return 0, "", fmt.Errorf("file exceeds %d byte safety limit", maxBytes)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, "", err
+	}
+	defer f.Close()
+	hash := sha256.New()
+	n, err := io.Copy(hash, io.LimitReader(f, maxBytes+1))
+	if err != nil {
+		return 0, "", err
+	}
+	if n > maxBytes {
+		return 0, "", fmt.Errorf("file exceeds %d byte safety limit", maxBytes)
+	}
+	return n, hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func readFileLimited(path string, maxBytes int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Size() > maxBytes {
+		return nil, fmt.Errorf("manifest exceeds %d bytes", maxBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("manifest exceeds %d bytes", maxBytes)
+	}
+	return data, nil
 }
 
 const htmlTemplate = `<!doctype html>

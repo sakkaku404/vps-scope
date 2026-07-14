@@ -6,6 +6,25 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 0.11.0 - 2026-07-15
+
+### Added
+
+- Release binaries and checksum manifests are now keylessly signed through GitHub Actions OIDC, with GitHub artifact provenance attached to both Linux binaries. Install and run helpers verify the signature automatically when `cosign` is present; `VPS_SCOPE_REQUIRE_SIGNATURE=1` makes signature verification mandatory.
+- nftables parsing now understands reachable port sets and uniform verdict maps, so common firewall compositions do not disappear from endpoint exposure analysis.
+- TLS renewal evidence now includes active Caddy-managed HTTPS and user crontab locations alongside certbot and acme.sh scheduling.
+
+### Changed
+
+- Docker published-port evidence explicitly states that Docker inspect cannot establish cloud-firewall or effective host-forwarding exposure on its own.
+- Bundle creation and verification stream report hashes with per-file safety limits instead of loading report files wholesale.
+
+### Fixed
+
+- Root audits no longer execute detected proxy-core or native panel binaries unless the resolved executable and every parent directory are root-owned and not group/other writable. Unsafe binaries are reported as unverified rather than executed.
+- Small-file collection, including file-backed TLS certificates and panel helper scripts, now reads from the size-checked file descriptor instead of reopening a path after inspection.
+- Native self-test failures no longer copy arbitrary validator stderr into reports; credential-like command diagnostics are redacted before they become evidence.
+
 ## 0.10.0 - 2026-07-13
 
 ### Added
