@@ -3,7 +3,10 @@ package audit
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -33,16 +36,47 @@ type Commander interface {
 
 type OSCommander struct{}
 
+// trustedCommander is deliberately optional so deterministic scenario
+// fixtures remain small. Real-host execution uses the stricter implementation
+// below before invoking workload-owned binaries as root.
+type trustedCommander interface {
+	TrustedExecutable(name string) (string, error)
+}
+
+func trustedExecutable(cmd Commander, name string) (string, error) {
+	if trusted, ok := cmd.(trustedCommander); ok {
+		return trusted.TrustedExecutable(name)
+	}
+	if !cmd.Exists(name) {
+		return "", fmt.Errorf("executable not found: %s", name)
+	}
+	return name, nil
+}
+
 func (OSCommander) Exists(name string) bool {
-	_, err := exec.LookPath(name)
+	_, err := resolveSystemExecutable(name)
 	return err == nil
+}
+
+func (OSCommander) TrustedExecutable(name string) (string, error) {
+	path, err := resolveSystemExecutable(name)
+	if err != nil {
+		return "", err
+	}
+	return verifyTrustedExecutable(path)
 }
 
 func (OSCommander) Run(timeout time.Duration, name string, args ...string) CommandResult {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Env = append(cmd.Environ(), "LC_ALL=C", "LANG=C")
+	path, lookupErr := resolveSystemExecutable(name)
+	if lookupErr != nil {
+		return CommandResult{Err: lookupErr, Code: -1}
+	}
+	cmd := exec.CommandContext(ctx, path, args...)
+	// A fixed search path avoids accidental command resolution through a
+	// caller-controlled PATH while retaining standard Debian/Ubuntu locations.
+	cmd.Env = append(os.Environ(), "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL=C", "LANG=C")
 	stdout := limitedBuilder{limit: maxCommandOutputBytes}
 	stderr := limitedBuilder{limit: maxCommandOutputBytes}
 	cmd.Stdout = &stdout
@@ -67,6 +101,23 @@ func (OSCommander) Run(timeout time.Duration, name string, args ...string) Comma
 		r.Code = -1
 	}
 	return r
+}
+
+func resolveSystemExecutable(name string) (string, error) {
+	if filepath.IsAbs(name) {
+		return filepath.EvalSymlinks(name)
+	}
+	if strings.ContainsRune(name, filepath.Separator) {
+		return "", fmt.Errorf("relative executable paths are not allowed: %s", name)
+	}
+	for _, dir := range []string{"/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"} {
+		candidate := filepath.Join(dir, name)
+		info, err := os.Stat(candidate)
+		if err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+			return filepath.EvalSymlinks(candidate)
+		}
+	}
+	return "", fmt.Errorf("executable not found in system PATH: %s", name)
 }
 
 type limitedBuilder struct {

@@ -3,6 +3,7 @@ package audit
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"os"
@@ -53,20 +54,24 @@ func modeString(info fs.FileInfo) string { return fmt.Sprintf("%04o", info.Mode(
 func tooOpen(info fs.FileInfo, forbidden fs.FileMode) bool { return info.Mode().Perm()&forbidden != 0 }
 
 func readSmall(path string, limit int64) (string, error) {
+	if limit < 0 {
+		return "", fmt.Errorf("invalid read limit")
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
 	defer f.Close()
-	info, err := f.Stat()
+	// Read from the descriptor we inspected. Re-opening by path here would
+	// allow a concurrent replacement to bypass the size guard.
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil {
 		return "", err
 	}
-	if info.Size() > limit {
+	if int64(len(data)) > limit {
 		return "", fmt.Errorf("file larger than %d bytes", limit)
 	}
-	data, err := os.ReadFile(path)
-	return string(data), err
+	return string(data), nil
 }
 
 func existingFiles(patterns ...string) []string {

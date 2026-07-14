@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -244,9 +245,34 @@ func commandError(r CommandResult) string {
 		return ""
 	}
 	if r.Stderr != "" {
-		return truncate(r.Stderr, 500)
+		return sanitizeCommandDiagnostic(r.Stderr)
 	}
-	return r.Err.Error()
+	return sanitizeCommandDiagnostic(r.Err.Error())
+}
+
+// Native validators and log commands can echo configuration values. Keep
+// short diagnostic context, but remove obvious credentials before it reaches a
+// report bundle that users may share.
+func sanitizeCommandDiagnostic(value string) string {
+	value = truncate(value, 500)
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?i)\b(password|passwd|token|secret|uuid|private[_ -]?key|authorization)\b\s*([:=]|\s)\s*[^\s,;]+`),
+		regexp.MustCompile(`https?://[^\s]+`),
+	}
+	for _, pattern := range patterns {
+		value = pattern.ReplaceAllString(value, "[redacted]")
+	}
+	return value
+}
+
+func nativeCommandError(r CommandResult) string {
+	if r.Truncated {
+		return "native self-test output exceeded the capture limit; output withheld"
+	}
+	if r.Err == nil {
+		return ""
+	}
+	return fmt.Sprintf("native self-test exited with code %d; stderr withheld for privacy", r.Code)
 }
 
 func truncate(s string, n int) string {

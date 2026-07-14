@@ -141,7 +141,7 @@ curl -fsSL https://raw.githubusercontent.com/sakkaku404/vps-scope/main/install.s
 sudo vps-scope
 ```
 
-安装脚本会识别 amd64 或 arm64，并在安装前核对 Release 文件的 SHA-256。这是校验和验证，不是独立数字签名。
+安装脚本会识别 amd64 或 arm64，并在安装前核对 Release 文件的 SHA-256。若系统已有 `cosign`，还会自动验证 GitHub Actions 的无密钥签名；可设置 `VPS_SCOPE_REQUIRE_SIGNATURE=1` 强制要求签名验证。完整原理、手动验证命令与边界见[发布产物校验](docs/SUPPLY-CHAIN.md)。
 
 如果不想使用 `curl | bash`，可以先下载脚本阅读，或使用下面的手动方式。
 

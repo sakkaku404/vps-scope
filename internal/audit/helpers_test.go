@@ -11,6 +11,20 @@ import (
 	"github.com/sakkaku404/vps-scope/internal/model"
 )
 
+func TestReadSmallBoundsTheOpenedDescriptor(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sample")
+	if err := os.WriteFile(path, []byte("12345"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readSmall(path, 4); err == nil {
+		t.Fatal("expected limit error")
+	}
+	got, err := readSmall(path, 5)
+	if err != nil || got != "12345" {
+		t.Fatalf("readSmall = %q, %v", got, err)
+	}
+}
+
 func TestClassifyAddress(t *testing.T) {
 	tests := map[string]string{
 		"127.0.0.1": "loopback", "::1": "loopback", "10.0.0.2": "private",

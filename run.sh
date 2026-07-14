@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+umask 022
 
 REPO="sakkaku404/vps-scope"
 VERSION="${VPS_SCOPE_VERSION:-latest}"
+
+if [[ "$VERSION" != "latest" && ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "Version must be latest or a tag such as v0.11.0." >&2
+  exit 2
+fi
 
 for command_name in curl sha256sum mktemp uname awk; do
   command -v "$command_name" >/dev/null 2>&1 || {
@@ -38,6 +46,20 @@ if [[ -z "$expected" ]]; then
   exit 1
 fi
 printf '%s  %s\n' "$expected" "$asset" | sha256sum -c -
+
+if command -v cosign >/dev/null 2>&1; then
+  curl "${curl_args[@]}" -o "${asset}.sigstore.json" "${base_url}/${asset}.sigstore.json"
+  cosign verify-blob --bundle "${asset}.sigstore.json" \
+    --certificate-identity-regexp '^https://github\.com/sakkaku404/vps-scope/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' \
+    --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+    "$asset"
+  echo "Verified: GitHub Actions keyless signature"
+elif [[ "${VPS_SCOPE_REQUIRE_SIGNATURE:-0}" == "1" ]]; then
+  echo "cosign is required because VPS_SCOPE_REQUIRE_SIGNATURE=1." >&2
+  exit 1
+else
+  echo "Note: SHA-256 verified. Install cosign or set VPS_SCOPE_REQUIRE_SIGNATURE=1 to require signature verification." >&2
+fi
 chmod 0755 "$asset"
 
 if (($# == 0)); then

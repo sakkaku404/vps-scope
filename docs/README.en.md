@@ -70,7 +70,7 @@ To install `vps-scope` for repeated use:
 curl -fsSL https://raw.githubusercontent.com/sakkaku404/vps-scope/main/install.sh | sudo bash
 ```
 
-Then run `sudo vps-scope`. The installer detects amd64 or arm64 automatically and verifies the release checksum before installing anything; this is checksum verification, not an independent digital signature.
+Then run `sudo vps-scope`. The installer detects amd64 or arm64 automatically and verifies the release checksum before installing anything. When `cosign` is already available it also verifies the GitHub Actions keyless signature; set `VPS_SCOPE_REQUIRE_SIGNATURE=1` to make that signature mandatory. See [release artifact verification](SUPPLY-CHAIN.md) for the trust model and manual verification command.
 
 If you prefer to inspect scripts before running them, download them first or use the manual steps below.
 
