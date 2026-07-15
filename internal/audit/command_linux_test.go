@@ -17,12 +17,16 @@ func TestOSCommanderCapturesExitAndUsesFixedEnvironment(t *testing.T) {
 	t.Setenv("PATH", "/tmp/untrusted-path")
 	t.Setenv("LC_ALL", "user-controlled")
 	t.Setenv("LANG", "user-controlled")
+	t.Setenv("DOCKER_HOST", "tcp://attacker.invalid:2375")
+	t.Setenv("APT_CONFIG", "/tmp/attacker-apt.conf")
+	t.Setenv("LD_PRELOAD", "/tmp/attacker.so")
+	t.Setenv("VPS_SCOPE_SECRET", "must-not-reach-child")
 
-	r := (OSCommander{}).Run(2*time.Second, "sh", "-c", `printf '%s|%s|%s' "$PATH" "$LC_ALL" "$LANG"; printf 'diagnostic' >&2; exit 7`)
+	r := (OSCommander{}).Run(2*time.Second, "sh", "-c", `printf '%s|%s|%s|%s|%s|%s|%s' "$PATH" "$LC_ALL" "$LANG" "${DOCKER_HOST-unset}" "${APT_CONFIG-unset}" "${LD_PRELOAD-unset}" "${VPS_SCOPE_SECRET-unset}"; printf 'diagnostic' >&2; exit 7`)
 	if r.Code != 7 || r.Err == nil {
 		t.Fatalf("Run code=%d err=%v", r.Code, r.Err)
 	}
-	if r.Stdout != "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin|C|C" {
+	if r.Stdout != "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin|C|C|unset|unset|unset|unset" {
 		t.Fatalf("unexpected fixed environment: %q", r.Stdout)
 	}
 	if r.Stderr != "diagnostic" {
