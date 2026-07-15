@@ -25,6 +25,13 @@ func TestReadSmallBoundsTheOpenedDescriptor(t *testing.T) {
 	}
 }
 
+func TestReadSmallRejectsDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := readSmall(dir, 1024); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("directory read error=%v", err)
+	}
+}
+
 func TestClassifyAddress(t *testing.T) {
 	tests := map[string]string{
 		"127.0.0.1": "loopback", "::1": "loopback", "10.0.0.2": "private",
