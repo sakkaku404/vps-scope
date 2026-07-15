@@ -96,3 +96,24 @@ func TestValidateReportAllowsAppendOnlyIDsFromNewerTools(t *testing.T) {
 		t.Fatalf("same-version unexpected ID was not rejected: %s", failures)
 	}
 }
+
+func TestValidateReportFailureOrderIsDeterministic(t *testing.T) {
+	r := validContractReport()
+	r.Host.StableID = ""
+	r.Host.Hostname = ""
+	r.Profile.Requested = ""
+	want := strings.Join(ValidateReport(r), "\n")
+	for i := 0; i < 20; i++ {
+		if got := strings.Join(ValidateReport(r), "\n"); got != want {
+			t.Fatalf("validation order changed:\nwant=%s\ngot=%s", want, got)
+		}
+	}
+}
+
+func TestSemanticVersionRejectsNegativeComponents(t *testing.T) {
+	for _, version := range []string{"-1.0.0", "1.-1.0"} {
+		if _, _, ok := semanticVersion(version); ok {
+			t.Fatalf("accepted invalid version %q", version)
+		}
+	}
+}

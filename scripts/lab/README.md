@@ -38,4 +38,10 @@ On a Windows development host, the bounded parallel matrix runner accepts SSH al
 .\scripts\lab\run-connectivity-matrix.ps1 -Hosts lab-a,lab-b,lab-c,lab-d -Output .\lab-result.json
 ```
 
-The runner does not create the authorization marker or copy binaries. It waits for scenario cleanup, removes its bounded stdout/stderr capture files, and fails if a lab UFW rule, serving helper, or runtime state file remains. The target address is used only as the probe destination and is not written to the result.
+The runner does not create the authorization marker or copy binaries. It verifies an exact network-and-port readiness marker before probing, uses bounded TCP/UDP retries within one timeout to tolerate an isolated dropped packet or connection attempt, waits for scenario cleanup, removes its bounded stdout/stderr capture files, and fails if a probe fails or a lab UFW rule, serving helper, or runtime state file remains. The target address is used only as the probe destination and is not written to the result.
+
+The guarded report fault-injection runner verifies that the candidate rejects undeclared files, missing files, symlinked payloads, and a manifest-consistent but semantically invalid report. It accepts only an existing candidate binary and report bundle, uses a fixed runtime directory, and removes every injected bundle on exit:
+
+```bash
+sudo ./scripts/lab/run-report-fault-injection.sh /path/to/vps-scope /path/to/report-bundle
+```

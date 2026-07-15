@@ -54,6 +54,11 @@ jobs:
       - name: Test with race detector
         run: go test -race -count=1 ./...
 
+      - name: Fuzz parser trust boundaries
+        run: |
+          go test ./internal/audit -run=^$ -fuzz=FuzzProxyConfigParsersDoNotPanic -fuzztime=5s
+          go test ./internal/report -run=^$ -fuzz=FuzzSafeBundleFileName -fuzztime=5s
+
       - name: Enforce coverage ratchet
         run: bash scripts/check-coverage.sh
 

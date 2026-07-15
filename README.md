@@ -251,6 +251,8 @@ vps-scope baseline check baseline.json report-new.json
 
 工具优先读取实际生效状态。例如 SSH 使用 `sshd -T`，不会只搜索一遍配置文件；`127.0.0.1:3001` 这类回环服务也不会被算成公网端口。
 
+1.x 对 JSON schema、检查 ID、原因码、公开命令和旧报告的承诺见[稳定性与兼容策略](docs/STABILITY.md)。人类可读报告可以继续改进排版，自动化应使用规范 JSON。
+
 ## 开发与参与
 
 从源码构建只需要 Go：

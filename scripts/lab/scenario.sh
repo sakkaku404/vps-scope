@@ -49,7 +49,10 @@ fi
 pid=$!
 printf '%s\n' "$pid" >"$runtime/helper.pid"
 for _ in {1..50}; do
-  if grep -q '^READY ' "$runtime/helper.log" 2>/dev/null; then touch "$runtime/ready"; break; fi
+  if grep -q '^READY ' "$runtime/helper.log" 2>/dev/null; then
+    printf '%s %s\n' "$network" "$port" >"$runtime/ready"
+    break
+  fi
   kill -0 "$pid" 2>/dev/null || { cat "$runtime/helper.log" >&2; die "helper exited before becoming ready"; }
   sleep 0.1
 done
