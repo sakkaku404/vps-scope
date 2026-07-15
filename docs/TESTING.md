@@ -28,7 +28,9 @@ The scenarios assert outcomes, not implementation details. They currently cover 
 
 Runtime fault injection deliberately panics a category evaluator with a secret-shaped value. The test requires all stable IDs for that category to survive as unavailable `UNKNOWN` findings, requires the panic value to be absent from errors and evidence, and validates the resulting complete 51-ID report with the production semantic verifier.
 
-Linux-only command-runner tests execute real root-owned system utilities. They prove that a caller-controlled `PATH` and locale are replaced, writable temporary executables are refused, non-zero exits retain bounded diagnostics, noisy output is truncated, and a timed-out shell cannot leave a forked child holding the audit open. These tests run under the race detector in CI even when development happens on Windows.
+Linux-only command-runner tests execute real root-owned system utilities. They prove that a caller-controlled `PATH` and locale are replaced; Docker, package-manager, dynamic-loader, and secret-shaped environment variables are not inherited; writable temporary executables are refused; non-zero exits retain bounded diagnostics; noisy output is truncated; and a timed-out shell cannot leave a forked child holding the audit open. These tests run under the race detector in CI even when development happens on Windows.
+
+Bundle verification tests enforce both manifest file-count limits and the containing directory's 17-entry protocol limit. The verifier stops after the first excessive entry rather than enumerating an attacker-sized directory before reporting failure.
 
 Linux file-reader tests place a FIFO at a candidate configuration path without starting a writer and require immediate refusal. They also prove that a normal symlink to a regular configuration remains readable, while common tests retain the descriptor-bound size limit and reject directories.
 

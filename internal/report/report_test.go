@@ -3,6 +3,7 @@ package report
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -89,6 +90,25 @@ func TestVerifyBundleRejectsUndeclaredFiles(t *testing.T) {
 	}
 	_, failures, err := VerifyBundle(dir)
 	if err != nil || !strings.Contains(strings.Join(failures, "\n"), "file is not declared in manifest") {
+		t.Fatalf("verify err=%v failures=%v", err, failures)
+	}
+}
+
+func TestVerifyBundleBoundsDirectoryEnumeration(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	if _, err := Bundle(dir, sampleReport(), Options{Locale: "en"}); err != nil {
+		t.Fatal(err)
+	}
+	// A normal bundle has five directory entries. Thirteen undeclared files
+	// cross the protocol-wide maximum without requiring a huge test fixture.
+	for i := 0; i < 13; i++ {
+		name := filepath.Join(dir, fmt.Sprintf("unexpected-%02d", i))
+		if err := os.WriteFile(name, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, failures, err := VerifyBundle(dir)
+	if err != nil || !strings.Contains(strings.Join(failures, "\n"), "entry safety limit") {
 		t.Fatalf("verify err=%v failures=%v", err, failures)
 	}
 }

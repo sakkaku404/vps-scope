@@ -455,6 +455,7 @@ type ManifestFile struct {
 
 const maxManifestBytes = 1 << 20
 const maxBundleFileBytes = 64 << 20
+const maxBundleDirectoryEntries = 17 // manifest plus the maximum 16 declared files
 
 var bundleFileNameRE = regexp.MustCompile(`^report\.([A-Za-z0-9-]+)\.(txt|md|html)$`)
 
@@ -567,9 +568,13 @@ func VerifyBundle(dir string) (Manifest, []string, error) {
 			failures = append(failures, item.Name+": size or SHA-256 mismatch")
 		}
 	}
-	entries, err := os.ReadDir(dir)
+	entries, tooManyEntries, err := readDirectoryEntriesLimited(dir, maxBundleDirectoryEntries)
 	if err != nil {
 		return Manifest{}, nil, err
+	}
+	if tooManyEntries {
+		failures = append(failures, fmt.Sprintf("bundle directory exceeds the %d entry safety limit", maxBundleDirectoryEntries))
+		return manifest, failures, nil
 	}
 	declared := map[string]bool{"manifest.json": true}
 	for _, item := range manifest.Files {
@@ -581,6 +586,29 @@ func VerifyBundle(dir string) (Manifest, []string, error) {
 		}
 	}
 	return manifest, failures, nil
+}
+
+func readDirectoryEntriesLimited(dir string, maxEntries int) ([]os.DirEntry, bool, error) {
+	if maxEntries < 0 {
+		return nil, false, fmt.Errorf("invalid directory entry limit")
+	}
+	f, err := os.Open(dir)
+	if err != nil {
+		return nil, false, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, false, err
+	}
+	if !info.IsDir() {
+		return nil, false, fmt.Errorf("bundle path is not a directory")
+	}
+	entries, err := f.ReadDir(maxEntries + 1)
+	if err != nil && err != io.EOF {
+		return nil, false, err
+	}
+	return entries, len(entries) > maxEntries, nil
 }
 
 func manifestCompletenessFailures(manifest Manifest) []string {

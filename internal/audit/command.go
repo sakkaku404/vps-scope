@@ -80,7 +80,7 @@ func (OSCommander) Run(timeout time.Duration, name string, args ...string) Comma
 	cmd := exec.CommandContext(ctx, path, args...)
 	// A fixed search path avoids accidental command resolution through a
 	// caller-controlled PATH while retaining standard Debian/Ubuntu locations.
-	cmd.Env = append(os.Environ(), "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL=C", "LANG=C")
+	cmd.Env = commandEnvironment()
 	hardenCommandExecution(cmd)
 	stdout := limitedBuilder{limit: maxCommandOutputBytes}
 	stderr := limitedBuilder{limit: maxCommandOutputBytes}
@@ -106,6 +106,26 @@ func (OSCommander) Run(timeout time.Duration, name string, args ...string) Comma
 		r.Code = -1
 	}
 	return r
+}
+
+// commandEnvironment is deliberately an allowlist. Caller-controlled values
+// such as DOCKER_HOST, DOCKER_CONTEXT, APT_CONFIG, DPKG_ROOT, LD_PRELOAD, and
+// pager settings can redirect evidence collection, load unintended code, or
+// make a trusted executable behave differently from the audited host's local
+// default. Collectors pass every required target explicitly instead.
+func commandEnvironment() []string {
+	return []string{
+		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"LC_ALL=C",
+		"LANG=C",
+		"LANGUAGE=C",
+		"TZ=UTC",
+		"TERM=dumb",
+		"PAGER=cat",
+		"SYSTEMD_PAGER=cat",
+		"SYSTEMD_COLORS=0",
+		"NO_COLOR=1",
+	}
 }
 
 func resolveSystemExecutable(name string) (string, error) {

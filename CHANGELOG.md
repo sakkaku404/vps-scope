@@ -6,6 +6,18 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 1.3.1 - 2026-07-16
+
+### Security
+
+- External collector commands now receive a minimal fixed environment instead of inheriting caller-controlled values. Variables such as `DOCKER_HOST`, `DOCKER_CONTEXT`, `APT_CONFIG`, `DPKG_ROOT`, and `LD_PRELOAD` can no longer redirect local evidence collection or alter trusted command loading.
+- Report-bundle verification now reads at most the schema-wide maximum of 17 directory entries. A user-supplied directory containing an excessive number of undeclared files is rejected without loading the complete directory into memory.
+
+### Testing
+
+- Linux command-runner tests prove that path and locale remain deterministic while evidence-changing and secret-shaped caller variables are absent from the child process.
+- Bundle tests cross the directory-entry limit with a small fixture and require an explicit verification failure.
+
 ## 1.3.0 - 2026-07-16
 
 ### Security
@@ -348,7 +360,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Report comparison, fleet summaries, re-rendering, and redaction.
 - Linux amd64 and arm64 release builds.
 
-[Unreleased]: https://github.com/sakkaku404/vps-scope/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/sakkaku404/vps-scope/compare/v1.3.1...HEAD
+[1.3.1]: https://github.com/sakkaku404/vps-scope/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/sakkaku404/vps-scope/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/sakkaku404/vps-scope/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/sakkaku404/vps-scope/compare/v1.1.1...v1.2.0
