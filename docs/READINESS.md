@@ -25,7 +25,8 @@ VPS Scope treats the four disposable Debian/Ubuntu hosts as a fixed compatibilit
 
 - Standard runs are reviewed against the established small-VPS envelope; a regression needs an identified evidence source, not a relaxed timeout.
 - Linux amd64 and arm64 cross-builds are mandatory.
-- Unit, scenario, race, vet, vulnerability, coverage, shell-syntax, schema-compatibility, manifest-tamper, and redaction tests must pass.
+- Unit, scenario, race, vet, vulnerability, coverage, shell-syntax, schema-compatibility, manifest-tamper, semantic-report, and redaction tests must pass.
+- The freshly built Linux amd64 executable must complete a real audit on the CI runner and verify the resulting 51-ID report; compiling or printing `version` alone is not sufficient.
 - Release assets are built by GitHub Actions, checksummed, signed when configured, downloaded again, and verified before the release is considered complete.
 
 Three consecutive releases satisfying this contract without an ID/schema compatibility break are the engineering gate for a 1.0 label. Popularity or a large external telemetry pool is not required.

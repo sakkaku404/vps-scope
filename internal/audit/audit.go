@@ -134,11 +134,11 @@ func safeCheck(fn CheckFunc, ctx *Context, category string) (out []model.Finding
 }
 
 func collectHost(cmd Commander) (model.Host, error) {
-	data, err := os.ReadFile("/etc/os-release")
+	data, err := readSmall("/etc/os-release", 64<<10)
 	if err != nil {
 		return model.Host{}, fmt.Errorf("read /etc/os-release: %w", err)
 	}
-	values := parseKeyValues(string(data))
+	values := parseKeyValues(data)
 	hostname, _ := os.Hostname()
 	kernel := cmd.Run(5*time.Second, "uname", "-r").Stdout
 	arch := cmd.Run(5*time.Second, "uname", "-m").Stdout
@@ -146,8 +146,8 @@ func collectHost(cmd Commander) (model.Host, error) {
 	if cmd.Exists("systemd-detect-virt") {
 		virt = cmd.Run(5*time.Second, "systemd-detect-virt").Stdout
 	}
-	machineID, _ := os.ReadFile("/etc/machine-id")
-	sum := sha256.Sum256([]byte(strings.TrimSpace(string(machineID)) + "\x00" + hostname))
+	machineID, _ := readSmall("/etc/machine-id", 4<<10)
+	sum := sha256.Sum256([]byte(strings.TrimSpace(machineID) + "\x00" + hostname))
 	return model.Host{
 		StableID: hex.EncodeToString(sum[:8]), Hostname: hostname,
 		OS: strings.ToLower(values["ID"]), OSVersion: values["VERSION_ID"],

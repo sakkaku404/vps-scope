@@ -2,8 +2,11 @@ package report
 
 import (
 	"bytes"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -66,6 +69,30 @@ func TestBundleRefusesExistingDirectory(t *testing.T) {
 	}
 }
 
+func TestBundleRejectsUnsafeLocale(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	if _, err := Bundle(dir, sampleReport(), Options{Locale: "../escape"}); err == nil {
+		t.Fatal("unsafe bundle locale was accepted")
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("bundle directory was created: %v", err)
+	}
+}
+
+func TestVerifyBundleRejectsUndeclaredFiles(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	if _, err := Bundle(dir, sampleReport(), Options{Locale: "en"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "unexpected.txt"), []byte("not covered by manifest"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, failures, err := VerifyBundle(dir)
+	if err != nil || !strings.Contains(strings.Join(failures, "\n"), "file is not declared in manifest") {
+		t.Fatalf("verify err=%v failures=%v", err, failures)
+	}
+}
+
 func TestVerifyBundleRejectsTraversalAndDuplicateNames(t *testing.T) {
 	dir := t.TempDir()
 	manifest := `{"schema_version":"1.0","files":[{"name":"../outside","size":0,"sha256":""},{"name":"report.json","size":0,"sha256":""},{"name":"report.json","size":0,"sha256":""}]}`
@@ -76,11 +103,26 @@ func TestVerifyBundleRejectsTraversalAndDuplicateNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(failures) != 3 {
-		t.Fatalf("failures=%v, want three invalid/missing entries", failures)
-	}
-	if !strings.Contains(failures[0], "invalid manifest file name") || !strings.Contains(failures[2], "duplicate") {
+	joined := strings.Join(failures, "\n")
+	if !strings.Contains(joined, "invalid manifest file name") || !strings.Contains(joined, "duplicate") || !strings.Contains(joined, "localized report set is incomplete") {
 		t.Fatalf("unexpected failures: %v", failures)
+	}
+}
+
+func TestVerifyBundleRejectsUnknownManifestFieldsAndTrailingJSON(t *testing.T) {
+	for name, manifest := range map[string]string{
+		"unknown":  `{"schema_version":"1.0","unexpected":true,"files":[]}`,
+		"trailing": `{"schema_version":"1.0","files":[]} {}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(manifest), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := VerifyBundle(dir); err == nil {
+				t.Fatal("malformed manifest was accepted")
+			}
+		})
 	}
 }
 
@@ -91,8 +133,63 @@ func TestVerifyBundleRejectsOversizedDeclaredFileBeforeReading(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, failures, err := VerifyBundle(dir)
-	if err != nil || len(failures) != 1 || !strings.Contains(failures[0], "safety limit") {
+	if err != nil || !strings.Contains(strings.Join(failures, "\n"), "safety limit") {
 		t.Fatalf("verify err=%v failures=%v", err, failures)
+	}
+}
+
+func TestVerifyBundleRejectsIncompleteManifest(t *testing.T) {
+	dir := t.TempDir()
+	manifest := `{"schema_version":"1.0","files":[]}`
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, failures, err := VerifyBundle(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(failures, "\n")
+	for _, want := range []string{"report.json", "localized report set is incomplete", "requires exactly 4"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("failures missing %q: %v", want, failures)
+		}
+	}
+}
+
+func TestVerifyBundleRejectsSymlinkedPayload(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks requires additional Windows privileges")
+	}
+	dir := filepath.Join(t.TempDir(), "bundle")
+	if _, err := Bundle(dir, sampleReport(), Options{Locale: "en"}); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "outside.json")
+	if err := os.WriteFile(target, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, "report.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, "report.json")); err != nil {
+		t.Fatal(err)
+	}
+	_, failures, err := VerifyBundle(dir)
+	if err != nil || !strings.Contains(strings.Join(failures, "\n"), "not a regular file") {
+		t.Fatalf("verify err=%v failures=%v", err, failures)
+	}
+}
+
+func TestBundleCreationFailureRemovesPartialDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "partial")
+	_, err := writeBundleFiles(dir, "1.0", map[string]func(io.Writer) error{
+		"report.json": func(io.Writer) error { return errors.New("fixture failure") },
+	})
+	if err == nil {
+		t.Fatal("expected creation failure")
+	}
+	if _, statErr := os.Stat(dir); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("partial directory survived: %v", statErr)
 	}
 }
 

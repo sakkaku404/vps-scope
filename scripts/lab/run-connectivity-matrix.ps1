@@ -68,8 +68,16 @@ foreach ($network in $networks) {
 Start-Sleep -Seconds ($ScenarioSeconds + 2)
 $cleanup = @()
 foreach ($target in $Hosts) {
+    ssh $target "rm -f -- /run/vps-scope-lab/tcp4.out /run/vps-scope-lab/udp4.out" | Out-Null
     $remaining = ssh $target "ufw status | grep -E '39081|39082' | wc -l"
-    $cleanup += [pscustomobject]@{ Host = $target; RemainingLabRules = [int]$remaining }
+    $helpers = ssh $target "pgrep -fc '[n]et-helper --mode serve' || true"
+    $stateFiles = ssh $target "find /run/vps-scope-lab -maxdepth 1 -type f \( -name ready -o -name helper.log -o -name helper.pid -o -name tcp4.out -o -name udp4.out \) 2>/dev/null | wc -l"
+    $cleanup += [pscustomobject]@{
+        Host = $target
+        RemainingLabRules = [int]$remaining
+        RemainingHelpers = [int]$helpers
+        RemainingStateFiles = [int]$stateFiles
+    }
 }
 
 $document = [ordered]@{
@@ -79,6 +87,8 @@ $document = [ordered]@{
     cleanup = $cleanup
 }
 $document | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $Output -Encoding UTF8
-if (@($cleanup | Where-Object { $_.RemainingLabRules -ne 0 }).Count -ne 0) { throw "At least one lab firewall rule was not removed" }
+if (@($cleanup | Where-Object { $_.RemainingLabRules -ne 0 -or $_.RemainingHelpers -ne 0 -or $_.RemainingStateFiles -ne 0 }).Count -ne 0) {
+    throw "At least one lab host retained a firewall rule, helper process, or runtime state file"
+}
 $passed = @($results | Where-Object Passed).Count
 Write-Output "matrix complete: $passed/$($results.Count) probes passed; cleanup verified on $($Hosts.Count) hosts"

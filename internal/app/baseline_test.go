@@ -1,6 +1,9 @@
 package app
 
 import (
+	"bytes"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/sakkaku404/vps-scope/internal/model"
@@ -32,5 +35,28 @@ func TestBaselineStableInventoryAndDrift(t *testing.T) {
 	added, removed = compareBaseline(base.Items, makeBaseline(r).Items)
 	if len(added) != 1 || len(removed) != 1 {
 		t.Fatalf("added=%d removed=%d", len(added), len(removed))
+	}
+}
+
+func TestBaselineCreateRefusesOverwriteWithoutChangingExistingFile(t *testing.T) {
+	output := filepath.Join(t.TempDir(), "baseline.json")
+	args := []string{"baseline", "create", filepath.Join("testdata", "golden-report-v1.json"), output}
+	var stdout bytes.Buffer
+	if err := Run(args, bytes.NewReader(nil), &stdout, &stdout, BuildInfo{Version: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	want, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Run(args, bytes.NewReader(nil), &stdout, &stdout, BuildInfo{Version: "test"}); err == nil {
+		t.Fatal("existing baseline was overwritten")
+	}
+	got, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("existing baseline changed after refused overwrite")
 	}
 }

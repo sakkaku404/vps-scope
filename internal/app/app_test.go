@@ -2,6 +2,8 @@ package app
 
 import (
 	"bytes"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -9,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sakkaku404/vps-scope/internal/audit"
 	"github.com/sakkaku404/vps-scope/internal/model"
 	"github.com/sakkaku404/vps-scope/internal/report"
 )
@@ -72,6 +75,143 @@ func TestParseDurationDays(t *testing.T) {
 	got, err := parseDuration("7d")
 	if err != nil || got != 7*24*time.Hour {
 		t.Fatalf("got=%v err=%v", got, err)
+	}
+}
+
+func TestAtomicWriteNewPublishesCompleteFileWithoutOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "report.json")
+	if err := atomicWriteNew(path, 32, func(w io.Writer) error {
+		_, err := io.WriteString(w, "complete")
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != "complete" {
+		t.Fatalf("data=%q err=%v", data, err)
+	}
+	if err := atomicWriteNew(path, 32, func(w io.Writer) error {
+		_, err := io.WriteString(w, "replacement")
+		return err
+	}); err == nil {
+		t.Fatal("existing report was overwritten")
+	}
+	data, _ = os.ReadFile(path)
+	if string(data) != "complete" {
+		t.Fatalf("existing report changed: %q", data)
+	}
+}
+
+func TestAtomicWriteNewRemovesFailedPartialOutput(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "report.json")
+	err := atomicWriteNew(path, 32, func(w io.Writer) error {
+		_, _ = io.WriteString(w, "partial")
+		return errors.New("fixture failure")
+	})
+	if err == nil {
+		t.Fatal("expected write failure")
+	}
+	if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("partial output survived: %v", statErr)
+	}
+	matches, _ := filepath.Glob(filepath.Join(dir, ".vps-scope-output-*"))
+	if len(matches) != 0 {
+		t.Fatalf("temporary outputs survived: %v", matches)
+	}
+}
+
+func TestAtomicWriteNewEnforcesOutputLimit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "report.json")
+	err := atomicWriteNew(path, 3, func(w io.Writer) error {
+		_, err := io.WriteString(w, "four")
+		return err
+	})
+	if err == nil || !strings.Contains(err.Error(), "output safety limit") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestVerifyAcceptsReportAndCompleteBundle(t *testing.T) {
+	r := appContractReport()
+	dir := t.TempDir()
+	reportPath := filepath.Join(dir, "report.json")
+	writeJSONReport(t, reportPath, r)
+	for _, input := range []string{reportPath, filepath.Join(dir, "bundle")} {
+		if input != reportPath {
+			if _, err := report.Bundle(input, r, report.Options{Locale: "en"}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var out bytes.Buffer
+		if err := Run([]string{"verify", input}, bytes.NewReader(nil), &out, &out, BuildInfo{Version: "test"}); err != nil {
+			t.Fatalf("input=%s err=%v output=%s", input, err, out.String())
+		}
+		if !strings.Contains(out.String(), "PASS report structure and semantic contract are valid") {
+			t.Fatalf("input=%s output=%s", input, out.String())
+		}
+	}
+}
+
+func TestVerifyRejectsSemanticallyIncompleteReport(t *testing.T) {
+	r := appContractReport()
+	r.Findings = r.Findings[:len(r.Findings)-1]
+	r.Recount()
+	path := filepath.Join(t.TempDir(), "report.json")
+	writeJSONReport(t, path, r)
+	var out bytes.Buffer
+	err := Run([]string{"verify", path}, bytes.NewReader(nil), &out, &out, BuildInfo{Version: "test"})
+	if err == nil || !strings.Contains(out.String(), "required check ID REL-002 is missing") {
+		t.Fatalf("err=%v output=%s", err, out.String())
+	}
+}
+
+func TestVerifyKeepsLegacyReportReadable(t *testing.T) {
+	var out bytes.Buffer
+	err := Run([]string{"verify", filepath.Join("testdata", "golden-report-v1.json")}, bytes.NewReader(nil), &out, &out, BuildInfo{Version: "test"})
+	if err != nil {
+		t.Fatalf("err=%v output=%s", err, out.String())
+	}
+}
+
+func appContractReport() model.Report {
+	r := model.Report{
+		SchemaVersion: "1.0", ToolVersion: "0.13.0", Locale: "en",
+		StartedAt: time.Unix(1, 0).UTC(), FinishedAt: time.Unix(2, 0).UTC(),
+		LogSince: "168h0m0s",
+		Host:     model.Host{StableID: "fixture-id", Hostname: "fixture", OS: "debian", OSVersion: "12", Kernel: "fixture-kernel", Architecture: "x86_64"},
+		Profile:  model.Profile{Requested: "auto", Detected: "proxy", Effective: "proxy"},
+	}
+	for _, id := range audit.StableCheckIDs {
+		prefix, _, _ := strings.Cut(id, "-")
+		category := map[string]string{
+			"SYS": "system", "ACC": "accounts", "SSH": "ssh", "PRIV": "privileges",
+			"NET": "network", "FW": "firewall", "AUTH": "auth", "UPD": "updates",
+			"PKG": "packages", "PROC": "processes", "DOCKER": "docker", "TLS": "tls",
+			"WORK": "workloads", "FS": "filesystem", "PERSIST": "persistence", "REL": "reliability",
+		}[prefix]
+		r.Findings = append(r.Findings, model.Finding{
+			ID: id, Category: category, Status: model.Pass,
+			ReasonCode: strings.ToLower(strings.ReplaceAll(id, "-", ".")) + ".verified",
+		})
+	}
+	r.Recount()
+	return r
+}
+
+func writeJSONReport(t *testing.T, path string, r model.Report) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := report.JSON(f, r); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 
