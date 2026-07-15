@@ -32,6 +32,7 @@ var stableCheckIDPattern = regexp.MustCompile(`^[A-Z]+-[0-9]{3}$`)
 
 func ValidateCheckContract() error {
 	seen := make(map[string]bool, len(StableCheckIDs))
+	categoryCounts := make(map[string]int, len(CategoryOrder))
 	for _, id := range StableCheckIDs {
 		if !stableCheckIDPattern.MatchString(id) {
 			return fmt.Errorf("invalid stable check ID %q", id)
@@ -40,6 +41,26 @@ func ValidateCheckContract() error {
 			return fmt.Errorf("duplicate stable check ID %q", id)
 		}
 		seen[id] = true
+		category := reportCategoryForID(id)
+		if category == "" {
+			return fmt.Errorf("stable check ID %q has no category mapping", id)
+		}
+		categoryCounts[category]++
+	}
+	seenCategories := make(map[string]bool, len(CategoryOrder))
+	for _, category := range CategoryOrder {
+		if seenCategories[category] {
+			return fmt.Errorf("duplicate category %q", category)
+		}
+		seenCategories[category] = true
+		if categoryCounts[category] == 0 {
+			return fmt.Errorf("category %q has no stable check IDs", category)
+		}
+	}
+	for category := range categoryCounts {
+		if !seenCategories[category] {
+			return fmt.Errorf("stable check category %q is absent from CategoryOrder", category)
+		}
 	}
 	return nil
 }

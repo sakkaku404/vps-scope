@@ -6,6 +6,20 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 1.1.1 - 2026-07-16
+
+### Fixed
+
+- A recovered category panic now preserves every stable check ID in that category as `UNKNOWN` / unavailable, so one unexpected runtime value cannot produce a structurally invalid report or suppress unaffected categories.
+
+### Security
+
+- Panic values and implementation details are withheld from report errors and evidence because unexpected values may contain configuration secrets.
+
+### Testing
+
+- The stable-ID contract now verifies complete category ownership, and fault injection proves that a recovered workload-category panic still produces a semantically valid 51-ID report.
+
 ## 1.1.0 - 2026-07-16
 
 ### Added

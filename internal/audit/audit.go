@@ -122,15 +122,26 @@ func Run(opts Options) (model.Report, error) {
 
 func safeCheck(fn CheckFunc, ctx *Context, category string) (out []model.Finding) {
 	defer func() {
-		if v := recover(); v != nil {
-			out = []model.Finding{{
-				ID:       strings.ToUpper(category[:min(3, len(category))]) + "-INTERNAL",
-				Category: category, Status: model.Unknown, Unavailable: true,
-				Error: fmt.Sprintf("check panicked: %v", v),
-			}}
+		if recover() != nil {
+			out = unavailableCategoryFindings(category)
 		}
 	}()
 	return fn(ctx)
+}
+
+func unavailableCategoryFindings(category string) []model.Finding {
+	const message = "internal check failure recovered; details withheld"
+	out := make([]model.Finding, 0, 4)
+	for _, id := range StableCheckIDs {
+		if reportCategoryForID(id) != category {
+			continue
+		}
+		out = append(out, model.Finding{
+			ID: id, Category: category, Status: model.Unknown, Unavailable: true, Error: message,
+			Evidence: []model.Evidence{{Source: "internal", Key: "failure", Value: message}},
+		})
+	}
+	return out
 }
 
 func collectHost(cmd Commander) (model.Host, error) {

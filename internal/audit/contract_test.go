@@ -10,3 +10,12 @@ func TestStableCheckContract(t *testing.T) {
 		t.Fatalf("stable check count = %d, want %d", got, want)
 	}
 }
+
+func TestStableCheckContractRejectsCategoryOrderDrift(t *testing.T) {
+	original := CategoryOrder
+	CategoryOrder = append([]string(nil), original[1:]...)
+	t.Cleanup(func() { CategoryOrder = original })
+	if err := ValidateCheckContract(); err == nil {
+		t.Fatal("contract accepted a missing category")
+	}
+}
