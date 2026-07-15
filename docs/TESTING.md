@@ -30,6 +30,8 @@ Runtime fault injection deliberately panics a category evaluator with a secret-s
 
 Linux-only command-runner tests execute real root-owned system utilities. They prove that a caller-controlled `PATH` and locale are replaced, writable temporary executables are refused, non-zero exits retain bounded diagnostics, noisy output is truncated, and a timed-out shell cannot leave a forked child holding the audit open. These tests run under the race detector in CI even when development happens on Windows.
 
+Linux file-reader tests place a FIFO at a candidate configuration path without starting a writer and require immediate refusal. They also prove that a normal symlink to a regular configuration remains readable, while common tests retain the descriptor-bound size limit and reject directories.
+
 When adding a new decision rule, add at least one ordinary expected-state scenario and one adverse or incomplete-evidence scenario. Keep fixtures small, synthetic, and free of real host identifiers or secrets.
 
 ## Cross compilation

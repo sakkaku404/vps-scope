@@ -6,7 +6,6 @@ import (
 	"io"
 	"io/fs"
 	"net"
-	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -23,7 +22,7 @@ type passwdEntry struct {
 }
 
 func readPasswd() ([]passwdEntry, error) {
-	f, err := os.Open("/etc/passwd")
+	f, err := openRegularReadOnly("/etc/passwd")
 	if err != nil {
 		return nil, err
 	}
@@ -64,7 +63,7 @@ func readSmall(path string, limit int64) (string, error) {
 	if limit < 0 {
 		return "", fmt.Errorf("invalid read limit")
 	}
-	f, err := os.Open(path)
+	f, err := openRegularReadOnly(path)
 	if err != nil {
 		return "", err
 	}

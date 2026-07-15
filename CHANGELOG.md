@@ -6,6 +6,16 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 1.2.1 - 2026-07-16
+
+### Security
+
+- Bounded collector reads now open Linux paths non-blockingly and validate the opened descriptor as a regular file. A FIFO, device, socket, or directory at a discovered configuration path can no longer make the audit wait for a producer or consume an unintended stream.
+
+### Testing
+
+- Linux tests cover an unread FIFO with no writer and a symlink to a regular configuration file; cross-platform tests reject directory reads while preserving the existing size limit.
+
 ## 1.2.0 - 2026-07-16
 
 ### Security
