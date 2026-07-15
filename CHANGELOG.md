@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 1.2.0 - 2026-07-16
+
 ### Security
 
 - Every external collector command is now resolved to an absolute path and rejected unless the executable and all parent directories are root-owned and not group/other writable. The same trust boundary previously used for proxy self-tests now also covers system inventory commands.
