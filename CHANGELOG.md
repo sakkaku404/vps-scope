@@ -6,6 +6,21 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 1.2.0 - 2026-07-16
+
+### Security
+
+- Every external collector command is now resolved to an absolute path and rejected unless the executable and all parent directories are root-owned and not group/other writable. The same trust boundary previously used for proxy self-tests now also covers system inventory commands.
+
+### Reliability
+
+- Linux collector commands run in isolated process groups. A deadline now terminates forked descendants as well as the immediate process, preventing inherited output pipes from keeping an audit stuck after timeout.
+
+### Testing
+
+- Linux-specific command-runner tests cover fixed locale/PATH handling, non-zero exits, untrusted executable paths, forked-process timeouts, trusted system binaries, and the 8 MiB output cap.
+- The Linux CI coverage floors now track the exercised baseline more closely: app 56%, audit 54%, redact 86%, and report 82%.
+
 ## 1.1.1 - 2026-07-16
 
 ### Fixed

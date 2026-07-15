@@ -16,7 +16,7 @@ CI also runs the freshly cross-built Linux amd64 binary on the GitHub Ubuntu run
 
 The release-script gate installs Cosign in a standard system path, then exercises both the temporary runner and installer against the pinned public `v1.0.0` release with signature verification required. This proves the explicit-version certificate identity, checksum path, architecture selection, installation path, and executable handoff rather than checking shell syntax alone. The third-party notice generator runs twice and must produce byte-identical output containing the linked SQLite module.
 
-`scripts/check-coverage.sh` enforces per-package ratchets rather than one misleading repository-wide percentage. The current floors are app 46%, audit 51%, redact 86%, and report 82%; they may only move upward as more OS collectors gain deterministic fixtures.
+`scripts/check-coverage.sh` enforces per-package ratchets rather than one misleading repository-wide percentage. The current Linux CI floors are app 56%, audit 54%, redact 86%, and report 82%; they may only move upward as more OS collectors gain deterministic fixtures.
 
 Proxy-specific fixtures also verify that configuration summaries never retain UUIDs, passwords, API secrets, inbound tags, SSH key comments, APT URL credentials, or complete process arguments.
 
@@ -27,6 +27,8 @@ Proxy-specific fixtures also verify that configuration summaries never retain UU
 The scenarios assert outcomes, not implementation details. They currently cover effective SSH policy, firewall and update evidence, journald-based SSH and sudo auditing, public panel exposure and default paths, expected public proxy ingress, public control APIs, panel/runtime and role collisions, disabled or unexplained listeners, privacy-safe abuse counts, Compose/effective mounts, ambient capabilities, unsafe Docker isolation, and truncated command output. The important safety contract is that incomplete evidence produces `UNKNOWN`, never `PASS`.
 
 Runtime fault injection deliberately panics a category evaluator with a secret-shaped value. The test requires all stable IDs for that category to survive as unavailable `UNKNOWN` findings, requires the panic value to be absent from errors and evidence, and validates the resulting complete 51-ID report with the production semantic verifier.
+
+Linux-only command-runner tests execute real root-owned system utilities. They prove that a caller-controlled `PATH` and locale are replaced, writable temporary executables are refused, non-zero exits retain bounded diagnostics, noisy output is truncated, and a timed-out shell cannot leave a forked child holding the audit open. These tests run under the race detector in CI even when development happens on Windows.
 
 When adding a new decision rule, add at least one ordinary expected-state scenario and one adverse or incomplete-evidence scenario. Keep fixtures small, synthetic, and free of real host identifiers or secrets.
 
