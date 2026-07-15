@@ -17,6 +17,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 ### Testing
 
 - Linux-specific command-runner tests cover fixed locale/PATH handling, non-zero exits, untrusted executable paths, forked-process timeouts, trusted system binaries, and the 8 MiB output cap.
+- The Linux CI coverage floors now track the exercised baseline more closely: app 56%, audit 54%, redact 86%, and report 82%.
 
 ## 1.1.1 - 2026-07-16
 
