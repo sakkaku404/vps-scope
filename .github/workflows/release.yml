@@ -4,20 +4,16 @@ on:
   push:
     tags: ["v*"]
 
-permissions:
-  contents: write
-  id-token: write
-  attestations: write
-  artifact-metadata: write
+permissions: {}
 
 jobs:
-  release:
+  test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Check out source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
@@ -40,6 +36,26 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
           govulncheck ./...
 
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
       - name: Build release assets
         env:
           VERSION: ${{ github.ref_name }}
@@ -51,8 +67,10 @@ jobs:
               -ldflags "-s -w -X main.version=${VERSION#v} -X main.commit=${GITHUB_SHA} -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
               -o "dist/vps-scope_linux_${arch}" ./cmd/vps-scope
           done
+          cp LICENSE dist/LICENSE
+          bash scripts/generate-third-party-notices.sh dist/THIRD_PARTY_NOTICES.txt
           cd dist
-          sha256sum vps-scope_linux_* > SHA256SUMS
+          sha256sum vps-scope_linux_amd64 vps-scope_linux_arm64 LICENSE THIRD_PARTY_NOTICES.txt > SHA256SUMS
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
@@ -60,7 +78,7 @@ jobs:
       - name: Keylessly sign release assets
         shell: bash
         run: |
-          for asset in dist/vps-scope_linux_amd64 dist/vps-scope_linux_arm64 dist/SHA256SUMS; do
+          for asset in dist/vps-scope_linux_amd64 dist/vps-scope_linux_arm64 dist/SHA256SUMS dist/LICENSE dist/THIRD_PARTY_NOTICES.txt; do
             cosign sign-blob --yes --bundle "${asset}.sigstore.json" "$asset"
           done
 
@@ -74,6 +92,31 @@ jobs:
         with:
           subject-path: dist/vps-scope_linux_arm64
 
+      - name: Verify staged release assets
+        shell: bash
+        run: |
+          cd dist
+          sha256sum -c SHA256SUMS
+          identity="https://github.com/sakkaku404/vps-scope/.github/workflows/release.yml@refs/tags/${GITHUB_REF_NAME}"
+          for asset in vps-scope_linux_amd64 vps-scope_linux_arm64 SHA256SUMS LICENSE THIRD_PARTY_NOTICES.txt; do
+            cosign verify-blob --bundle "${asset}.sigstore.json" \
+              --certificate-identity "$identity" \
+              --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+              "$asset"
+          done
+          expected="$(printf '%s\n' \
+            LICENSE LICENSE.sigstore.json \
+            SHA256SUMS SHA256SUMS.sigstore.json \
+            THIRD_PARTY_NOTICES.txt THIRD_PARTY_NOTICES.txt.sigstore.json \
+            vps-scope_linux_amd64 vps-scope_linux_amd64.sigstore.json \
+            vps-scope_linux_arm64 vps-scope_linux_arm64.sigstore.json | sort)"
+          actual="$(find . -maxdepth 1 -type f -printf '%f\n' | sort)"
+          [[ "$actual" == "$expected" ]] || {
+            echo "staged release file set is incomplete or unexpected" >&2
+            diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$actual") || true
+            exit 1
+          }
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -82,9 +125,13 @@ jobs:
           dist/vps-scope_linux_amd64
           dist/vps-scope_linux_arm64
           dist/SHA256SUMS
+          dist/LICENSE
+          dist/THIRD_PARTY_NOTICES.txt
           dist/vps-scope_linux_amd64.sigstore.json
           dist/vps-scope_linux_arm64.sigstore.json
           dist/SHA256SUMS.sigstore.json
+          dist/LICENSE.sigstore.json
+          dist/THIRD_PARTY_NOTICES.txt.sigstore.json
           --verify-tag
           --title "VPS Scope $GITHUB_REF_NAME"
           --generate-notes

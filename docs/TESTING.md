@@ -14,6 +14,8 @@ Tests cover address classification, listener parsing, dpkg verification classifi
 
 CI also runs the freshly cross-built Linux amd64 binary on the GitHub Ubuntu runner, produces a complete bundle through a real standard audit, and verifies both the manifest and the report semantic contract. This catches collector panics, missing stable IDs, malformed summaries, and development-build reason-code gaps that package-level tests alone cannot prove absent.
 
+The release-script gate installs Cosign in a standard system path, then exercises both the temporary runner and installer against the pinned public `v1.0.0` release with signature verification required. This proves the explicit-version certificate identity, checksum path, architecture selection, installation path, and executable handoff rather than checking shell syntax alone. The third-party notice generator runs twice and must produce byte-identical output containing the linked SQLite module.
+
 `scripts/check-coverage.sh` enforces per-package ratchets rather than one misleading repository-wide percentage. The current floors are app 46%, audit 51%, redact 86%, and report 82%; they may only move upward as more OS collectors gain deterministic fixtures.
 
 Proxy-specific fixtures also verify that configuration summaries never retain UUIDs, passwords, API secrets, inbound tags, SSH key comments, APT URL credentials, or complete process arguments.

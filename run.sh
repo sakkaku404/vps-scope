@@ -49,8 +49,12 @@ printf '%s  %s\n' "$expected" "$asset" | sha256sum -c -
 
 if command -v cosign >/dev/null 2>&1; then
   curl "${curl_args[@]}" -o "${asset}.sigstore.json" "${base_url}/${asset}.sigstore.json"
+  identity_args=(--certificate-identity-regexp '^https://github\.com/sakkaku404/vps-scope/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$')
+  if [[ "$VERSION" != "latest" ]]; then
+    identity_args=(--certificate-identity "https://github.com/${REPO}/.github/workflows/release.yml@refs/tags/${VERSION}")
+  fi
   cosign verify-blob --bundle "${asset}.sigstore.json" \
-    --certificate-identity-regexp '^https://github\.com/sakkaku404/vps-scope/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' \
+    "${identity_args[@]}" \
     --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
     "$asset"
   echo "Verified: GitHub Actions keyless signature"

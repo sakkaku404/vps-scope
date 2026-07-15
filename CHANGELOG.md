@@ -6,6 +6,23 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 1.1.0 - 2026-07-16
+
+### Added
+
+- Releases now include the project license and a deterministic third-party notice generated from the dependency modules actually linked into the binary; both are checksummed and keylessly signed.
+- CI regenerates the notice twice to prove deterministic output, syntax-checks every maintained Bash laboratory and release script, and exercises signed temporary-run and installation flows against the pinned public 1.0 release.
+- The release workflow verifies all checksums, all five keyless signatures, and the exact ten-file staged asset set before publishing.
+
+### Security
+
+- `install.sh` and `run.sh` now bind Sigstore verification to the exact requested tag when a version is explicitly selected, while `latest` remains constrained to this repository's release workflow and semantic-version tags.
+- Release tests and vulnerability scanning now run in a separate read-only job; write, OIDC, and attestation permissions are granted only to the dependent publishing job.
+
+### Fixed
+
+- The English build documentation no longer incorrectly claims that the Go source has no third-party module dependencies.
+
 ## 1.0.0 - 2026-07-16
 
 ### Stability
