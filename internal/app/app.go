@@ -86,7 +86,7 @@ Usage:
   vps-scope redact REPORT.json      create a shareable redacted report
   vps-scope support REPORT.json     create a privacy-safe compatibility bundle
   vps-scope report list|show|path   manage saved local reports
-  vps-scope verify BUNDLE_DIR       verify report SHA-256 values
+  vps-scope verify REPORT_OR_BUNDLE verify hashes and report semantics
   vps-scope version                 show build information
 
 Audit never changes system configuration, services, accounts, firewall, or packages.`)
@@ -249,16 +249,52 @@ func (e environment) writeReport(format, output string, r model.Report, opts rep
 	if output == "" {
 		return write(e.out)
 	}
-	file, err := os.OpenFile(output, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	if err := write(file); err != nil {
+	if err := atomicWriteNew(output, 64<<20, write); err != nil {
 		return err
 	}
 	fmt.Fprintf(e.out, "%s: %s\n", choose(opts.Locale == "zh-CN", "报告", "Report"), output)
 	return nil
+}
+
+func atomicWriteNew(path string, maxBytes int64, write func(io.Writer) error) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".vps-scope-output-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	defer tmp.Close()
+	if err := tmp.Chmod(0o600); err != nil {
+		return err
+	}
+	w := &boundedWriter{Writer: tmp, limit: maxBytes, remaining: maxBytes}
+	if err := write(w); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	// Publishing via a hard link is atomic and never replaces an existing
+	// destination. The temporary inode lives in the same directory/filesystem.
+	return os.Link(tmpName, path)
+}
+
+type boundedWriter struct {
+	io.Writer
+	limit     int64
+	remaining int64
+}
+
+func (w *boundedWriter) Write(p []byte) (int, error) {
+	if int64(len(p)) > w.remaining {
+		return 0, fmt.Errorf("report exceeds %d byte output safety limit", w.limit)
+	}
+	n, err := w.Writer.Write(p)
+	w.remaining -= int64(n)
+	return n, err
 }
 
 func defaultBundleDir(r model.Report) (string, error) {
@@ -296,6 +332,14 @@ func updateLatest(root, bundle string) error {
 	}
 	defer os.Remove(tmp)
 	latest := filepath.Join(root, "latest")
+	if err := os.Rename(tmp, latest); err == nil {
+		return nil
+	} else if runtime.GOOS != "windows" {
+		return err
+	}
+	// Windows does not replace an existing symlink with Rename. Audits run on
+	// Linux, where the branch above is atomic; this fallback keeps local Windows
+	// report tests and offline report management usable.
 	if err := os.Remove(latest); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -374,7 +418,7 @@ func (e environment) report(args []string) error {
 			return errors.New("no saved terminal report found; run an audit with a full report bundle first")
 		}
 		sort.Strings(matches)
-		file, err := os.Open(matches[0])
+		file, err := openLimitedLocalFile(matches[0], maxLocalJSONSize)
 		if err != nil {
 			return err
 		}
@@ -410,6 +454,30 @@ func (e environment) report(args []string) error {
 	default:
 		return errors.New("usage: vps-scope report list|show|path")
 	}
+}
+
+func openLimitedLocalFile(path string, maxBytes int64) (*os.File, error) {
+	before, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() || before.Size() < 0 || before.Size() > maxBytes {
+		return nil, fmt.Errorf("local report %q is not a regular file within the %d byte limit", path, maxBytes)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	after, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	if !after.Mode().IsRegular() || !os.SameFile(before, after) || after.Size() != before.Size() {
+		f.Close()
+		return nil, fmt.Errorf("local report %q changed while being opened", path)
+	}
+	return f, nil
 }
 
 func regularPath(path string) bool {
@@ -556,7 +624,17 @@ func (e environment) support(args []string) error {
 
 func (e environment) verify(args []string) error {
 	if len(args) != 1 {
-		return errors.New("usage: vps-scope verify BUNDLE_DIR")
+		return errors.New("usage: vps-scope verify REPORT.json|BUNDLE_DIR")
+	}
+	info, err := os.Stat(args[0])
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("verify input is not a regular report file or bundle directory")
+		}
+		return e.verifyReport(args[0])
 	}
 	manifest, failures, err := report.VerifyBundle(args[0])
 	if err != nil {
@@ -569,7 +647,28 @@ func (e environment) verify(args []string) error {
 		}
 		return fmt.Errorf("bundle verification failed for %d file(s)", len(failures))
 	}
-	fmt.Fprintln(e.out, "PASS all report files match manifest SHA-256 values")
+	fmt.Fprintln(e.out, "PASS all report files match the complete manifest")
+	reportName := "report.json"
+	if manifest.SchemaVersion == report.SupportSchema {
+		reportName = "report.redacted.json"
+	}
+	return e.verifyReport(filepath.Join(args[0], reportName))
+}
+
+func (e environment) verifyReport(path string) error {
+	r, err := readReport(path)
+	if err != nil {
+		return err
+	}
+	failures := audit.ValidateReport(r, e.build.Version)
+	fmt.Fprintf(e.out, "report schema=%s tool=%s findings=%d\n", r.SchemaVersion, r.ToolVersion, len(r.Findings))
+	if len(failures) > 0 {
+		for _, failure := range failures {
+			fmt.Fprintln(e.out, "FAIL", failure)
+		}
+		return fmt.Errorf("report semantic verification failed for %d condition(s)", len(failures))
+	}
+	fmt.Fprintln(e.out, "PASS report structure and semantic contract are valid")
 	return nil
 }
 

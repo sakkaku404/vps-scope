@@ -14,3 +14,5 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o "$tmp/vps-scope-linu
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o "$tmp/vps-scope-linux-arm64" ./cmd/vps-scope
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o "$tmp/vps-scope-lab-helper" ./scripts/lab/net-helper.go
 "$tmp/vps-scope-linux-amd64" version
+"$tmp/vps-scope-linux-amd64" audit --lang en --profile general --format bundle --output "$tmp/smoke-report" --quiet
+"$tmp/vps-scope-linux-amd64" verify "$tmp/smoke-report"

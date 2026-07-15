@@ -40,6 +40,14 @@ jobs:
       - name: Check installer scripts
         run: bash -n install.sh run.sh scripts/check-coverage.sh scripts/regression.sh scripts/lab/scenario.sh
 
+      - name: Check PowerShell laboratory runner
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("scripts/lab/run-connectivity-matrix.ps1", [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -ne 0) { throw ($errors | Out-String) }
+
       - name: Vet
         run: go vet ./...
 
@@ -55,3 +63,8 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o /tmp/vps-scope-arm64 ./cmd/vps-scope
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o /tmp/vps-scope-lab-helper ./scripts/lab/net-helper.go
           /tmp/vps-scope-amd64 version
+
+      - name: Run a complete Linux audit and verify its report
+        run: |
+          /tmp/vps-scope-amd64 audit --lang en --profile general --format bundle --output /tmp/vps-scope-smoke --quiet
+          /tmp/vps-scope-amd64 verify /tmp/vps-scope-smoke

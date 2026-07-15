@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
+	"io"
 	"regexp"
 	"sort"
 	"strings"
@@ -36,14 +36,11 @@ func (e environment) baseline(args []string) error {
 			return err
 		}
 		doc := makeBaseline(r)
-		file, err := os.OpenFile(args[2], os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if err != nil {
-			return err
-		}
-		defer file.Close()
-		encoder := json.NewEncoder(file)
-		encoder.SetIndent("", "  ")
-		if err := encoder.Encode(doc); err != nil {
+		if err := atomicWriteNew(args[2], maxLocalJSONSize, func(w io.Writer) error {
+			encoder := json.NewEncoder(w)
+			encoder.SetIndent("", "  ")
+			return encoder.Encode(doc)
+		}); err != nil {
 			return err
 		}
 		fmt.Fprintf(e.out, "Baseline created: %s (%d stable items)\n", args[2], len(doc.Items))

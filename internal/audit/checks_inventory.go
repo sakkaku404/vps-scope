@@ -3,7 +3,6 @@ package audit
 import (
 	"bufio"
 	"fmt"
-	"os"
 	"runtime"
 	"sort"
 	"strconv"
@@ -18,8 +17,8 @@ func checkResourceOverview(ctx *Context) model.Finding {
 	f.Facts["cpu_logical_cores"] = strconv.Itoa(runtime.NumCPU())
 	f.Evidence = append(f.Evidence, model.Evidence{Source: "runtime", Key: "logical_cpu_cores", Value: strconv.Itoa(runtime.NumCPU())})
 
-	if data, err := os.ReadFile("/proc/cpuinfo"); err == nil {
-		if modelName := parseCPUModel(string(data)); modelName != "" {
+	if data, err := readSmall("/proc/cpuinfo", 4<<20); err == nil {
+		if modelName := parseCPUModel(data); modelName != "" {
 			f.Facts["cpu_model"] = modelName
 			f.Evidence = append(f.Evidence, model.Evidence{Source: "/proc/cpuinfo", Key: "model", Value: modelName})
 		}
@@ -28,8 +27,8 @@ func checkResourceOverview(ctx *Context) model.Finding {
 		f.Facts["cpu_used_percent"] = strconv.Itoa(usedPercent)
 		f.Evidence = append(f.Evidence, model.Evidence{Source: "/proc/stat", Key: "cpu_used_sample", Value: fmt.Sprintf("%d%% over 200ms", usedPercent)})
 	}
-	if data, err := os.ReadFile("/proc/meminfo"); err == nil {
-		memory := parseMemInfo(string(data))
+	if data, err := readSmall("/proc/meminfo", 1<<20); err == nil {
+		memory := parseMemInfo(data)
 		total, available := memory["MemTotal"], memory["MemAvailable"]
 		if total > 0 {
 			usedPercent := (total - available) * 100 / total
@@ -44,8 +43,8 @@ func checkResourceOverview(ctx *Context) model.Finding {
 			f.Evidence = append(f.Evidence, model.Evidence{Source: "/proc/meminfo", Key: "swap", Value: fmt.Sprintf("total=%s used=%s", humanBytes(swap), humanBytes(swap-free))})
 		}
 	}
-	if data, err := os.ReadFile("/proc/uptime"); err == nil {
-		fields := strings.Fields(string(data))
+	if data, err := readSmall("/proc/uptime", 4<<10); err == nil {
+		fields := strings.Fields(data)
 		if len(fields) > 0 {
 			if seconds, err := strconv.ParseFloat(fields[0], 64); err == nil {
 				f.Facts["uptime_seconds"] = strconv.FormatInt(int64(seconds), 10)
@@ -53,8 +52,8 @@ func checkResourceOverview(ctx *Context) model.Finding {
 			}
 		}
 	}
-	if data, err := os.ReadFile("/proc/loadavg"); err == nil {
-		fields := strings.Fields(string(data))
+	if data, err := readSmall("/proc/loadavg", 4<<10); err == nil {
+		fields := strings.Fields(data)
 		if len(fields) >= 3 {
 			value := strings.Join(fields[:3], " ")
 			f.Facts["load_average_1_5_15"] = value
@@ -116,20 +115,20 @@ func parseCPUStat(input string) (cpuTicks, bool) {
 }
 
 func sampleCPUUsage(interval time.Duration) (int, bool) {
-	firstData, err := os.ReadFile("/proc/stat")
+	firstData, err := readSmall("/proc/stat", 8<<20)
 	if err != nil {
 		return 0, false
 	}
-	first, ok := parseCPUStat(string(firstData))
+	first, ok := parseCPUStat(firstData)
 	if !ok {
 		return 0, false
 	}
 	time.Sleep(interval)
-	secondData, err := os.ReadFile("/proc/stat")
+	secondData, err := readSmall("/proc/stat", 8<<20)
 	if err != nil {
 		return 0, false
 	}
-	second, ok := parseCPUStat(string(secondData))
+	second, ok := parseCPUStat(secondData)
 	if !ok || second.total <= first.total || second.idle < first.idle {
 		return 0, false
 	}

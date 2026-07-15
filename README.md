@@ -205,6 +205,15 @@ vps-scope render --lang zh-CN --format html --output report.zh-CN.html report.js
 vps-scope render --lang en --format markdown --output report.en.md report.json
 ```
 
+报告可以单独校验，完整报告包还会同时检查清单、文件数量、未声明文件和 SHA-256。对于当前版本的报告，校验器也会确认 51 个稳定检查 ID、状态、严重度、摘要和 `reason_code` 彼此一致：
+
+```bash
+vps-scope verify report.json
+vps-scope verify ./reports/sgp
+```
+
+哈希一致只能说明文件与清单一致；语义校验可以进一步发现“报告没有被篡改，但生成时已经缺项或内部矛盾”的情况。
+
 准备公开报告前，可以生成脱敏版：
 
 ```bash

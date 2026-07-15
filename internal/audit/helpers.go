@@ -29,7 +29,8 @@ func readPasswd() ([]passwdEntry, error) {
 	}
 	defer f.Close()
 	var entries []passwdEntry
-	scanner := bufio.NewScanner(f)
+	limited := &io.LimitedReader{R: f, N: (4 << 20) + 1}
+	scanner := bufio.NewScanner(limited)
 	for scanner.Scan() {
 		parts := strings.Split(scanner.Text(), ":")
 		if len(parts) < 7 {
@@ -42,7 +43,13 @@ func readPasswd() ([]passwdEntry, error) {
 		}
 		entries = append(entries, passwdEntry{Name: parts[0], UID: uid, GID: gid, Home: parts[5], Shell: parts[6]})
 	}
-	return entries, scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	if limited.N == 0 {
+		return nil, fmt.Errorf("/etc/passwd exceeds 4 MiB safety limit")
+	}
+	return entries, nil
 }
 
 func loginShell(shell string) bool {

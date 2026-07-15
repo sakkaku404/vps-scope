@@ -111,18 +111,28 @@ func readReport(path string) (model.Report, error) {
 const maxLocalJSONSize = 64 << 20
 
 func openLimitedJSON(path string) (*os.File, error) {
+	before, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() {
+		return nil, fmt.Errorf("JSON input %q is not a regular file", path)
+	}
+	if before.Size() < 0 || before.Size() > maxLocalJSONSize {
+		return nil, fmt.Errorf("JSON input %q is too large (%d bytes; limit %d)", path, before.Size(), maxLocalJSONSize)
+	}
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	info, err := file.Stat()
+	after, err := file.Stat()
 	if err != nil {
 		file.Close()
 		return nil, err
 	}
-	if info.Size() > maxLocalJSONSize {
+	if !after.Mode().IsRegular() || !os.SameFile(before, after) || after.Size() != before.Size() {
 		file.Close()
-		return nil, fmt.Errorf("JSON input %q is too large (%d bytes; limit %d)", path, info.Size(), maxLocalJSONSize)
+		return nil, fmt.Errorf("JSON input %q changed while being opened", path)
 	}
 	return file, nil
 }

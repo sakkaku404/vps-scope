@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -57,12 +55,6 @@ type SupportFinding struct {
 }
 
 func SupportBundle(dir string, source model.Report) (Manifest, error) {
-	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
-		return Manifest{}, err
-	}
-	if err := os.Mkdir(dir, 0o700); err != nil {
-		return Manifest{}, err
-	}
 	redacted := redact.New().Report(source)
 	snapshot := supportSnapshot(redacted)
 	files := map[string]func(io.Writer) error{
@@ -77,31 +69,7 @@ func SupportBundle(dir string, source model.Report) (Manifest, error) {
 			return err
 		},
 	}
-	manifest := Manifest{SchemaVersion: SupportSchema, CreatedAt: time.Now().UTC()}
-	names := make([]string, 0, len(files))
-	for name := range files {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		path := filepath.Join(dir, name)
-		if err := atomicWriteLimited(path, maxBundleFileBytes, files[name]); err != nil {
-			return Manifest{}, err
-		}
-		size, digest, err := fileDigest(path, maxBundleFileBytes)
-		if err != nil {
-			return Manifest{}, err
-		}
-		manifest.Files = append(manifest.Files, ManifestFile{Name: name, Size: int(size), SHA256: digest})
-	}
-	if err := atomicWriteLimited(filepath.Join(dir, "manifest.json"), maxManifestBytes, func(w io.Writer) error {
-		enc := json.NewEncoder(w)
-		enc.SetIndent("", "  ")
-		return enc.Encode(manifest)
-	}); err != nil {
-		return Manifest{}, err
-	}
-	return manifest, nil
+	return writeBundleFiles(dir, SupportSchema, files)
 }
 
 func supportSnapshot(r model.Report) SupportSnapshot {

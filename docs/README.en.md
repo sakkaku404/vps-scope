@@ -139,6 +139,15 @@ vps-scope render --lang zh-CN --format html --output report.zh-CN.html report.js
 vps-scope render --lang en --format markdown --output report.en.md report.json
 ```
 
+Both a standalone report and a complete bundle can be verified. Bundle verification checks the declared file set, undeclared files, and SHA-256 values; current reports are also checked for the complete 51-ID contract, consistent statuses and severities, summary counts, and reason codes:
+
+```bash
+vps-scope verify report.json
+vps-scope verify ./reports/sgp
+```
+
+Matching hashes prove that files match their manifest. Semantic verification additionally detects a report that was already incomplete or internally inconsistent when it was produced.
+
 The `redact` command replaces hostnames, addresses, domains, usernames, and key fingerprints with stable placeholders before a report is shared:
 
 ```bash
@@ -184,7 +193,7 @@ render      turn a JSON report into another language or format
 redact      make a report safer to share
 support     create a privacy-safe compatibility support bundle
 report      view and manage saved reports
-verify      verify the files in a report bundle
+verify      verify report semantics and report-bundle integrity
 version     show build information
 ```
 

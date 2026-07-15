@@ -6,6 +6,21 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 0.14.0 - 2026-07-16
+
+### Added
+
+- `vps-scope verify` now accepts standalone JSON reports and validates the report-v1 semantic contract: stable IDs, categories, status/severity combinations, reason-code ownership, availability flags, timestamps, host context, and recomputed summary counts.
+- Semantic verification preserves report-v1 forward compatibility: reports from newer tool versions may append well-formed IDs, but they cannot omit or redefine any ID already known to the verifier.
+- CI and the reproducible regression script now run a complete standard Linux audit with the freshly built binary and verify the generated report bundle.
+
+### Changed
+
+- Single-file reports are bounded and published atomically without replacing an existing output; failed rendering leaves no partial destination.
+- Baseline creation now uses the same bounded, non-overwriting atomic publication path; local JSON/report readers reject oversized, non-regular, swapped, or symlinked inputs, and Linux updates the `latest` report link atomically.
+- Report and support bundles remove partial directories after generation failures, require their complete file sets, reject unsafe locales, symlinked payloads, undeclared files, unknown manifest fields, trailing JSON, oversized inputs, and incomplete manifests.
+- The disposable connectivity runner now removes its capture files and verifies that no helper process, UFW rule, or runtime state file survives a scenario.
+
 ## 0.13.0 - 2026-07-15
 
 ### Added

@@ -38,4 +38,4 @@ On a Windows development host, the bounded parallel matrix runner accepts SSH al
 .\scripts\lab\run-connectivity-matrix.ps1 -Hosts lab-a,lab-b,lab-c,lab-d -Output .\lab-result.json
 ```
 
-The runner does not create the authorization marker or copy binaries. It waits for scenario cleanup and fails if a lab UFW rule remains. The target address is used only as the probe destination and is not written to the result.
+The runner does not create the authorization marker or copy binaries. It waits for scenario cleanup, removes its bounded stdout/stderr capture files, and fails if a lab UFW rule, serving helper, or runtime state file remains. The target address is used only as the probe destination and is not written to the result.

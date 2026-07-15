@@ -3,6 +3,7 @@ package app
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -13,6 +14,24 @@ func TestReadReportRejectsTrailingJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := readReport(path); err == nil || !strings.Contains(err.Error(), "unexpected data") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestOpenLimitedJSONRejectsSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks requires additional Windows privileges")
+	}
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.json")
+	link := filepath.Join(dir, "report.json")
+	if err := os.WriteFile(target, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openLimitedJSON(link); err == nil || !strings.Contains(err.Error(), "not a regular file") {
 		t.Fatalf("err=%v", err)
 	}
 }

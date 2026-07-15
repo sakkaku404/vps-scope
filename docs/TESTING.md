@@ -12,7 +12,9 @@ bash scripts/regression.sh
 
 Tests cover address classification, listener parsing, dpkg verification classification, explicit port intent, bilingual catalogs, redaction stability, all renderers, report manifests, tamper detection, command-output limits, fact caching, sudo evidence privacy, and CLI parsing. Short fuzz runs cover proxy parser panic safety and report-bundle file-name boundaries.
 
-`scripts/check-coverage.sh` enforces per-package ratchets rather than one misleading repository-wide percentage. The current floors are app 40%, audit 51%, redact 80%, and report 80%; they may only move upward as more OS collectors gain deterministic fixtures.
+CI also runs the freshly cross-built Linux amd64 binary on the GitHub Ubuntu runner, produces a complete bundle through a real standard audit, and verifies both the manifest and the report semantic contract. This catches collector panics, missing stable IDs, malformed summaries, and development-build reason-code gaps that package-level tests alone cannot prove absent.
+
+`scripts/check-coverage.sh` enforces per-package ratchets rather than one misleading repository-wide percentage. The current floors are app 46%, audit 51%, redact 86%, and report 82%; they may only move upward as more OS collectors gain deterministic fixtures.
 
 Proxy-specific fixtures also verify that configuration summaries never retain UUIDs, passwords, API secrets, inbound tags, SSH key comments, APT URL credentials, or complete process arguments.
 
