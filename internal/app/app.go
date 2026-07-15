@@ -495,11 +495,38 @@ func (e environment) doctor(args []string) error {
 	zh := locale == "zh-CN"
 	fmt.Fprintf(e.out, "VPS Scope doctor\nOS=%s ARCH=%s GO=%s\n", runtime.GOOS, runtime.GOARCH, runtime.Version())
 	fmt.Fprintf(e.out, "%s=%t\n", choose(zh, "支持完整审计", "full_audit_supported"), runtime.GOOS == "linux")
+	if runtime.GOOS == "linux" {
+		fmt.Fprintln(e.out, choose(zh, "命令状态: TRUSTED=可安全执行  UNTRUSTED=存在但权限链不可信  MISSING=未找到", "command status: TRUSTED=safe to execute  UNTRUSTED=unsafe ownership or writable path  MISSING=not found"))
+	}
+	commander := audit.OSCommander{}
 	for _, name := range []string{"sshd", "ss", "journalctl", "ufw", "firewall-cmd", "nft", "iptables", "fail2ban-client", "cscli", "apt-get", "dpkg", "systemctl", "docker", "coredumpctl", "getcap"} {
-		_, err := findCommand(name)
-		fmt.Fprintf(e.out, "%-18s %s\n", name, map[bool]string{true: "FOUND", false: "MISSING"}[err == nil])
+		status := "MISSING"
+		if runtime.GOOS == "linux" {
+			status = doctorCommandStatus(commander, name)
+		} else if _, err := findCommand(name); err == nil {
+			status = "FOUND"
+		}
+		fmt.Fprintf(e.out, "%-18s %s\n", name, status)
 	}
 	return nil
+}
+
+type trustedExecutableInspector interface {
+	TrustedExecutable(string) (string, error)
+}
+
+func doctorCommandStatus(cmd audit.Commander, name string) string {
+	if !cmd.Exists(name) {
+		return "MISSING"
+	}
+	trusted, ok := cmd.(trustedExecutableInspector)
+	if !ok {
+		return "FOUND"
+	}
+	if _, err := trusted.TrustedExecutable(name); err != nil {
+		return "UNTRUSTED"
+	}
+	return "TRUSTED"
 }
 
 func (e environment) checks(args []string) error {
