@@ -69,23 +69,79 @@ func serve(network, address string) error {
 }
 
 func probe(network, address string, timeout time.Duration) error {
-	conn, err := net.DialTimeout(network, address, timeout)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(timeout))
 	payload := []byte("vps-scope-lab-probe")
-	if _, err := conn.Write(payload); err != nil {
-		return err
+	if network == "udp4" || network == "udp6" {
+		conn, err := net.DialTimeout(network, address, timeout)
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		return probeUDP(conn, payload, timeout)
 	}
+	return probeTCP(network, address, payload, timeout)
+}
+
+func probeTCP(network, address string, payload []byte, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		attemptTimeout := 1250 * time.Millisecond
+		if remaining := time.Until(deadline); remaining < attemptTimeout {
+			attemptTimeout = remaining
+		}
+		conn, err := net.DialTimeout(network, address, attemptTimeout)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		_ = conn.SetDeadline(time.Now().Add(attemptTimeout))
+		if _, err = conn.Write(payload); err == nil {
+			reply := make([]byte, len(payload))
+			_, err = io.ReadFull(conn, reply)
+			if err == nil && string(reply) != string(payload) {
+				err = fmt.Errorf("unexpected echo response")
+			}
+		}
+		_ = conn.Close()
+		if err == nil {
+			fmt.Println("PASS", network, address)
+			return nil
+		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("TCP probe timed out")
+	}
+	return lastErr
+}
+
+func probeUDP(conn net.Conn, payload []byte, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
 	reply := make([]byte, len(payload))
-	if _, err := io.ReadFull(conn, reply); err != nil {
-		return err
+	var lastErr error
+	for time.Now().Before(deadline) {
+		attemptDeadline := time.Now().Add(750 * time.Millisecond)
+		if attemptDeadline.After(deadline) {
+			attemptDeadline = deadline
+		}
+		_ = conn.SetDeadline(attemptDeadline)
+		if _, err := conn.Write(payload); err != nil {
+			lastErr = err
+			continue
+		}
+		if _, err := io.ReadFull(conn, reply); err != nil {
+			lastErr = err
+			continue
+		}
+		if string(reply) != string(payload) {
+			lastErr = fmt.Errorf("unexpected echo response")
+			continue
+		}
+		fmt.Println("PASS", conn.RemoteAddr().Network(), conn.RemoteAddr())
+		return nil
 	}
-	if string(reply) != string(payload) {
-		return fmt.Errorf("unexpected echo response")
+	if lastErr == nil {
+		lastErr = fmt.Errorf("UDP probe timed out")
 	}
-	fmt.Println("PASS", network, address)
-	return nil
+	return lastErr
 }

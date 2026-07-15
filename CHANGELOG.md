@@ -6,6 +6,24 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 1.0.0 - 2026-07-16
+
+### Stability
+
+- VPS Scope now declares a stable 1.x compatibility policy for report schema 1.0, the existing 51 check IDs, reason codes, baseline v2, documented commands and long flags, exit behavior, and Ubuntu/Debian amd64/arm64 support.
+- The 1.0 engineering gate is backed by three consecutive compatible releases (`v0.12.0` through `v0.14.0`), the fixed four-host laboratory, release-asset provenance verification, and protected repository/security-scanning state.
+
+### Added
+
+- CI now performs bounded fuzz runs for proxy configuration parsers and report-bundle filename boundaries instead of relying only on seed-corpus execution.
+- The disposable laboratory now includes a guarded, self-cleaning report fault-injection runner for undeclared, missing, symlinked, and semantically invalid bundle payloads.
+
+### Changed
+
+- Report semantic validation now produces deterministic diagnostics, rejects negative semantic-version components, and reuses a single immutable category contract.
+- The 1.0 readiness ledger records the three-release compatibility gate, fixed-lab evidence, public-asset verification, and repository security posture.
+- The cross-host connectivity matrix now requires exact remote readiness and completed cleanup, fails on any probe or lifecycle error, and uses bounded TCP/UDP retries within the original timeout budget to avoid treating one dropped packet as a policy result.
+
 ## 0.14.0 - 2026-07-16
 
 ### Added

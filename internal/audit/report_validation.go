@@ -35,19 +35,24 @@ func ValidateReport(r model.Report, verifierVersion ...string) []string {
 	if r.Host.OS != "ubuntu" && r.Host.OS != "debian" {
 		failures = append(failures, fmt.Sprintf("unsupported or empty host OS %q", r.Host.OS))
 	}
-	for field, value := range map[string]string{
-		"stable_id": r.Host.StableID, "hostname": r.Host.Hostname, "os_version": r.Host.OSVersion,
-		"kernel": r.Host.Kernel, "architecture": r.Host.Architecture,
+	for _, field := range []struct{ name, value string }{
+		{"stable_id", r.Host.StableID}, {"hostname", r.Host.Hostname}, {"os_version", r.Host.OSVersion},
+		{"kernel", r.Host.Kernel}, {"architecture", r.Host.Architecture},
 	} {
-		if strings.TrimSpace(value) == "" {
-			failures = append(failures, "host "+field+" is empty")
+		if strings.TrimSpace(field.value) == "" {
+			failures = append(failures, "host "+field.name+" is empty")
 		}
 	}
-	for field, value := range map[string]string{
-		"requested": r.Profile.Requested, "detected": r.Profile.Detected, "effective": r.Profile.Effective,
+	for _, field := range []struct {
+		name, value string
+		requested   bool
+	}{
+		{"requested", r.Profile.Requested, true},
+		{"detected", r.Profile.Detected, false},
+		{"effective", r.Profile.Effective, false},
 	} {
-		if !validReportProfile(value, field == "requested") {
-			failures = append(failures, fmt.Sprintf("invalid profile %s %q", field, value))
+		if !validReportProfile(field.value, field.requested) {
+			failures = append(failures, fmt.Sprintf("invalid profile %s %q", field.name, field.value))
 		}
 	}
 
@@ -140,7 +145,7 @@ func semanticVersion(version string) (int, int, bool) {
 	}
 	major, errMajor := strconv.Atoi(parts[0])
 	minor, errMinor := strconv.Atoi(parts[1])
-	if errMajor != nil || errMinor != nil {
+	if errMajor != nil || errMinor != nil || major < 0 || minor < 0 {
 		return 0, 0, false
 	}
 	return major, minor, true
@@ -157,12 +162,42 @@ func versionNewerThan(version, reference string) bool {
 
 func reportCategoryForID(id string) string {
 	prefix, _, _ := strings.Cut(id, "-")
-	return map[string]string{
-		"SYS": "system", "ACC": "accounts", "SSH": "ssh", "PRIV": "privileges",
-		"NET": "network", "FW": "firewall", "AUTH": "auth", "UPD": "updates",
-		"PKG": "packages", "PROC": "processes", "DOCKER": "docker", "TLS": "tls",
-		"WORK": "workloads", "FS": "filesystem", "PERSIST": "persistence", "REL": "reliability",
-	}[prefix]
+	switch prefix {
+	case "SYS":
+		return "system"
+	case "ACC":
+		return "accounts"
+	case "SSH":
+		return "ssh"
+	case "PRIV":
+		return "privileges"
+	case "NET":
+		return "network"
+	case "FW":
+		return "firewall"
+	case "AUTH":
+		return "auth"
+	case "UPD":
+		return "updates"
+	case "PKG":
+		return "packages"
+	case "PROC":
+		return "processes"
+	case "DOCKER":
+		return "docker"
+	case "TLS":
+		return "tls"
+	case "WORK":
+		return "workloads"
+	case "FS":
+		return "filesystem"
+	case "PERSIST":
+		return "persistence"
+	case "REL":
+		return "reliability"
+	default:
+		return ""
+	}
 }
 
 func validReportProfile(profile string, requested bool) bool {

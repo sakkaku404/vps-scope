@@ -37,11 +37,41 @@ $addresses = @{}
 foreach ($name in $Hosts) { $addresses[$name] = Resolve-SshHost $name }
 $results = [System.Collections.Generic.List[object]]::new()
 
+function Wait-RemoteScenarioReady([string] $Target, [string] $Network, [int] $Port) {
+    $expected = "$Network $Port"
+    for ($attempt = 0; $attempt -lt 30; $attempt++) {
+        $actual = ssh $Target "cat /run/vps-scope-lab/ready 2>/dev/null || true"
+        if (($actual | Out-String).Trim() -eq $expected) { return $true }
+        Start-Sleep -Milliseconds 200
+    }
+    return $false
+}
+
+function Wait-RemoteScenarioFinished([string] $Target, [int] $MaxSeconds) {
+    $deadline = [DateTime]::UtcNow.AddSeconds($MaxSeconds + 10)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $actual = ssh $Target "cat /run/vps-scope-lab/ready 2>/dev/null || true"
+        if ([string]::IsNullOrWhiteSpace(($actual | Out-String).Trim())) { return $true }
+        Start-Sleep -Milliseconds 500
+    }
+    return $false
+}
+
+$lifecycleFailed = $false
+
 foreach ($network in $networks) {
     foreach ($target in $Hosts) {
         $remote = "nohup env VPS_SCOPE_LAB_NETWORK=$($network.Name) VPS_SCOPE_LAB_PORT=$($network.Port) VPS_SCOPE_LAB_DURATION=$ScenarioSeconds VPS_SCOPE_LAB_OPEN_FIREWALL=1 VPS_SCOPE_LAB_HELPER=/opt/vps-scope-lab/net-helper /opt/vps-scope-lab/scenario.sh </dev/null >/run/vps-scope-lab/$($network.Name).out 2>&1 &"
         ssh $target $remote | Out-Null
-        Start-Sleep -Seconds 2
+        if (-not (Wait-RemoteScenarioReady $target $network.Name $network.Port)) {
+            $diagnostic = ssh $target "tail -n 5 /run/vps-scope-lab/$($network.Name).out 2>/dev/null || true"
+            Write-Warning "Scenario did not become ready on $target ($($network.Name)): $diagnostic"
+            foreach ($peer in $Hosts) {
+                if ($peer -eq $target) { continue }
+                $results.Add([pscustomobject]@{ Network = $network.Name; From = $peer; To = $target; Passed = $false })
+            }
+            continue
+        }
 
         $jobs = @()
         foreach ($peer in $Hosts) {
@@ -62,10 +92,13 @@ foreach ($network in $networks) {
             }
             Remove-Job $job -Force
         }
+        if (-not (Wait-RemoteScenarioFinished $target $ScenarioSeconds)) {
+            Write-Warning "Scenario did not finish cleanly on $target ($($network.Name))"
+            $lifecycleFailed = $true
+        }
     }
 }
 
-Start-Sleep -Seconds ($ScenarioSeconds + 2)
 $cleanup = @()
 foreach ($target in $Hosts) {
     ssh $target "rm -f -- /run/vps-scope-lab/tcp4.out /run/vps-scope-lab/udp4.out" | Out-Null
@@ -92,3 +125,6 @@ if (@($cleanup | Where-Object { $_.RemainingLabRules -ne 0 -or $_.RemainingHelpe
 }
 $passed = @($results | Where-Object Passed).Count
 Write-Output "matrix complete: $passed/$($results.Count) probes passed; cleanup verified on $($Hosts.Count) hosts"
+if ($passed -ne $results.Count -or $lifecycleFailed) {
+    throw "At least one connectivity probe or scenario lifecycle check failed"
+}

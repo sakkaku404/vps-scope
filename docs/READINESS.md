@@ -30,3 +30,12 @@ VPS Scope treats the four disposable Debian/Ubuntu hosts as a fixed compatibilit
 - Release assets are built by GitHub Actions, checksummed, signed when configured, downloaded again, and verified before the release is considered complete.
 
 Three consecutive releases satisfying this contract without an ID/schema compatibility break are the engineering gate for a 1.0 label. Popularity or a large external telemetry pool is not required.
+
+## 1.0 evidence ledger
+
+- `v0.12.0`, `v0.13.0`, and `v0.14.0` each shipped the same 51 stable check IDs. The only report-v1 schema growth was the optional, backward-compatible `reason_code` field in `v0.13.0`.
+- The `v0.14.0` release candidate completed the required four-host standard matrix, Debian and Ubuntu deep runs, 24/24 cross-host TCP/UDP probes, report/support-bundle fault injection, privacy scans, and zero-residue cleanup.
+- The public `v0.14.0` amd64 asset was downloaded again, matched `SHA256SUMS` and GitHub provenance, identified the expected release commit, and reproduced all 51 findings on the four fixed laboratory hosts without a status or reason-code regression.
+- The `v1.0.0-rc.1` candidate reproduced the same 51-ID status and reason-code results on all four hosts, passed deep audits on Debian and Ubuntu, completed a strict 24/24 cross-host TCP/UDP matrix with zero residue, generated and verified a privacy-scanned support bundle, and rejected four independently injected bundle faults.
+- The 1.0 matrix runner verifies exact remote readiness and cleanup state and exits non-zero on any probe or lifecycle failure. TCP and UDP probes may retry only within one fixed timeout, so an isolated dropped packet does not become a policy conclusion while persistent blocking still fails the gate.
+- The repository has no open code-scanning, Dependabot, or secret-scanning alerts. Main-branch protection requires current `test` and `analyze` checks, linear history, resolved conversations, and applies to administrators; force pushes and deletion are disabled.

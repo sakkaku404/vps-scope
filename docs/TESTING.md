@@ -10,7 +10,7 @@ govulncheck ./...
 bash scripts/regression.sh
 ```
 
-Tests cover address classification, listener parsing, dpkg verification classification, explicit port intent, bilingual catalogs, redaction stability, all renderers, report manifests, tamper detection, command-output limits, fact caching, sudo evidence privacy, and CLI parsing. Short fuzz runs cover proxy parser panic safety and report-bundle file-name boundaries.
+Tests cover address classification, listener parsing, dpkg verification classification, explicit port intent, bilingual catalogs, redaction stability, all renderers, report manifests, tamper detection, command-output limits, fact caching, sudo evidence privacy, and CLI parsing. CI also performs bounded fuzz runs for proxy parser panic safety and report-bundle file-name boundaries; longer local fuzz runs remain part of release-candidate review.
 
 CI also runs the freshly cross-built Linux amd64 binary on the GitHub Ubuntu runner, produces a complete bundle through a real standard audit, and verifies both the manifest and the report semantic contract. This catches collector panics, missing stable IDs, malformed summaries, and development-build reason-code gaps that package-level tests alone cannot prove absent.
 
@@ -87,3 +87,5 @@ Never commit real host reports. They may contain IP addresses, domains, username
 The opt-in helpers under `scripts/lab` are separate from the audit binary. They require an exact disposable-host marker, accept only ports 39000-39999, serialize scenarios with a lock, and remove their process and optional UFW rule on every normal or signalled exit. Existing rules on the selected port cause a refusal. `/opt/vps-scope-lab` is used for executables because a valid lab host may mount `/run` with `noexec`; `/run/vps-scope-lab` contains state only.
 
 The fixed matrix exercises cross-host TCP/UDP IPv4 reachability and local IPv6 listener parsing. External IPv6 reachability is recorded only on hosts with a usable IPv6 route; its absence is not converted into a pass. Matrix artifacts contain aliases and outcomes, not resolved addresses, and are never committed.
+
+The matrix requires an exact network/port readiness marker, waits for each remote cleanup, fails on every probe or lifecycle error, and checks for residual UFW rules, helpers, and state files. Its TCP/UDP retries stay inside one fixed timeout. The guarded report fault-injection runner independently proves rejection of undeclared files, missing files, symlink payloads, and manifest-consistent semantic corruption, then removes its working directory.

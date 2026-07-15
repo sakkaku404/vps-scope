@@ -203,6 +203,8 @@ VPS Scope currently supports Ubuntu and Debian on Linux `amd64` and `arm64`. Som
 
 VPS Scope is useful for reviewing a server, but it cannot prove that a machine is clean or see cloud firewall rules from inside the guest. See [the design notes](DESIGN.md) for the current trust boundary and known limitations.
 
+The 1.x guarantees for report schemas, check IDs, reason codes, public commands, exit behavior, and older reports are documented in the [stability and compatibility policy](STABILITY.md). Human-readable layout may evolve; automation should consume canonical JSON.
+
 ## Development
 
 ```bash
