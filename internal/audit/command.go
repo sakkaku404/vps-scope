@@ -73,10 +73,15 @@ func (OSCommander) Run(timeout time.Duration, name string, args ...string) Comma
 	if lookupErr != nil {
 		return CommandResult{Err: lookupErr, Code: -1}
 	}
+	path, trustErr := verifyTrustedExecutable(path)
+	if trustErr != nil {
+		return CommandResult{Err: fmt.Errorf("refusing untrusted executable %q: %w", name, trustErr), Code: -1}
+	}
 	cmd := exec.CommandContext(ctx, path, args...)
 	// A fixed search path avoids accidental command resolution through a
 	// caller-controlled PATH while retaining standard Debian/Ubuntu locations.
 	cmd.Env = append(os.Environ(), "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL=C", "LANG=C")
+	hardenCommandExecution(cmd)
 	stdout := limitedBuilder{limit: maxCommandOutputBytes}
 	stderr := limitedBuilder{limit: maxCommandOutputBytes}
 	cmd.Stdout = &stdout

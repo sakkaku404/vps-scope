@@ -28,6 +28,8 @@ The scenarios assert outcomes, not implementation details. They currently cover 
 
 Runtime fault injection deliberately panics a category evaluator with a secret-shaped value. The test requires all stable IDs for that category to survive as unavailable `UNKNOWN` findings, requires the panic value to be absent from errors and evidence, and validates the resulting complete 51-ID report with the production semantic verifier.
 
+Linux-only command-runner tests execute real root-owned system utilities. They prove that a caller-controlled `PATH` and locale are replaced, writable temporary executables are refused, non-zero exits retain bounded diagnostics, noisy output is truncated, and a timed-out shell cannot leave a forked child holding the audit open. These tests run under the race detector in CI even when development happens on Windows.
+
 When adding a new decision rule, add at least one ordinary expected-state scenario and one adverse or incomplete-evidence scenario. Keep fixtures small, synthetic, and free of real host identifiers or secrets.
 
 ## Cross compilation
