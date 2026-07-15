@@ -32,6 +32,8 @@ Linux-only command-runner tests execute real root-owned system utilities. They p
 
 Linux file-reader tests place a FIFO at a candidate configuration path without starting a writer and require immediate refusal. They also prove that a normal symlink to a regular configuration remains readable, while common tests retain the descriptor-bound size limit and reject directories.
 
+SQLite adapter tests create real temporary databases and enforce an expired query deadline plus the database, column, row, cell, and aggregate-result limits. Doctor fixtures separately prove trusted, untrusted, missing, and legacy availability-only command states, so diagnostics cannot silently drift away from the audit runner's executable policy.
+
 When adding a new decision rule, add at least one ordinary expected-state scenario and one adverse or incomplete-evidence scenario. Keep fixtures small, synthetic, and free of real host identifiers or secrets.
 
 ## Cross compilation

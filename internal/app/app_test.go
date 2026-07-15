@@ -16,6 +16,58 @@ import (
 	"github.com/sakkaku404/vps-scope/internal/report"
 )
 
+type doctorFixtureCommander struct {
+	exists  map[string]bool
+	trusted map[string]error
+}
+
+func (c doctorFixtureCommander) Run(time.Duration, string, ...string) audit.CommandResult {
+	return audit.CommandResult{}
+}
+
+func (c doctorFixtureCommander) Exists(name string) bool {
+	return c.exists[name]
+}
+
+func (c doctorFixtureCommander) TrustedExecutable(name string) (string, error) {
+	if err, ok := c.trusted[name]; ok {
+		return "", err
+	}
+	return "/usr/bin/" + name, nil
+}
+
+type doctorAvailabilityCommander map[string]bool
+
+func (c doctorAvailabilityCommander) Run(time.Duration, string, ...string) audit.CommandResult {
+	return audit.CommandResult{}
+}
+
+func (c doctorAvailabilityCommander) Exists(name string) bool {
+	return c[name]
+}
+
+func TestDoctorCommandStatusMatchesAuditTrustPolicy(t *testing.T) {
+	commander := doctorFixtureCommander{
+		exists:  map[string]bool{"trusted": true, "untrusted": true},
+		trusted: map[string]error{"untrusted": errors.New("writable parent directory")},
+	}
+	for _, tc := range []struct {
+		name string
+		want string
+	}{
+		{name: "trusted", want: "TRUSTED"},
+		{name: "untrusted", want: "UNTRUSTED"},
+		{name: "missing", want: "MISSING"},
+	} {
+		if got := doctorCommandStatus(commander, tc.name); got != tc.want {
+			t.Errorf("doctorCommandStatus(%q)=%q, want %q", tc.name, got, tc.want)
+		}
+	}
+	if got := doctorCommandStatus(doctorAvailabilityCommander{"legacy": true}, "legacy"); got != "FOUND" {
+		t.Fatalf("commander without trust inspection=%q, want FOUND", got)
+	}
+}
+
 func TestInteractiveProfilePromptUsesConfiguredWriter(t *testing.T) {
 	var out bytes.Buffer
 	_ = Run(nil, strings.NewReader("1\n1\n1\n"), &out, &out, BuildInfo{Version: "test"})

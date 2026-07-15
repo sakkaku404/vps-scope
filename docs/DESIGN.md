@@ -24,6 +24,10 @@ All user-selected JSON inputs and generated outputs are size-bounded. Single rep
 
 Panel adapters expose a versioned adapter ID, a recognized database schema ID, a privacy-safe fingerprint made only from table and column names, and an explicit capability list. An unknown fingerprint stops schema-specific queries and produces incomplete/`UNKNOWN` evidence instead of applying a nearby version optimistically.
 
+The embedded SQLite reader opens panel databases read-only after a regular-file preflight. Metadata queries have a fixed deadline and explicit database, column, row, cell, and aggregate-result limits. These limits apply before any returned value becomes retained evidence, preventing a malformed or unexpectedly large database from turning a read-only audit into an unbounded resource consumer. The target host never needs the `sqlite3` command.
+
+`vps-scope doctor` uses the same executable trust inspection as live audit commands on Linux. `TRUSTED` means the resolved binary and every parent directory are root-owned and not group/other writable; `UNTRUSTED` means the command exists but the audit will refuse it; `MISSING` means it is unavailable. The diagnostic therefore describes what the audit can safely execute rather than merely what a caller-controlled shell can locate.
+
 Proxy and web adapters emit configured endpoints into a shared graph. Runtime listeners and normalized host-firewall facts are attached separately; active UFW is combined with the effective nftables INPUT path so workload-managed rules are not hidden by a frontend summary. Policy then evaluates configuration-to-listener ownership, TCP/UDP transport, reverse-proxy frontends and backends, path-gated management routes, exposure scope, and firewall disposition. Product parsers do not decide whether an endpoint is safe.
 
 Network access is disabled by default. The only current opt-in path is `--external-domain`, which performs bounded DNS and TLS observations for the supplied domains. `--expect-cdn` adds an explicit policy expectation; it is never inferred from software names.

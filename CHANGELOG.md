@@ -6,6 +6,20 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 1.3.0 - 2026-07-16
+
+### Security
+
+- Built-in read-only SQLite panel queries now reject non-regular databases and bound database size, query duration, column and row counts, individual cells, and the complete retained result. A malformed or unexpectedly large panel database can no longer consume unbounded audit time or memory.
+
+### Changed
+
+- On Linux, `vps-scope doctor` now applies the same executable ownership and writable-parent checks as the audit runner and reports `TRUSTED`, `UNTRUSTED`, or `MISSING` instead of treating every discoverable command as safe.
+
+### Testing
+
+- Deterministic tests cover every doctor command state, an expired SQLite query deadline, and SQLite database, row, column, cell, and aggregate-result bounds.
+
 ## 1.2.1 - 2026-07-16
 
 ### Security
@@ -334,9 +348,24 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Report comparison, fleet summaries, re-rendering, and redaction.
 - Linux amd64 and arm64 release builds.
 
-[Unreleased]: https://github.com/sakkaku404/vps-scope/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/sakkaku404/vps-scope/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/sakkaku404/vps-scope/compare/v1.2.1...v1.3.0
+[1.2.1]: https://github.com/sakkaku404/vps-scope/compare/v1.2.0...v1.2.1
+[1.2.0]: https://github.com/sakkaku404/vps-scope/compare/v1.1.1...v1.2.0
+[1.1.1]: https://github.com/sakkaku404/vps-scope/compare/v1.1.0...v1.1.1
+[1.1.0]: https://github.com/sakkaku404/vps-scope/compare/v1.0.0...v1.1.0
+[1.0.0]: https://github.com/sakkaku404/vps-scope/compare/v0.14.0...v1.0.0
+[0.14.0]: https://github.com/sakkaku404/vps-scope/compare/v0.13.0...v0.14.0
+[0.13.0]: https://github.com/sakkaku404/vps-scope/compare/v0.12.0...v0.13.0
+[0.12.0]: https://github.com/sakkaku404/vps-scope/compare/v0.11.0...v0.12.0
+[0.11.0]: https://github.com/sakkaku404/vps-scope/compare/v0.10.0...v0.11.0
+[0.10.0]: https://github.com/sakkaku404/vps-scope/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/sakkaku404/vps-scope/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/sakkaku404/vps-scope/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/sakkaku404/vps-scope/compare/v0.7.0...v0.8.0
+[0.7.0]: https://github.com/sakkaku404/vps-scope/compare/v0.6.1...v0.7.0
+[0.6.1]: https://github.com/sakkaku404/vps-scope/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/sakkaku404/vps-scope/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/sakkaku404/vps-scope/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/sakkaku404/vps-scope/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/sakkaku404/vps-scope/compare/v0.2.0...v0.3.0
