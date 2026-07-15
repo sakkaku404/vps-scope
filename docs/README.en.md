@@ -70,7 +70,7 @@ To install `vps-scope` for repeated use:
 curl -fsSL https://raw.githubusercontent.com/sakkaku404/vps-scope/main/install.sh | sudo bash
 ```
 
-Then run `sudo vps-scope`. The installer detects amd64 or arm64 automatically and verifies the release checksum before installing anything. When `cosign` is already available it also verifies the GitHub Actions keyless signature; set `VPS_SCOPE_REQUIRE_SIGNATURE=1` to make that signature mandatory. See [release artifact verification](SUPPLY-CHAIN.md) for the trust model and manual verification command.
+Then run `sudo vps-scope`. The installer detects amd64 or arm64 automatically and verifies the release checksum before installing anything. When `cosign` is already available it also verifies the GitHub Actions keyless signature; an explicitly selected version is bound to that exact tag identity. Set `VPS_SCOPE_REQUIRE_SIGNATURE=1` to make the signature mandatory. Releases also include the project license and a third-party notice generated from the modules linked into the binary. See [release artifact verification](SUPPLY-CHAIN.md) for the trust model and manual verification command.
 
 If you prefer to inspect scripts before running them, download them first or use the manual steps below.
 
@@ -90,7 +90,7 @@ Use `vps-scope_linux_arm64` on an arm64 server.
 
 ## Build from source
 
-VPS Scope has no third-party Go dependencies.
+Building from source requires the Go toolchain. Go module dependencies are downloaded according to `go.mod` and `go.sum`; the released binary does not require those libraries to be installed separately on the VPS.
 
 ```bash
 go build -trimpath -o vps-scope ./cmd/vps-scope

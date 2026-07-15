@@ -37,8 +37,27 @@ jobs:
       - name: Check formatting
         run: test -z "$(gofmt -l .)"
 
-      - name: Check installer scripts
-        run: bash -n install.sh run.sh scripts/check-coverage.sh scripts/regression.sh scripts/lab/scenario.sh
+      - name: Check shell scripts and third-party notices
+        run: |
+          bash -n install.sh run.sh scripts/*.sh scripts/lab/*.sh
+          bash scripts/generate-third-party-notices.sh /tmp/THIRD_PARTY_NOTICES.1.txt
+          bash scripts/generate-third-party-notices.sh /tmp/THIRD_PARTY_NOTICES.2.txt
+          cmp /tmp/THIRD_PARTY_NOTICES.1.txt /tmp/THIRD_PARTY_NOTICES.2.txt
+          grep -q '^Module: modernc.org/sqlite$' /tmp/THIRD_PARTY_NOTICES.1.txt
+
+      - name: Install Cosign for installer integration
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Verify pinned release run and install flows
+        run: |
+          cosign_path="$(command -v cosign)"
+          if [[ "$cosign_path" != /usr/local/bin/cosign ]]; then
+            sudo install -m 0755 "$cosign_path" /usr/local/bin/cosign
+          fi
+          VPS_SCOPE_VERSION=v1.0.0 VPS_SCOPE_REQUIRE_SIGNATURE=1 bash run.sh version
+          sudo env VPS_SCOPE_REQUIRE_SIGNATURE=1 bash install.sh \
+            --version v1.0.0 --install-dir /tmp/vps-scope-install-test
+          /tmp/vps-scope-install-test/vps-scope version
 
       - name: Check PowerShell laboratory runner
         shell: pwsh
