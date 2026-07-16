@@ -537,8 +537,8 @@ func discoverCertificatePaths(ctx *Context) ([]string, error) {
 	}
 	if ctx.Commander.Exists("nginx") {
 		r := ctx.Commander.Run(15*time.Second, "nginx", "-T")
-		if r.Truncated {
-			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("nginx configuration output exceeded the capture limit"))
+		if r.Truncated || r.Err != nil {
+			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("nginx -T: %s", commandError(r)))
 		}
 		re := regexp.MustCompile(`(?m)^\s*ssl_certificate\s+([^;]+);`)
 		for _, match := range re.FindAllStringSubmatch(r.Stdout+r.Stderr, -1) {
