@@ -97,14 +97,14 @@ func TestScenarioEffectiveSSHAndPasswordContext(t *testing.T) {
 func TestScenarioFirewallUpdatesAndAuthentication(t *testing.T) {
 	ufwVerbose := "Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n\n22/tcp ALLOW IN Anywhere\n22/tcp (v6) ALLOW IN Anywhere (v6)"
 	results := map[string]CommandResult{
-		scenarioCommandKey("ufw", "status", "verbose"):                                                                           {Stdout: ufwVerbose},
-		scenarioCommandKey("ufw", "status"):                                                                                      {Stdout: "Status: active"},
-		scenarioCommandKey("ss", "-H", "-lntu"):                                                                                  {Stdout: "tcp LISTEN 0 128 0.0.0.0:22 0.0.0.0:*"},
-		scenarioCommandKey("apt-get", "-s", "-o", "Debug::NoLocking=true", "upgrade"):                                            {Stdout: "Inst openssl [1.0] (1.1 Ubuntu:24.04/noble-security [amd64])"},
-		scenarioCommandKey("dpkg-query", "-W", "-f=${Status}", "unattended-upgrades"):                                            {Stdout: "install ok installed"},
-		scenarioCommandKey("systemctl", "is-enabled", "apt-daily-upgrade.timer"):                                                 {Stdout: "enabled"},
-		scenarioCommandKey("journalctl", "--since", "-1d", "--no-pager", "-o", "cat", "-u", "ssh.service", "-u", "sshd.service"): {Stdout: "Failed password for invalid user admin from 203.0.113.7 port 22 ssh2\nInvalid user admin from 203.0.113.7"},
-		scenarioCommandKey("journalctl", "--since", "-1d", "--no-pager", "-o", "cat", "_COMM=sudo"):                              {Stdout: "sudo: root : TTY=pts/0 ; PWD=/root ; USER=root ; COMMAND=/usr/bin/id"},
+		scenarioCommandKey("ufw", "status", "verbose"):                                {Stdout: ufwVerbose},
+		scenarioCommandKey("ufw", "status"):                                           {Stdout: "Status: active"},
+		scenarioCommandKey("ss", "-H", "-lntu"):                                       {Stdout: "tcp LISTEN 0 128 0.0.0.0:22 0.0.0.0:*"},
+		scenarioCommandKey("apt-get", "-s", "-o", "Debug::NoLocking=true", "upgrade"): {Stdout: "Inst openssl [1.0] (1.1 Ubuntu:24.04/noble-security [amd64])"},
+		scenarioCommandKey("dpkg-query", "-W", "-f=${Status}", "unattended-upgrades"): {Stdout: "install ok installed"},
+		scenarioCommandKey("systemctl", "is-enabled", "apt-daily-upgrade.timer"):      {Stdout: "enabled"},
+		scenarioCommandKey("journalctl", "--since", "-1d", "--no-pager", "-o", "cat", "--grep", sshFailureJournalPattern, "-u", "ssh.service", "-u", "sshd.service"): {Stdout: "Failed password for invalid user admin from 203.0.113.7 port 22 ssh2\nInvalid user admin from 203.0.113.7"},
+		scenarioCommandKey("journalctl", "--since", "-1d", "--no-pager", "-o", "cat", "_COMM=sudo"):                                                                  {Stdout: "sudo: root : TTY=pts/0 ; PWD=/root ; USER=root ; COMMAND=/usr/bin/id"},
 	}
 	cmd := newScenarioCommander([]string{"ufw", "ss", "apt-get", "dpkg-query", "systemctl", "journalctl"}, results)
 	ctx := scenarioContext(cmd)
@@ -179,18 +179,98 @@ func TestScenarioConnectionSnapshotIsSharedAcrossNetworkAndProxyFindings(t *test
 func TestScenarioIncompleteEvidenceNeverBecomesPass(t *testing.T) {
 	truncated := CommandResult{Stdout: "partial", Truncated: true, Err: errCommandOutputTruncated}
 	cmd := newScenarioCommander([]string{"journalctl", "ufw", "ss"}, map[string]CommandResult{
-		scenarioCommandKey("journalctl", "--since", "-1d", "--no-pager", "-o", "cat", "-u", "ssh.service", "-u", "sshd.service"): truncated,
-		scenarioCommandKey("journalctl", "--since", "-1d", "--no-pager", "-o", "cat", "_COMM=sudo"):                              truncated,
-		scenarioCommandKey("ufw", "status", "verbose"):                                                                           truncated,
-		scenarioCommandKey("ss", "-H", "-lntup"):                                                                                 truncated,
+		scenarioCommandKey("journalctl", "--since", "-1d", "--no-pager", "-o", "cat", "--grep", sshFailureJournalPattern, "-u", "ssh.service", "-u", "sshd.service"): truncated,
+		scenarioCommandKey("journalctl", "--since", "-1d", "--no-pager", "-o", "cat", "_COMM=sudo"):                                                                  truncated,
+		scenarioCommandKey("ufw", "status", "verbose"): truncated,
+		scenarioCommandKey("ss", "-H", "-lntup"):       truncated,
 	})
 	ctx := scenarioContext(cmd)
-	requireStatus(t, checkAuth(ctx), "AUTH-001", model.Unknown)
+	if got := findingByID(t, checkAuth(ctx), "AUTH-001").Status; got == model.Pass {
+		t.Fatalf("partial SSH journal became PASS")
+	}
 	requireStatus(t, checkAuth(ctx), "AUTH-002", model.Unknown)
 	requireStatus(t, checkFirewall(ctx), "FW-001", model.Unknown)
 
 	summary := proxyConfigSummary{Product: "sing-box", Path: "/etc/sing-box/config.json", Inbounds: []proxyInbound{{Product: "sing-box", Protocol: "vless", Port: "443", Transports: []string{"tcp"}}}}
 	requireStatus(t, []model.Finding{checkProxyEndpointRelations(ctx, []proxyConfigSummary{summary})}, "WORK-009", model.Unknown)
+}
+
+func TestScenarioPartialAuthenticationAndUpdateEvidenceIsUnknown(t *testing.T) {
+	results := map[string]CommandResult{
+		scenarioCommandKey("journalctl", "--since", "-1d", "--no-pager", "-o", "cat", "--grep", sshFailureJournalPattern, "-u", "ssh.service", "-u", "sshd.service"): {Stdout: "Failed password for root", Err: fmt.Errorf("journal interrupted")},
+		scenarioCommandKey("apt-get", "-s", "-o", "Debug::NoLocking=true", "upgrade"):                                                                                {Stdout: "Inst openssl [1.0] (1.1)", Err: fmt.Errorf("apt lists unavailable")},
+		scenarioCommandKey("dpkg-query", "-W", "-f=${Status}", "unattended-upgrades"):                                                                                {Err: fmt.Errorf("dpkg database unavailable")},
+		scenarioCommandKey("systemctl", "is-enabled", "apt-daily-upgrade.timer"):                                                                                     {Stdout: "enabled"},
+	}
+	ctx := scenarioContext(newScenarioCommander([]string{"journalctl", "apt-get", "dpkg-query", "systemctl"}, results))
+	if got := findingByID(t, checkAuth(ctx), "AUTH-001").Status; got == model.Pass {
+		t.Fatalf("partial SSH journal became PASS")
+	}
+	requireStatus(t, checkUpdates(ctx), "UPD-001", model.Unknown)
+	requireStatus(t, checkUpdates(ctx), "UPD-002", model.Unknown)
+}
+
+func TestScenarioPartialProcessAndPrivilegeEvidenceIsUnknown(t *testing.T) {
+	results := map[string]CommandResult{
+		scenarioCommandKey("systemctl", "--failed", "--no-legend", "--plain"):                         {Stdout: "bad.service loaded failed failed", Err: fmt.Errorf("systemd disconnected")},
+		scenarioCommandKey("find", "/usr", "/opt", "-xdev", "-type", "f", "-perm", "/6000", "-print"): {Stdout: "/usr/bin/passwd", Err: fmt.Errorf("find interrupted")},
+		scenarioCommandKey("getcap", "-r", "/usr", "/opt"):                                            {Stdout: "/usr/bin/ping cap_net_raw=ep", Err: fmt.Errorf("getcap interrupted")},
+	}
+	ctx := scenarioContext(newScenarioCommander([]string{"systemctl", "find", "getcap"}, results))
+	ctx.Deep = true
+	requireStatus(t, checkProcesses(ctx), "PROC-001", model.Unknown)
+	requireStatus(t, checkPrivileges(ctx), "PRIV-002", model.Unknown)
+}
+
+func TestCollectSSHFailureJournalSlicesBusyLookback(t *testing.T) {
+	ctx := scenarioContext(newScenarioCommander([]string{"journalctl"}, nil))
+	ctx.LogSince = 7 * 24 * time.Hour
+	windows := sshFailureJournalWindows(ctx.Now(), ctx.LogSince)
+	if len(windows) != 4 {
+		t.Fatalf("windows=%d, want 4", len(windows))
+	}
+	results := map[string]CommandResult{}
+	for index, window := range windows {
+		args := []string{"--since", journalTimestamp(window.since), "--until", journalTimestamp(window.until), "--no-pager", "-o", "cat", "--grep", sshFailureJournalPattern, "-u", "ssh.service", "-u", "sshd.service"}
+		results[scenarioCommandKey("journalctl", args...)] = CommandResult{Stdout: fmt.Sprintf("Failed password for root from 203.0.113.%d", index+1)}
+	}
+	ctx.Commander = newScenarioCommander([]string{"journalctl"}, results)
+	activity, slices, err := collectSSHFailureJournal(ctx)
+	if err != nil || slices != len(windows) || activity.failedPassword != len(windows) || len(activity.ips) != len(windows) {
+		t.Fatalf("activity=%+v slices=%d err=%v", activity, slices, err)
+	}
+}
+
+func TestCollectSSHFailureJournalRejectsIncompleteSlice(t *testing.T) {
+	ctx := scenarioContext(newScenarioCommander([]string{"journalctl"}, nil))
+	ctx.LogSince = 7 * 24 * time.Hour
+	window := sshFailureJournalWindows(ctx.Now(), ctx.LogSince)[0]
+	args := []string{"--since", journalTimestamp(window.since), "--until", journalTimestamp(window.until), "--no-pager", "-o", "cat", "--grep", sshFailureJournalPattern, "-u", "ssh.service", "-u", "sshd.service"}
+	ctx.Commander = newScenarioCommander([]string{"journalctl"}, map[string]CommandResult{scenarioCommandKey("journalctl", args...): {Stdout: "Failed password for root", Err: fmt.Errorf("journal interrupted")}})
+	_, _, err := collectSSHFailureJournal(ctx)
+	if err == nil || !strings.Contains(err.Error(), "slice 1/4") {
+		t.Fatalf("incomplete journal slice was accepted: %v", err)
+	}
+}
+
+func TestCollectSSHFailureJournalAcceptsNoMatchExit(t *testing.T) {
+	ctx := scenarioContext(newScenarioCommander([]string{"journalctl"}, map[string]CommandResult{
+		scenarioCommandKey("journalctl", "--since", "-1d", "--no-pager", "-o", "cat", "--grep", sshFailureJournalPattern, "-u", "ssh.service", "-u", "sshd.service"): {Err: fmt.Errorf("exit status 1"), Code: 1},
+	}))
+	activity, slices, err := collectSSHFailureJournal(ctx)
+	if err != nil || slices != 1 || activity.failedPassword != 0 {
+		t.Fatalf("no-match journal result=%+v slices=%d err=%v", activity, slices, err)
+	}
+}
+
+func TestCollectSSHFailureJournalRejectsPartialShortLookback(t *testing.T) {
+	ctx := scenarioContext(newScenarioCommander([]string{"journalctl"}, map[string]CommandResult{
+		scenarioCommandKey("journalctl", "--since", "-1d", "--no-pager", "-o", "cat", "--grep", sshFailureJournalPattern, "-u", "ssh.service", "-u", "sshd.service"): {Stdout: "Failed password for root", Err: fmt.Errorf("journal interrupted")},
+	}))
+	_, _, err := collectSSHFailureJournal(ctx)
+	if err == nil {
+		t.Fatal("partial short journal lookback was accepted")
+	}
 }
 
 func TestScenarioUnreadableFirewallIsUnknownForBothFirewallFindings(t *testing.T) {

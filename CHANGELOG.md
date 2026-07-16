@@ -6,6 +6,18 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 1.4.3 - 2026-07-16
+
+### Fixed
+
+- Failed-login collection now asks journald to filter relevant SSH failures before output is captured. Busy hosts split longer lookbacks into at most eight bounded windows and parse each window incrementally, avoiding a large successful-login journal from turning the whole check into `UNKNOWN`.
+- The collector uses Debian/Ubuntu-compatible journal timestamps and recognizes journalctl's zero-match exit status without confusing it with a collection failure.
+- Partial SSH journal, APT simulation, automatic-update state, failed-systemd-unit, SUID/SGID, and file-capability inventories now become incomplete evidence instead of clean-looking conclusions. Independently proven risks remain risks.
+
+### Testing
+
+- Added negative scenarios for partial authentication, update, process, privilege, and journal-window evidence, plus busy-lookback and zero-match journal behavior. Read-only regression audits completed on Debian 12, Ubuntu 22.04, Ubuntu 26.04, and Japan S-UI laboratory hosts; temporary files were removed from every host.
+
 ## 1.4.2 - 2026-07-16
 
 ### Fixed

@@ -178,7 +178,7 @@ func checkProcesses(ctx *Context) []model.Finding {
 		failed = unknown("PROC-001", "processes", "systemctl", "command not found")
 	} else {
 		r := ctx.Commander.Run(15*time.Second, "systemctl", "--failed", "--no-legend", "--plain")
-		if r.Err != nil && r.Stdout == "" {
+		if r.Err != nil || r.Truncated {
 			failed = unknown("PROC-001", "processes", "systemctl --failed", commandError(r))
 		} else {
 			units := lines(r.Stdout)
