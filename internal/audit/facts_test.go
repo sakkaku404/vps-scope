@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/sakkaku404/vps-scope/internal/model"
 )
 
 func TestFactStoreCachesListenerAndProcessSnapshots(t *testing.T) {
@@ -89,5 +91,32 @@ func TestFactStoreBatchesDockerInspect(t *testing.T) {
 	}
 	if len(containers) != len(ids) || containers[len(containers)-1].Name != "/last" {
 		t.Fatalf("DockerContainers = %#v, want %d batched containers", containers, len(ids))
+	}
+}
+
+func TestProxyInventoryUsesBoundedDockerFacts(t *testing.T) {
+	id := fmt.Sprintf("%064x", 1)
+	cmd := newScenarioCommander([]string{"docker", "ps"}, map[string]CommandResult{
+		scenarioCommandKey("ps", "-eo", "pid=,user=,comm=,args="): {Stdout: "1 root init /sbin/init"},
+		scenarioCommandKey("docker", "ps", "-q"):                  {Stdout: id},
+		scenarioCommandKey("docker", "inspect", id):               {Stdout: `[{"Name":"/outline","Config":{"Image":"quay.io/outline/shadowbox"}}]`},
+	})
+	f := checkProxyInventory(scenarioContext(cmd), nil)
+	if f.Status != model.Info || f.Facts["products"] != "Outline" {
+		t.Fatalf("proxy inventory = %#v, want Outline INFO", f)
+	}
+	if cmd.calls[scenarioCommandKey("docker", "ps", "--format", "{{.Names}} {{.Image}}")] != 0 {
+		t.Fatalf("legacy docker ps format command was called: %#v", cmd.calls)
+	}
+}
+
+func TestProxyInventoryDoesNotHideDockerCollectionFailure(t *testing.T) {
+	cmd := newScenarioCommander([]string{"docker", "ps"}, map[string]CommandResult{
+		scenarioCommandKey("ps", "-eo", "pid=,user=,comm=,args="): {Stdout: "1 root init /sbin/init"},
+		scenarioCommandKey("docker", "ps", "-q"):                  {Err: fmt.Errorf("daemon unavailable"), Code: 1},
+	})
+	f := checkProxyInventory(scenarioContext(cmd), nil)
+	if f.Status != model.Unknown || !f.Unavailable || f.NotApplicable {
+		t.Fatalf("proxy inventory = %#v, want unavailable UNKNOWN", f)
 	}
 }
