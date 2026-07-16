@@ -202,11 +202,10 @@ func checkPasswordPolicy(ctx *Context, entries []passwdEntry) model.Finding {
 	if !ctx.Commander.Exists("sshd") {
 		return notApplicable("ACC-003", "accounts", "sshd", "SSH server not installed; local password policy remains inventory only")
 	}
-	effective := ctx.Commander.Run(12*time.Second, "sshd", "-T")
-	if effective.Err != nil {
-		return unknown("ACC-003", "accounts", "sshd -T", commandError(effective))
+	settings, err := ctx.Facts.SSHDSettings()
+	if err != nil {
+		return unknown("ACC-003", "accounts", "sshd -T", err.Error())
 	}
-	settings := parseSpaceSettings(effective.Stdout)
 	passwordEnabled := strings.ToLower(settings["passwordauthentication"]) != "no"
 	f.Facts["ssh_password_path_enabled"] = strconv.FormatBool(passwordEnabled)
 	f.Facts["ssh_keyboard_interactive_enabled"] = strconv.FormatBool(strings.ToLower(settings["kbdinteractiveauthentication"]) != "no")

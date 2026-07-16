@@ -89,6 +89,9 @@ func TestScenarioEffectiveSSHAndPasswordContext(t *testing.T) {
 	requireStatus(t, findings, "SSH-001", model.Pass)
 	requireStatus(t, findings, "SSH-002", model.Info)
 	requireStatus(t, findings, "SSH-003", model.Pass)
+	if got := cmd.calls[scenarioCommandKey("sshd", "-T")]; got != 1 {
+		t.Fatalf("sshd -T calls=%d, want one", got)
+	}
 }
 
 func TestScenarioFirewallUpdatesAndAuthentication(t *testing.T) {
