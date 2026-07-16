@@ -51,3 +51,18 @@ func TestExternalExposureFailureNeverPasses(t *testing.T) {
 		t.Fatalf("finding=%+v", finding)
 	}
 }
+
+func TestExternalExposureTLSFailureNeverPasses(t *testing.T) {
+	cmd := newScenarioCommander([]string{"ip"}, map[string]CommandResult{
+		scenarioCommandKey("ip", "-o", "addr", "show", "scope", "global"): {Stdout: "2: eth0 inet 203.0.113.10/24 scope global eth0"},
+	})
+	ctx := scenarioContext(cmd)
+	ctx.ExternalDomains = []string{"panel.example.test"}
+	ctx.ExternalProber = fakeExternalProber{observations: map[string]externalObservation{
+		"panel.example.test": {Domain: "panel.example.test", Addresses: []string{"198.51.100.20"}, TLSError: "TLS handshake timed out"},
+	}}
+	finding := checkExternalExposure(ctx)
+	if finding.Status != model.Unknown || !finding.Unavailable || finding.Facts["tls_probe_failures"] != "1" {
+		t.Fatalf("finding=%+v", finding)
+	}
+}

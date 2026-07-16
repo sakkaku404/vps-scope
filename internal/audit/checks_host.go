@@ -530,12 +530,13 @@ func checkLogAndInodePressure(ctx *Context) model.Finding {
 func checkReliability(ctx *Context) []model.Finding {
 	f := model.Finding{ID: "REL-001", Category: "reliability", Status: model.Pass, Facts: map[string]string{}}
 	oom, cores := 0, 0
+	var discoveryErr error
 	if ctx.Commander.Exists("journalctl") {
 		r := ctx.Commander.Run(25*time.Second, "journalctl", "-k", "--since", sinceArg(ctx.LogSince), "--no-pager", "-o", "cat")
-		if r.Truncated {
-			f.Status, f.Unavailable, f.Error = model.Unknown, true, commandError(r)
+		if r.Truncated || r.Err != nil {
+			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("journalctl -k: %s", commandError(r)))
 			f.Evidence = append(f.Evidence, model.Evidence{Source: "journalctl -k", Key: "unavailable", Value: commandError(r)})
-		} else if r.Err == nil {
+		} else {
 			re := regexp.MustCompile(`(?i)(out of memory|oom-kill|killed process \d+)`)
 			for _, line := range lines(r.Stdout) {
 				if re.MatchString(line) {
@@ -545,16 +546,14 @@ func checkReliability(ctx *Context) []model.Finding {
 					}
 				}
 			}
-		} else {
-			f.Evidence = append(f.Evidence, model.Evidence{Source: "journalctl -k", Key: "unavailable", Value: commandError(r)})
 		}
 	}
 	if ctx.Commander.Exists("coredumpctl") {
 		r := ctx.Commander.Run(20*time.Second, "coredumpctl", "list", "--since", sinceArg(ctx.LogSince), "--no-pager", "--no-legend")
-		if r.Truncated {
-			f.Status, f.Unavailable, f.Error = model.Unknown, true, commandError(r)
+		if r.Truncated || r.Err != nil {
+			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("coredumpctl: %s", commandError(r)))
 			f.Evidence = append(f.Evidence, model.Evidence{Source: "coredumpctl", Key: "unavailable", Value: commandError(r)})
-		} else if r.Err == nil || r.Stdout != "" {
+		} else {
 			coreLines := lines(r.Stdout)
 			cores = len(coreLines)
 			for i, line := range coreLines {
@@ -594,7 +593,7 @@ func checkReliability(ctx *Context) []model.Finding {
 		model.Evidence{Source: "/var/log/journal", Key: "persistent", Value: strconv.FormatBool(persistent)},
 		model.Evidence{Source: "statfs /", Key: "free_percent", Value: strconv.Itoa(diskFreePercent)},
 	)
-	return []model.Finding{f, checkLogAndInodePressure(ctx)}
+	return []model.Finding{withIncompleteEvidence(f, "reliability log discovery", discoveryErr), checkLogAndInodePressure(ctx)}
 }
 
 // Keep deterministic order when future file scans add map-backed evidence.

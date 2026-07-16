@@ -24,7 +24,10 @@ func checkProxyLogSignals(ctx *Context) model.Finding {
 		args = append(args, "-u", unit)
 	}
 	r := ctx.Commander.Run(25*time.Second, "journalctl", args...)
-	if r.Truncated || (r.Err != nil && r.Stdout == "") {
+	// A non-zero journalctl exit can still carry a prefix of the selected
+	// units. That prefix is not a complete log window, so never publish its
+	// counts as a normal operational conclusion.
+	if r.Truncated || r.Err != nil {
 		return unknown("WORK-010", "workloads", "journalctl proxy units", commandError(r))
 	}
 	patterns := []struct {

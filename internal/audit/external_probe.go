@@ -64,13 +64,13 @@ func checkExternalExposure(ctx *Context) model.Finding {
 		f.Error = "CDN origin comparison requires readable local global IPv4/IPv6 addresses"
 		f.Evidence = append(f.Evidence, model.Evidence{Source: "ip -o addr show scope global", Key: "local_address_evidence", Value: "unavailable"})
 	}
-	directOrigins, failures, expiring := 0, 0, 0
+	directOrigins, dnsFailures, tlsFailures, expiring := 0, 0, 0, 0
 	for _, domain := range ctx.ExternalDomains {
 		probeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		observation := prober.Observe(probeCtx, domain)
 		cancel()
 		if len(observation.Addresses) == 0 {
-			failures++
+			dnsFailures++
 			f.Evidence = append(f.Evidence, model.Evidence{Source: "external DNS/TLS", Key: "observation_failed", Value: fmt.Sprintf("domain=%s error=%s", domain, truncate(observation.TLSError, 180))})
 			continue
 		}
@@ -99,16 +99,20 @@ func checkExternalExposure(ctx *Context) model.Finding {
 			}
 		} else if observation.TLSError != "" {
 			tlsState = "failed:" + truncate(observation.TLSError, 120)
+			tlsFailures++
+		} else {
+			tlsFailures++
 		}
 		f.Evidence = append(f.Evidence, model.Evidence{Source: "external DNS/TLS", Key: "domain_observation", Value: fmt.Sprintf("domain=%s addresses=%s tls=%s judgment=%s", domain, strings.Join(observation.Addresses, ","), tlsState, judgment)})
 	}
 	f.Facts["local_global_addresses"] = strconv.Itoa(len(localAddresses))
 	f.Facts["direct_origin_matches"] = strconv.Itoa(directOrigins)
-	f.Facts["probe_failures"] = strconv.Itoa(failures)
+	f.Facts["probe_failures"] = strconv.Itoa(dnsFailures)
+	f.Facts["tls_probe_failures"] = strconv.Itoa(tlsFailures)
 	f.Facts["expiring_tls"] = strconv.Itoa(expiring)
-	if failures > 0 && f.Status != model.Risk {
+	if (dnsFailures > 0 || tlsFailures > 0) && f.Status != model.Risk {
 		f.Status, f.Unavailable = model.Unknown, true
-		f.Error = "one or more explicitly requested external observations failed"
+		f.Error = "one or more explicitly requested external DNS or TLS observations failed"
 	}
 	return f
 }
