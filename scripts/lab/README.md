@@ -45,3 +45,13 @@ The guarded report fault-injection runner verifies that the candidate rejects un
 ```bash
 sudo ./scripts/lab/run-report-fault-injection.sh /path/to/vps-scope /path/to/report-bundle
 ```
+
+The guarded Docker inventory runner exercises real multi-batch `docker inspect` collection without touching existing containers. It requires a locally cached image and creates only labelled, paused Alpine containers with CPU, memory, swap, and PID limits. The exit trap removes every labelled container and report even if one audit step fails:
+
+```bash
+sudo VPS_SCOPE_LAB_AUDIT_BIN=/opt/vps-scope-lab/vps-scope \
+  VPS_SCOPE_LAB_DOCKER_COUNT=32 \
+  ./scripts/lab/run-docker-inventory-stress.sh
+```
+
+It intentionally refuses to pull an image or create more than 64 additional containers. The unit fixtures cover the 128-container refusal path; the disposable runner exists to prove the normal multi-batch path on a real Docker daemon without exhausting a small VPS.
