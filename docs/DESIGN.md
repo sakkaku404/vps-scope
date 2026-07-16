@@ -26,6 +26,8 @@ Configuration discovery does not use an allocating whole-directory glob. A bound
 
 Directory inventories outside configuration discovery are bounded as well. `/proc` scans reject an excessive process snapshot as unavailable, and saved-report listing has per-root plus aggregate entry ceilings. These readers return either the complete bounded snapshot or an error; callers never receive a prefix that could be mistaken for the full process or report inventory.
 
+Docker inventory follows the same all-or-error rule. `docker ps -q` accepts at most 128 running container IDs, validates the daemon-provided ID shape, and inspects them in fixed batches of 32 rather than creating one unbounded argument list. A batch timeout, truncated output, malformed JSON, or count mismatch invalidates the complete Docker snapshot; Docker findings become `UNKNOWN` instead of reporting on an incomplete subset.
+
 Panel adapters expose a versioned adapter ID, a recognized database schema ID, a privacy-safe fingerprint made only from table and column names, and an explicit capability list. An unknown fingerprint stops schema-specific queries and produces incomplete/`UNKNOWN` evidence instead of applying a nearby version optimistically.
 
 The embedded SQLite reader opens panel databases read-only after a regular-file preflight. Metadata queries have a fixed deadline and explicit database, column, row, cell, and aggregate-result limits. These limits apply before any returned value becomes retained evidence, preventing a malformed or unexpectedly large database from turning a read-only audit into an unbounded resource consumer. The target host never needs the `sqlite3` command.

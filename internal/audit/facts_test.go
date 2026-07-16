@@ -1,6 +1,8 @@
 package audit
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -35,5 +37,57 @@ func TestFactStoreRejectsTruncatedSnapshots(t *testing.T) {
 	}
 	if _, err := facts.Processes(); err == nil {
 		t.Fatal("expected truncated process snapshot error")
+	}
+}
+
+func TestDockerContainerIDsRejectsIncompleteInventory(t *testing.T) {
+	ids := make([]string, maxDockerContainerInventory+1)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("%064x", i)
+	}
+	if _, err := dockerContainerIDs(strings.Join(ids, "\n")); err == nil || !strings.Contains(err.Error(), "safety limit") {
+		t.Fatalf("dockerContainerIDs error = %v, want safety limit", err)
+	}
+}
+
+func TestFactStoreBatchesDockerInspectWithoutReturningPartialInventory(t *testing.T) {
+	ids := make([]string, dockerInspectBatchSize+1)
+	results := map[string]CommandResult{}
+	for i := range ids {
+		ids[i] = fmt.Sprintf("%064x", i+1)
+	}
+	results[scenarioCommandKey("docker", "ps", "-q")] = CommandResult{Stdout: strings.Join(ids, "\n")}
+	results[scenarioCommandKey("docker", append([]string{"inspect"}, ids[:dockerInspectBatchSize]...)...)] = CommandResult{Stdout: "[]"}
+	results[scenarioCommandKey("docker", "inspect", ids[dockerInspectBatchSize])] = CommandResult{Stdout: "[]"}
+	cmd := newScenarioCommander([]string{"docker"}, results)
+	containers, err := NewFactStore(cmd).DockerContainers()
+	if err == nil || !strings.Contains(err.Error(), "returned 0 containers for 32 requested") {
+		t.Fatalf("DockerContainers error = %v, want incomplete batch error", err)
+	}
+	if len(containers) != 0 {
+		t.Fatalf("DockerContainers returned %d partial containers, want zero", len(containers))
+	}
+}
+
+func TestFactStoreBatchesDockerInspect(t *testing.T) {
+	ids := make([]string, dockerInspectBatchSize+1)
+	results := map[string]CommandResult{}
+	for i := range ids {
+		ids[i] = fmt.Sprintf("%064x", i+1)
+	}
+	results[scenarioCommandKey("docker", "ps", "-q")] = CommandResult{Stdout: strings.Join(ids, "\n")}
+	first := make([]string, dockerInspectBatchSize)
+	for i := range first {
+		first[i] = fmt.Sprintf(`{"Name":"/c%d"}`, i)
+	}
+	results[scenarioCommandKey("docker", append([]string{"inspect"}, ids[:dockerInspectBatchSize]...)...)] = CommandResult{Stdout: "[" + strings.Join(first, ",") + "]"}
+	results[scenarioCommandKey("docker", "inspect", ids[dockerInspectBatchSize])] = CommandResult{Stdout: `[{"Name":"/last"}]`}
+	cmd := newScenarioCommander([]string{"docker"}, results)
+	containers, err := NewFactStore(cmd).DockerContainers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(containers) != len(ids) || containers[len(containers)-1].Name != "/last" {
+		t.Fatalf("DockerContainers = %#v, want %d batched containers", containers, len(ids))
 	}
 }

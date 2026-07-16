@@ -40,6 +40,8 @@ Configuration-discovery tests use temporary directory trees to prove determinist
 
 The shared bounded directory reader is tested independently: invalid budgets and one-entry-over-limit directories must fail without returning a partial snapshot. `/proc` collectors and saved-report navigation use that same implementation, while bundle verification retains its stricter protocol-specific 17-entry test.
 
+Docker inventory tests cover the 128-container ceiling, fixed inspect batching, and a deliberately incomplete batch. The latter must return no usable container prefix, so `DOCKER-001` and `DOCKER-002` cannot be derived from only the first successful batch.
+
 When adding a new decision rule, add at least one ordinary expected-state scenario and one adverse or incomplete-evidence scenario. Keep fixtures small, synthetic, and free of real host identifiers or secrets.
 
 ## Cross compilation
