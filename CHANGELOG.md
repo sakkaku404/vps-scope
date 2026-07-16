@@ -6,6 +6,16 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 1.3.3 - 2026-07-16
+
+### Security
+
+- Docker inventory now has an explicit 128-container ceiling and uses fixed 32-container `docker inspect` batches. Oversized inventories, invalid daemon IDs, timeouts, truncated batch output, malformed JSON, and batch count mismatches yield no partial Docker snapshot; dependent Docker findings become `UNKNOWN` rather than being derived from a prefix.
+
+### Testing
+
+- Docker fact-store tests cover the inventory ceiling, batched successful inspection, and an incomplete first batch that must not leak a partial container list.
+
 ## 1.3.2 - 2026-07-16
 
 ### Security
