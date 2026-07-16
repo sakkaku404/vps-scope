@@ -6,6 +6,16 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 1.3.6 - 2026-07-16
+
+### Changed
+
+- Terminal, Markdown, and HTML reports now present the same privacy-safe proxy workload overview before detailed findings. It summarizes detected components, management panels, ingress relationships, control APIs, runtime drift, activity signals, reverse-proxy chains, and Docker deployment context without changing the canonical JSON report or any finding status.
+
+### Testing
+
+- Added renderer-contract tests requiring the proxy overview in Markdown and HTML, plus a real S-UI report-bundle validation across all three readable formats.
+
 ## 1.3.5 - 2026-07-16
 
 ### Fixed
