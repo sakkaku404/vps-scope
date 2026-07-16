@@ -8,11 +8,12 @@ import (
 	"github.com/sakkaku404/vps-scope/internal/model"
 )
 
-func TestFactStoreCachesListenerAndProcessSnapshots(t *testing.T) {
-	cmd := newScenarioCommander([]string{"ss", "ps"}, map[string]CommandResult{
+func TestFactStoreCachesListenerProcessConnectionAndSSHDSnapshots(t *testing.T) {
+	cmd := newScenarioCommander([]string{"ss", "ps", "sshd"}, map[string]CommandResult{
 		scenarioCommandKey("ss", "-H", "-lntup"):                        {Stdout: `tcp LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=1,fd=3))`},
 		scenarioCommandKey("ss", "-H", "-ntup", "state", "established"): {Stdout: `tcp ESTAB 0 0 10.0.0.2:22 203.0.113.5:50123 users:(("sshd",pid=1,fd=3))`},
 		scenarioCommandKey("ps", "-eo", "pid=,user=,comm=,args="):       {Stdout: "1 root sshd /usr/sbin/sshd -D"},
+		scenarioCommandKey("sshd", "-T"):                                {Stdout: "passwordauthentication no\nkbdinteractiveauthentication no\npubkeyauthentication yes"},
 	})
 	facts := NewFactStore(cmd)
 	for i := 0; i < 2; i++ {
@@ -25,18 +26,24 @@ func TestFactStoreCachesListenerAndProcessSnapshots(t *testing.T) {
 		if _, err := facts.EstablishedConnections(); err != nil {
 			t.Fatal(err)
 		}
+		settings, err := facts.SSHDSettings()
+		if err != nil || settings["passwordauthentication"] != "no" {
+			t.Fatalf("sshd settings=%v err=%v", settings, err)
+		}
+		settings["passwordauthentication"] = "yes"
 	}
-	if cmd.calls[scenarioCommandKey("ss", "-H", "-lntup")] != 1 || cmd.calls[scenarioCommandKey("ss", "-H", "-ntup", "state", "established")] != 1 || cmd.calls[scenarioCommandKey("ps", "-eo", "pid=,user=,comm=,args=")] != 1 {
+	if cmd.calls[scenarioCommandKey("ss", "-H", "-lntup")] != 1 || cmd.calls[scenarioCommandKey("ss", "-H", "-ntup", "state", "established")] != 1 || cmd.calls[scenarioCommandKey("ps", "-eo", "pid=,user=,comm=,args=")] != 1 || cmd.calls[scenarioCommandKey("sshd", "-T")] != 1 {
 		t.Fatalf("snapshot calls = %#v, want one each", cmd.calls)
 	}
 }
 
 func TestFactStoreRejectsTruncatedSnapshots(t *testing.T) {
 	truncated := CommandResult{Stdout: "partial", Truncated: true, Err: errCommandOutputTruncated}
-	cmd := newScenarioCommander([]string{"ss", "ps"}, map[string]CommandResult{
+	cmd := newScenarioCommander([]string{"ss", "ps", "sshd"}, map[string]CommandResult{
 		scenarioCommandKey("ss", "-H", "-lntup"):                        truncated,
 		scenarioCommandKey("ss", "-H", "-ntup", "state", "established"): truncated,
 		scenarioCommandKey("ps", "-eo", "pid=,user=,comm=,args="):       truncated,
+		scenarioCommandKey("sshd", "-T"):                                truncated,
 	})
 	facts := NewFactStore(cmd)
 	if _, err := facts.Listeners(); err == nil {
@@ -47,6 +54,9 @@ func TestFactStoreRejectsTruncatedSnapshots(t *testing.T) {
 	}
 	if _, err := facts.EstablishedConnections(); err == nil {
 		t.Fatal("expected truncated established connection snapshot error")
+	}
+	if _, err := facts.SSHDSettings(); err == nil {
+		t.Fatal("expected truncated sshd settings snapshot error")
 	}
 }
 

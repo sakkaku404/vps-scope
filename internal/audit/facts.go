@@ -2,6 +2,7 @@ package audit
 
 import (
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +32,10 @@ type FactStore struct {
 	connectionsOnce sync.Once
 	connections     []activeConnection
 	connectionsErr  error
+
+	sshdOnce     sync.Once
+	sshdSettings map[string]string
+	sshdErr      error
 
 	processesOnce sync.Once
 	processes     []ProcessInfo
@@ -120,6 +125,29 @@ func (f *FactStore) EstablishedConnections() ([]activeConnection, error) {
 		f.connections = parseEstablishedConnections(r.Stdout)
 	})
 	return append([]activeConnection(nil), f.connections...), f.connectionsErr
+}
+
+// SSHDSettings is the effective OpenSSH daemon configuration shared by SSH
+// posture and password-policy context. Both findings must evaluate one
+// sshd -T result rather than independently sampling a live daemon.
+func (f *FactStore) SSHDSettings() (map[string]string, error) {
+	f.sshdOnce.Do(func() {
+		if !f.cmd.Exists("sshd") {
+			f.sshdErr = fmt.Errorf("sshd command not found")
+			return
+		}
+		r := f.cmd.Run(12*time.Second, "sshd", "-T")
+		if r.Truncated {
+			f.sshdErr = fmt.Errorf("sshd -T output exceeded the capture limit")
+			return
+		}
+		if r.Err != nil {
+			f.sshdErr = fmt.Errorf("sshd -T: %s", commandError(r))
+			return
+		}
+		f.sshdSettings = parseSpaceSettings(r.Stdout)
+	})
+	return maps.Clone(f.sshdSettings), f.sshdErr
 }
 
 type activeConnection struct {

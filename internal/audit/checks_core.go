@@ -105,17 +105,9 @@ func checkSSH(ctx *Context) []model.Finding {
 			notApplicable("SSH-005", "ssh", "command", "sshd not installed"),
 		}
 	}
-	r := ctx.Commander.Run(12*time.Second, "sshd", "-T")
-	if r.Err != nil {
-		errText := commandError(r)
-		return []model.Finding{unknown("SSH-001", "ssh", "sshd -T", errText), unknown("SSH-002", "ssh", "sshd -T", errText), unknown("SSH-003", "ssh", "sshd -T", errText), checkSSHPermissions(), checkSSHKeyInventory(ctx)}
-	}
-	effective := map[string]string{}
-	for _, line := range lines(r.Stdout) {
-		key, value, ok := strings.Cut(line, " ")
-		if ok {
-			effective[strings.ToLower(key)] = strings.TrimSpace(value)
-		}
+	effective, err := ctx.Facts.SSHDSettings()
+	if err != nil {
+		return []model.Finding{unknown("SSH-001", "ssh", "sshd -T", err.Error()), unknown("SSH-002", "ssh", "sshd -T", err.Error()), unknown("SSH-003", "ssh", "sshd -T", err.Error()), checkSSHPermissions(), checkSSHKeyInventory(ctx)}
 	}
 	password := strings.ToLower(effective["passwordauthentication"])
 	keyboard := strings.ToLower(effective["kbdinteractiveauthentication"])
