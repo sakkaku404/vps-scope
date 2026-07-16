@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -29,24 +30,40 @@ var (
 	caddyProxyRE  = regexp.MustCompile(`(?i)^\s*reverse_proxy\s+([^\s{]+)`)
 )
 
-func discoverReverseProxyRoutes() []reverseProxyRoute {
+func discoverReverseProxyRoutes() ([]reverseProxyRoute, error) {
 	var routes []reverseProxyRoute
-	for _, path := range existingFiles("/etc/nginx/sites-enabled/*", "/etc/nginx/conf.d/*.conf") {
-		if data, err := readSmall(path, 4<<20); err == nil {
-			routes = append(routes, parseNginxRoutes(path, data)...)
+	var discoveryErr error
+	nginxPaths, err := discoverExistingFiles(512, "/etc/nginx/sites-enabled/*", "/etc/nginx/conf.d/*.conf")
+	discoveryErr = errors.Join(discoveryErr, err)
+	for _, path := range nginxPaths {
+		data, readErr := readSmall(path, 4<<20)
+		if readErr != nil {
+			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s: %w", path, readErr))
+			continue
 		}
+		routes = append(routes, parseNginxRoutes(path, data)...)
 	}
-	for _, path := range existingFiles("/etc/caddy/Caddyfile", "/usr/local/etc/caddy/Caddyfile") {
-		if data, err := readSmall(path, 4<<20); err == nil {
-			routes = append(routes, parseCaddyRoutes(path, data)...)
+	caddyPaths, err := discoverExistingFiles(16, "/etc/caddy/Caddyfile", "/usr/local/etc/caddy/Caddyfile")
+	discoveryErr = errors.Join(discoveryErr, err)
+	for _, path := range caddyPaths {
+		data, readErr := readSmall(path, 4<<20)
+		if readErr != nil {
+			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s: %w", path, readErr))
+			continue
 		}
+		routes = append(routes, parseCaddyRoutes(path, data)...)
 	}
-	for _, path := range existingFiles("/etc/haproxy/haproxy.cfg", "/opt/hiddify-manager/haproxy/*.cfg") {
-		if data, err := readSmall(path, 4<<20); err == nil {
-			routes = append(routes, parseHAProxyRoutes(path, data)...)
+	haproxyPaths, err := discoverExistingFiles(512, "/etc/haproxy/haproxy.cfg", "/opt/hiddify-manager/haproxy/*.cfg")
+	discoveryErr = errors.Join(discoveryErr, err)
+	for _, path := range haproxyPaths {
+		data, readErr := readSmall(path, 4<<20)
+		if readErr != nil {
+			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s: %w", path, readErr))
+			continue
 		}
+		routes = append(routes, parseHAProxyRoutes(path, data)...)
 	}
-	return uniqueReverseProxyRoutes(routes)
+	return uniqueReverseProxyRoutes(routes), discoveryErr
 }
 
 func parseNginxRoutes(path, data string) []reverseProxyRoute {
@@ -281,15 +298,19 @@ func uniqueReverseProxyRoutes(routes []reverseProxyRoute) []reverseProxyRoute {
 }
 
 func checkReverseProxyRelations(ctx *Context) model.Finding {
-	routes := discoverReverseProxyRoutes()
+	routes, discoveryErr := discoverReverseProxyRoutes()
 	if len(routes) == 0 {
+		if discoveryErr != nil {
+			return unknown("WORK-013", "workloads", "reverse-proxy configuration discovery", discoveryErr.Error())
+		}
 		return notApplicable("WORK-013", "workloads", "Nginx, Caddy, and HAProxy configuration", "no supported reverse-proxy route found")
 	}
 	listeners, err := ctx.Facts.Listeners()
 	if err != nil {
 		return unknown("WORK-013", "workloads", "reverse-proxy configuration + ss + host firewall", err.Error())
 	}
-	return assessReverseProxyRoutes(routes, listeners, readPanelUFW(ctx), ctx.Facts.Panels())
+	f := assessReverseProxyRoutes(routes, listeners, readPanelUFW(ctx), ctx.Facts.Panels())
+	return withIncompleteEvidence(f, "reverse-proxy configuration discovery", discoveryErr)
 }
 
 func assessReverseProxyRoutes(routes []reverseProxyRoute, listeners []Listener, firewall panelUFW, panels []panelSnapshot) model.Finding {

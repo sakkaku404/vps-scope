@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -120,6 +121,38 @@ func TestSavedReportLatestCommands(t *testing.T) {
 	}
 	if strings.TrimSpace(out.String()) != wantDir {
 		t.Fatalf("report path output=%q", out.String())
+	}
+}
+
+func TestReportShowRejectsExcessiveLatestDirectory(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("VPS_SCOPE_REPORT_DIR", root)
+	latest := filepath.Join(root, "latest")
+	if err := os.Mkdir(latest, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i <= maxLatestReportEntries; i++ {
+		if err := os.WriteFile(filepath.Join(latest, "entry-"+strconv.Itoa(i)), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err := (environment{out: io.Discard, errOut: io.Discard}).report([]string{"show"})
+	if err == nil || !strings.Contains(err.Error(), "entry safety limit") {
+		t.Fatalf("error=%v, want directory safety limit", err)
+	}
+}
+
+func TestReportListRejectsExcessiveHostDirectory(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("VPS_SCOPE_REPORT_DIR", root)
+	for i := 0; i <= maxReportHostEntries; i++ {
+		if err := os.Mkdir(filepath.Join(root, "host-"+strconv.Itoa(i)), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err := (environment{out: io.Discard, errOut: io.Discard}).report([]string{"list"})
+	if err == nil || !strings.Contains(err.Error(), "entry safety limit") {
+		t.Fatalf("error=%v, want directory safety limit", err)
 	}
 }
 

@@ -60,14 +60,14 @@ func collectHiddifyFacts(_ Commander) panelSnapshot {
 			s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "management", Listen: "127.0.0.1", Port: port, TLSKnown: true, TLS: false, Source: "/opt/hiddify-manager/hiddify-panel/app.cfg", PathKnown: false})
 		}
 	}
-	paths := existingFiles(
+	paths, discoveryErr := discoverExistingFiles(64,
 		"/opt/hiddify-manager/*xray*.json", "/opt/hiddify-manager/*sing-box*.json",
 		"/opt/hiddify-manager/*/*xray*.json", "/opt/hiddify-manager/*/*sing-box*.json",
 		"/opt/hiddify-manager/*/*/xray*.json", "/opt/hiddify-manager/*/*/sing-box*.json",
 		"/opt/hiddify-manager/xray/configs/*.json", "/opt/hiddify-manager/singbox/configs/*.json",
 	)
-	if len(paths) > 64 {
-		paths = paths[:64]
+	if discoveryErr != nil {
+		s.DiscoveryError = "generated proxy configuration discovery: " + truncate(discoveryErr.Error(), 240)
 	}
 	for _, path := range paths {
 		product := "Xray"

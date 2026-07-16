@@ -2,6 +2,7 @@ package audit
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net"
@@ -16,8 +17,13 @@ import (
 )
 
 func proxyChecks(ctx *Context) []model.Finding {
-	summaries := discoverProxyConfigs(ctx)
-	return []model.Finding{
+	summaries, discoveryErr := discoverProxyConfigs(ctx)
+	for _, panel := range ctx.Facts.Panels() {
+		if panel.DiscoveryError != "" {
+			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s: %s", panel.Product, panel.DiscoveryError))
+		}
+	}
+	findings := []model.Finding{
 		checkProxyInventory(ctx, summaries),
 		checkProxyConfiguration(ctx, summaries),
 		checkProxyControlEndpoints(ctx, summaries),
@@ -31,6 +37,18 @@ func proxyChecks(ctx *Context) []model.Finding {
 		checkReverseProxyRelations(ctx),
 		checkExternalExposure(ctx),
 	}
+	if discoveryErr != nil {
+		dependsOnConfigDiscovery := map[string]bool{
+			"WORK-003": true, "WORK-004": true, "WORK-005": true, "WORK-006": true,
+			"WORK-008": true, "WORK-009": true, "WORK-012": true,
+		}
+		for i := range findings {
+			if dependsOnConfigDiscovery[findings[i].ID] {
+				findings[i] = withIncompleteEvidence(findings[i], "proxy configuration discovery", discoveryErr)
+			}
+		}
+	}
+	return findings
 }
 func checkProxyInventory(ctx *Context, summaries []proxyConfigSummary) model.Finding {
 	f := model.Finding{ID: "WORK-003", Category: "workloads", Status: model.Info, Facts: map[string]string{}}
@@ -194,7 +212,16 @@ func checkProxyControlEndpoints(ctx *Context, summaries []proxyConfigSummary) mo
 	return f
 }
 
+var defaultProxySensitivePaths = []string{
+	"/usr/local/s-ui/db/s-ui.db", "/etc/s-ui/s-ui.db", "/etc/x-ui/x-ui.db", "/etc/wireguard/wg0.conf",
+	"/etc/hysteria/config.yaml", "/etc/hysteria/config.yml", "/etc/tuic/config.json", "/etc/trojan/config.json",
+}
+
 func checkProxySensitivePermissions(summaries []proxyConfigSummary) model.Finding {
+	return checkProxySensitivePermissionsWithDefaults(summaries, defaultProxySensitivePaths)
+}
+
+func checkProxySensitivePermissionsWithDefaults(summaries []proxyConfigSummary, defaultPaths []string) model.Finding {
 	paths := map[string]fs.FileMode{}
 	for _, summary := range summaries {
 		if regularFile(summary.Path) {
@@ -206,10 +233,7 @@ func checkProxySensitivePermissions(summaries []proxyConfigSummary) model.Findin
 			}
 		}
 	}
-	for _, path := range []string{
-		"/usr/local/s-ui/db/s-ui.db", "/etc/s-ui/s-ui.db", "/etc/x-ui/x-ui.db", "/etc/wireguard/wg0.conf",
-		"/etc/hysteria/config.yaml", "/etc/hysteria/config.yml", "/etc/tuic/config.json", "/etc/trojan/config.json",
-	} {
+	for _, path := range defaultPaths {
 		if regularFile(path) {
 			paths[path] = 0o027
 		}
@@ -483,8 +507,8 @@ func checkWireGuardRuntime(ctx *Context) model.Finding {
 	return f
 }
 
-func discoverProxyConfigs(ctx *Context) []proxyConfigSummary {
-	paths := existingFiles(
+func discoverProxyConfigs(ctx *Context) ([]proxyConfigSummary, error) {
+	paths, discoveryErr := discoverExistingFiles(512,
 		"/etc/sing-box/config.json", "/etc/sing-box/*.json", "/usr/local/etc/sing-box/config.json", "/usr/local/etc/sing-box/*.json",
 		"/etc/xray/config.json", "/etc/xray/*.json", "/usr/local/etc/xray/config.json", "/usr/local/etc/xray/*.json",
 		"/usr/local/x-ui/bin/config.json", "/usr/local/s-ui/bin/config.json",
@@ -529,7 +553,7 @@ func discoverProxyConfigs(ctx *Context) []proxyConfigSummary {
 			out = append(out, summary)
 		}
 	}
-	return out
+	return out, discoveryErr
 }
 
 func panelProxySummary(panel panelSnapshot) (proxyConfigSummary, bool) {

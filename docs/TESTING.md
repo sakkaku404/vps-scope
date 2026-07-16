@@ -36,6 +36,10 @@ Linux file-reader tests place a FIFO at a candidate configuration path without s
 
 SQLite adapter tests create real temporary databases and enforce an expired query deadline plus the database, column, row, cell, and aggregate-result limits. Doctor fixtures separately prove trusted, untrusted, missing, and legacy availability-only command states, so diagnostics cannot silently drift away from the audit runner's executable policy.
 
+Configuration-discovery tests use temporary directory trees to prove deterministic sorting, deduplication, ordinary directory-symlink traversal, correct handling of broken non-directory aliases, match-count limits, directory-entry limits, and all-or-error results. Fault mapping separately requires an incomplete `PASS`/`INFO` result to become unavailable `UNKNOWN`, while an independently proven `RISK` keeps its severity and records the incomplete inventory without creating an invalid status/availability combination. Tests for default sensitive-file paths and renewal schedules inject a sealed file set, so installing S-UI or adding a root cron entry on the test host cannot change their expected result.
+
+The shared bounded directory reader is tested independently: invalid budgets and one-entry-over-limit directories must fail without returning a partial snapshot. `/proc` collectors and saved-report navigation use that same implementation, while bundle verification retains its stricter protocol-specific 17-entry test.
+
 When adding a new decision rule, add at least one ordinary expected-state scenario and one adverse or incomplete-evidence scenario. Keep fixtures small, synthetic, and free of real host identifiers or secrets.
 
 ## Cross compilation

@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sakkaku404/vps-scope/internal/model"
+	"github.com/sakkaku404/vps-scope/internal/safefs"
 )
 
 func checkWorkloads(ctx *Context) []model.Finding {
@@ -128,7 +130,8 @@ func checkPanelManagement(ctx *Context) model.Finding {
 	// A loopback-bound panel can still be Internet-facing through Nginx,
 	// Caddy, or HAProxy. Treat that as management exposure here as well as in
 	// the detailed reverse-proxy relationship check.
-	for _, route := range discoverReverseProxyRoutes() {
+	reverseProxyRoutes, reverseProxyErr := discoverReverseProxyRoutes()
+	for _, route := range reverseProxyRoutes {
 		frontend := matchingListener(listeners, route.FrontendPort, route.FrontendTransport)
 		if frontend == nil || (frontend.Scope != "public" && frontend.Scope != "public-wildcard") {
 			continue
@@ -187,7 +190,7 @@ func checkPanelManagement(ctx *Context) model.Finding {
 			f.Status = model.Info
 		}
 	}
-	return f
+	return withIncompleteEvidence(f, "reverse-proxy configuration discovery", reverseProxyErr)
 }
 
 func managementEndpoint(panel panelSnapshot) (panelEndpoint, bool) {
@@ -376,7 +379,7 @@ func checkFilesystem(ctx *Context) []model.Finding {
 
 func checkTemporaryExecutables() model.Finding {
 	f := model.Finding{ID: "PERSIST-002", Category: "persistence", Status: model.Pass, Facts: map[string]string{}}
-	entries, err := os.ReadDir("/proc")
+	entries, err := safefs.ReadDirectoryBounded("/proc", procDirectoryEntryLimit)
 	if err != nil {
 		return unknown("PERSIST-002", "persistence", "/proc", err.Error())
 	}
@@ -423,12 +426,20 @@ func checkPersistence(ctx *Context) []model.Finding {
 		{"base64-decoded-shell", regexp.MustCompile(`(?i)base64\s+(-d|--decode).{0,120}(\||;).{0,40}(sh|bash)`)},
 	}
 	paths := []string{"/etc/rc.local", "/etc/ld.so.preload", "/etc/crontab"}
-	paths = append(paths, existingFiles("/etc/cron.d/*", "/etc/systemd/system/*.service", "/etc/systemd/system/*.timer", "/etc/systemd/system/*/*.service")...)
+	discovered, discoveryErr := discoverExistingFiles(2048, "/etc/cron.d/*", "/etc/systemd/system/*.service", "/etc/systemd/system/*.timer", "/etc/systemd/system/*/*.service")
+	paths = append(paths, discovered...)
+	discoveredSet := make(map[string]bool, len(discovered))
+	for _, path := range discovered {
+		discoveredSet[path] = true
+	}
 	indicators := 0
 	scanned := 0
 	for _, path := range paths {
 		data, err := readSmall(path, 4<<20)
 		if err != nil {
+			if persistenceReadFailureIncomplete(path, err, discoveredSet[path]) {
+				discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s: %w", path, err))
+			}
 			continue
 		}
 		scanned++
@@ -455,7 +466,22 @@ func checkPersistence(ctx *Context) []model.Finding {
 	if indicators > 0 {
 		f.Status, f.Severity = model.Risk, model.High
 	}
+	f = withIncompleteEvidence(f, "startup-file discovery", discoveryErr)
 	return []model.Finding{f, checkTemporaryExecutables()}
+}
+
+func persistenceReadFailureIncomplete(path string, readErr error, discovered bool) bool {
+	if readErr == nil {
+		return false
+	}
+	if !discovered {
+		return !errors.Is(readErr, fs.ErrNotExist)
+	}
+	// systemd glob results legitimately include masked units that resolve to
+	// /dev/null and stale wants/ aliases. Neither is an executable persistence
+	// file, so do not turn a disabled unit into unavailable evidence.
+	info, statErr := os.Stat(path)
+	return !errors.Is(statErr, fs.ErrNotExist) && (statErr != nil || info.Mode().IsRegular())
 }
 
 func checkLogAndInodePressure(ctx *Context) model.Finding {

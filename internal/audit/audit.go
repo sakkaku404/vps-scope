@@ -305,4 +305,29 @@ func notApplicable(id, category, source, value string) model.Finding {
 		Evidence: []model.Evidence{{Source: source, Value: value}}}
 }
 
+// withIncompleteEvidence prevents an incomplete collector result from becoming
+// a PASS/INFO conclusion. A risk already proven by independent evidence remains
+// a risk, but the report records that the inventory was incomplete.
+func withIncompleteEvidence(f model.Finding, source string, err error) model.Finding {
+	if err == nil {
+		return f
+	}
+	message := "evidence discovery incomplete: " + truncate(err.Error(), 300)
+	if f.Facts == nil {
+		f.Facts = map[string]string{}
+	}
+	f.Facts["evidence_discovery_incomplete"] = "true"
+	f.Evidence = append(f.Evidence, model.Evidence{Source: source, Key: "unavailable", Value: message})
+	if f.Error == "" {
+		f.Error = message
+	}
+	if f.Status != model.Risk {
+		f.Status = model.Unknown
+		f.Severity = ""
+		f.Unavailable = true
+		f.NotApplicable = false
+	}
+	return f
+}
+
 var errNoEvidence = errors.New("no usable evidence")

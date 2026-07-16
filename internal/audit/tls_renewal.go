@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -21,9 +22,16 @@ type tlsRenewalFacts struct {
 	LastOutcome    string
 	Methods        []string
 	Evidence       []model.Evidence
+	DiscoveryError error
 }
 
 func collectTLSRenewalFacts(ctx *Context) tlsRenewalFacts {
+	return collectTLSRenewalFactsWithDiscovery(ctx, discoverExistingFiles)
+}
+
+type renewalFileDiscovery func(maxMatches int, patterns ...string) ([]string, error)
+
+func collectTLSRenewalFactsWithDiscovery(ctx *Context, discover renewalFileDiscovery) tlsRenewalFacts {
 	f := tlsRenewalFacts{}
 	methods := map[string]bool{}
 	if ctx.Commander.Exists("systemctl") {
@@ -64,9 +72,12 @@ func collectTLSRenewalFacts(ctx *Context) tlsRenewalFacts {
 			f.Evidence = append(f.Evidence, model.Evidence{Source: "systemctl", Key: service, Value: fmt.Sprintf("active=%s result=%s exit_status=%s last_active=%s reload_hook=%t", valueOrUnknown(v["ActiveState"]), valueOrUnknown(result), valueOrUnknown(exit), valueOrUnknown(v["ActiveEnterTimestamp"]), strings.TrimSpace(v["ExecReload"]) != "")})
 		}
 	}
-	for _, path := range existingFiles("/etc/cron.d/*", "/etc/cron.daily/*", "/var/spool/cron/crontabs/*") {
+	cronPaths, discoveryErr := discover(512, "/etc/cron.d/*", "/etc/cron.daily/*", "/var/spool/cron/crontabs/*")
+	f.DiscoveryError = errors.Join(f.DiscoveryError, discoveryErr)
+	for _, path := range cronPaths {
 		data, err := readSmall(path, 1<<20)
 		if err != nil {
+			f.DiscoveryError = errors.Join(f.DiscoveryError, fmt.Errorf("%s: %w", path, err))
 			continue
 		}
 		method := renewalCommandMethod(data)
@@ -80,7 +91,9 @@ func collectTLSRenewalFacts(ctx *Context) tlsRenewalFacts {
 		f.Evidence = append(f.Evidence, model.Evidence{Source: path, Key: "renewal_schedule", Value: "detected method=" + method})
 	}
 	for _, pattern := range []string{"/etc/letsencrypt/renewal-hooks/deploy/*", "/etc/letsencrypt/renewal-hooks/post/*"} {
-		for _, path := range existingFiles(pattern) {
+		hookPaths, hookErr := discover(256, pattern)
+		f.DiscoveryError = errors.Join(f.DiscoveryError, hookErr)
+		for _, path := range hookPaths {
 			f.ReloadHooks++
 			f.Evidence = append(f.Evidence, model.Evidence{Source: filepath.Dir(path), Key: "renewal_reload_hook", Value: filepath.Base(path)})
 		}

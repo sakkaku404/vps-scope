@@ -34,7 +34,7 @@ func TestCaddyServiceHealthIsNotRenewalSuccess(t *testing.T) {
 		scenarioCommandKey("systemctl", "show", "caddy.service", "--property=LoadState,ActiveState,Result,ExecMainStatus,ActiveEnterTimestamp,ExecReload"):                                                            {Stdout: "LoadState=loaded\nActiveState=active\nResult=success\nExecMainStatus=0\n"},
 		scenarioCommandKey("journalctl", "--since", "30 days ago", "-u", "certbot.service", "-u", "acme.service", "-u", "acme-renew.service", "-u", "lego.service", "-u", "caddy.service", "--no-pager", "-o", "cat"): {},
 	}
-	f := collectTLSRenewalFacts(scenarioContext(newScenarioCommander([]string{"systemctl", "journalctl"}, results)))
+	f := collectTLSRenewalFactsWithDiscovery(scenarioContext(newScenarioCommander([]string{"systemctl", "journalctl"}, results)), noRenewalFiles)
 	if f.SuccessSignals != 0 || f.FailureSignals != 0 {
 		t.Fatalf("Caddy service health became renewal evidence: %#v", f)
 	}
@@ -53,7 +53,7 @@ func TestCollectTLSRenewalFactsSeparatesScheduleSuccessAndReload(t *testing.T) {
 		scenarioCommandKey("systemctl", "show", "certbot.service", "--property=LoadState,ActiveState,Result,ExecMainStatus,ActiveEnterTimestamp,ExecReload"):                                                          {Stdout: "LoadState=loaded\nActiveState=inactive\nResult=success\nExecMainStatus=0\nExecReload={ path=/bin/systemctl ; argv[]=systemctl reload nginx ; }\n"},
 		scenarioCommandKey("journalctl", "--since", "30 days ago", "-u", "certbot.service", "-u", "acme.service", "-u", "acme-renew.service", "-u", "lego.service", "-u", "caddy.service", "--no-pager", "-o", "cat"): {Stdout: "Successfully renewed certificate\n"},
 	}
-	f := collectTLSRenewalFacts(scenarioContext(newScenarioCommander([]string{"systemctl", "journalctl"}, results)))
+	f := collectTLSRenewalFactsWithDiscovery(scenarioContext(newScenarioCommander([]string{"systemctl", "journalctl"}, results)), noRenewalFiles)
 	if f.Schedules != 1 || f.SuccessSignals != 2 || f.FailureSignals != 0 || f.ReloadHooks != 1 {
 		t.Fatalf("unexpected renewal facts: %#v", f)
 	}
@@ -61,3 +61,5 @@ func TestCollectTLSRenewalFactsSeparatesScheduleSuccessAndReload(t *testing.T) {
 		t.Fatalf("unexpected methods: %#v", f.Methods)
 	}
 }
+
+func noRenewalFiles(int, ...string) ([]string, error) { return nil, nil }

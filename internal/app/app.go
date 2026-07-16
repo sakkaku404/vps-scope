@@ -19,6 +19,7 @@ import (
 	"github.com/sakkaku404/vps-scope/internal/model"
 	"github.com/sakkaku404/vps-scope/internal/redact"
 	"github.com/sakkaku404/vps-scope/internal/report"
+	"github.com/sakkaku404/vps-scope/internal/safefs"
 )
 
 type BuildInfo struct{ Version, Commit, Date string }
@@ -28,6 +29,12 @@ type environment struct {
 	out, errOut io.Writer
 	build       BuildInfo
 }
+
+const (
+	maxLatestReportEntries = 32
+	maxReportHostEntries   = 1024
+	maxReportListEntries   = 16 << 10
+)
 
 func Run(args []string, in io.Reader, out, errOut io.Writer, build BuildInfo) error {
 	e := environment{in: in, out: out, errOut: errOut, build: build}
@@ -413,8 +420,21 @@ func (e environment) report(args []string) error {
 		fmt.Fprintln(e.out, path)
 		return nil
 	case "show":
-		matches, err := filepath.Glob(filepath.Join(latest, "report.*.txt"))
-		if err != nil || len(matches) == 0 {
+		entries, err := safefs.ReadDirectoryBounded(latest, maxLatestReportEntries)
+		if err != nil {
+			return fmt.Errorf("read latest report bundle: %w", err)
+		}
+		var matches []string
+		for _, entry := range entries {
+			matched, matchErr := filepath.Match("report.*.txt", entry.Name())
+			if matchErr != nil {
+				return matchErr
+			}
+			if matched && !entry.IsDir() {
+				matches = append(matches, filepath.Join(latest, entry.Name()))
+			}
+		}
+		if len(matches) == 0 {
 			return errors.New("no saved terminal report found; run an audit with a full report bundle first")
 		}
 		sort.Strings(matches)
@@ -427,15 +447,24 @@ func (e environment) report(args []string) error {
 		return err
 	case "list":
 		var bundles []string
-		hosts, err := os.ReadDir(root)
+		hosts, err := safefs.ReadDirectoryBounded(root, maxReportHostEntries)
 		if err != nil {
 			return fmt.Errorf("no saved reports found: %w", err)
 		}
+		entriesExamined := len(hosts)
 		for _, host := range hosts {
 			if !host.IsDir() || host.Name() == "latest" {
 				continue
 			}
-			runs, _ := os.ReadDir(filepath.Join(root, host.Name()))
+			remaining := maxReportListEntries - entriesExamined
+			if remaining <= 0 {
+				return fmt.Errorf("saved report inventory exceeds %d-entry safety limit", maxReportListEntries)
+			}
+			runs, readErr := safefs.ReadDirectoryBounded(filepath.Join(root, host.Name()), remaining)
+			if readErr != nil {
+				return fmt.Errorf("read saved reports for %q: %w", host.Name(), readErr)
+			}
+			entriesExamined += len(runs)
 			for _, run := range runs {
 				path := filepath.Join(root, host.Name(), run.Name())
 				if run.IsDir() && regularPath(filepath.Join(path, "manifest.json")) {
