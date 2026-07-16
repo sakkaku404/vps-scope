@@ -9,7 +9,7 @@ This matrix distinguishes recognized software from evidence exercised on a repro
 | Ubuntu | host v1 | 22.04 and 26.04; systemd, journald, UFW/nftables, Docker | disposable amd64 VPS |
 | Debian | host v1 | 12 and 13; systemd, journald, UFW/nftables | disposable amd64 VPS |
 | Linux architecture | release target | amd64 and arm64 static builds | CI cross-build; amd64 live matrix |
-| S-UI | `s-ui/native-v1`, `s-ui-db-v1` | management/subscription/inbound roles, Reality, Hysteria2, Shadowsocks, TLS, permissions, systemd and listener/firewall relation | Debian 13 native install |
+| S-UI | `s-ui/native-v1`, `s-ui-db-v1` | management/subscription/inbound roles, Reality, Hysteria2, Shadowsocks, TLS, permissions, systemd and listener/firewall relation | Debian 13 native S-UI 1.5.3 install; schema-only 1.5.3 fixture |
 | 3x-ui / x-ui | `x-ui/native-v1`, `x-ui-db-v1` | management/subscription roles, defaults, credentials signal, Xray ingress, Reality/Trojan/Shadowsocks/VMess, runtime drift | Debian 12 and Ubuntu 22.04 native installs plus anonymous variants |
 | Marzban | `marzban/managed-v1`, `marzban-config-v1` | allowlisted environment, Uvicorn management, generated Xray, Docker and host-network context | Ubuntu 26.04 official Docker deployment |
 | Hiddify | `hiddify/managed-v1`, `hiddify-config-v1` | loopback controls, split Xray/sing-box configs, Mieru TCP/UDP, HAProxy relation | Ubuntu 22.04 managed install |
