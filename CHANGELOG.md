@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 1.3.2 - 2026-07-16
+
 ### Security
 
 - Configuration discovery now uses a bounded glob walker instead of `filepath.Glob`. Each collector has an explicit match budget, the complete discovery has a directory-entry budget, and an overflow returns incomplete evidence rather than retaining a silent prefix.
