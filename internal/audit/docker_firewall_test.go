@@ -107,3 +107,21 @@ func TestCheckDockerFirewallPathAcceptsSourceRestrictedDockerUserRule(t *testing
 		t.Fatalf("unexpected finding: %#v", f)
 	}
 }
+
+func TestCheckDockerFirewallPathDoesNotPassWithIncompleteHostFirewallFacts(t *testing.T) {
+	results := map[string]CommandResult{
+		scenarioCommandKey("iptables-save"):            {Stdout: "*filter\n:FORWARD DROP [0:0]\n:DOCKER-USER - [0:0]\n-A FORWARD -j DOCKER-USER\n-A FORWARD -j DOCKER\n-A DOCKER-USER -p tcp -s 203.0.113.0/24 --dport 8443 -j ACCEPT\nCOMMIT\n"},
+		scenarioCommandKey("ufw", "status", "verbose"): {Err: errCommandOutputTruncated, Truncated: true},
+	}
+	ctx := scenarioContext(newScenarioCommander([]string{"iptables-save", "ufw"}, results))
+	var container dockerInspect
+	container.Name = "/restricted-web"
+	container.NetworkSettings.Ports = map[string][]struct {
+		HostIP   string `json:"HostIp"`
+		HostPort string `json:"HostPort"`
+	}{"443/tcp": {{HostIP: "0.0.0.0", HostPort: "8443"}}}
+	f := checkDockerFirewallPath(ctx, []dockerInspect{container})
+	if f.Status != model.Unknown || !f.Unavailable || f.Facts["evidence_discovery_incomplete"] != "true" {
+		t.Fatalf("unexpected finding: %#v", f)
+	}
+}

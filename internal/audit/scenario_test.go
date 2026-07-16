@@ -206,6 +206,41 @@ func TestScenarioUnreadableFirewallIsUnknownForBothFirewallFindings(t *testing.T
 	}
 }
 
+func TestScenarioIncompleteFirewallFactsPropagateToWorkloadFindings(t *testing.T) {
+	cmd := newScenarioCommander([]string{"wg"}, map[string]CommandResult{
+		scenarioCommandKey("wg", "show", "interfaces"):               {Stdout: "wg0"},
+		scenarioCommandKey("wg", "show", "wg0", "listen-port"):       {Stdout: "51820"},
+		scenarioCommandKey("wg", "show", "wg0", "peers"):             {},
+		scenarioCommandKey("wg", "show", "wg0", "latest-handshakes"): {},
+	})
+	ctx := scenarioContext(cmd)
+	ctx.Facts.listenersOnce.Do(func() {
+		ctx.Facts.listeners = []Listener{
+			{Protocol: "tcp", Address: "127.0.0.1", Port: "2053", Scope: "loopback", Process: "x-ui"},
+			{Protocol: "tcp", Address: "0.0.0.0", Port: "443", Scope: "public-wildcard", Process: "sing-box"},
+			{Protocol: "tcp", Address: "0.0.0.0", Port: "9090", Scope: "public-wildcard", Process: "sing-box"},
+			{Protocol: "udp", Address: "0.0.0.0", Port: "51820", Scope: "public-wildcard", Process: "wireguard"},
+		}
+	})
+	ctx.Facts.ufwOnce.Do(func() {
+		f := parsePanelUFW("Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n443/tcp ALLOW IN Anywhere\n9090/tcp ALLOW IN Anywhere\n51820/udp ALLOW IN Anywhere")
+		f.collectionErr = fmt.Errorf("nft list ruleset: permission denied")
+		ctx.Facts.ufw = f
+	})
+	panel := panelSnapshot{Product: "3x-ui", Database: "/etc/x-ui/x-ui.db", DatabaseAvailable: true, Endpoints: []panelEndpoint{{Role: "management", Listen: "127.0.0.1", Port: "2053", Source: "fixture"}}}
+	ctx.Facts.panelsOnce.Do(func() { ctx.Facts.panels = []panelSnapshot{panel} })
+	summary := proxyConfigSummary{Product: "sing-box", Path: "fixture", Inbounds: []proxyInbound{{Product: "sing-box", Protocol: "vless", Port: "443", Transports: []string{"tcp"}}}, Controls: []controlEndpoint{{Product: "sing-box", Kind: "clash-api", Listen: "0.0.0.0", Port: "9090"}}}
+
+	requireStatus(t, []model.Finding{checkPanelManagement(ctx)}, "WORK-002", model.Unknown)
+	control := checkProxyControlEndpoints(ctx, []proxyConfigSummary{summary})
+	if control.Status != model.Risk || control.Facts["evidence_discovery_incomplete"] != "true" {
+		t.Fatalf("control finding=%#v, want proven RISK with incomplete evidence", control)
+	}
+	requireStatus(t, []model.Finding{checkProxyEndpointRelations(ctx, []proxyConfigSummary{summary})}, "WORK-009", model.Unknown)
+	requireStatus(t, []model.Finding{checkPanelRuntimeConsistency(ctx, []proxyConfigSummary{summary})}, "WORK-012", model.Unknown)
+	requireStatus(t, []model.Finding{checkWireGuardRuntime(ctx)}, "WORK-011", model.Unknown)
+}
+
 func TestScenarioUnknownPanelSchemaIsUnknown(t *testing.T) {
 	ctx := scenarioContext(newScenarioCommander(nil, nil))
 	ctx.Facts.listenersOnce.Do(func() {})

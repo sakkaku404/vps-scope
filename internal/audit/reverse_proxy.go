@@ -310,7 +310,9 @@ func checkReverseProxyRelations(ctx *Context) model.Finding {
 		return unknown("WORK-013", "workloads", "reverse-proxy configuration + ss + host firewall", err.Error())
 	}
 	panels, panelDiscoveryErr := ctx.Facts.Panels()
-	f := assessReverseProxyRoutes(routes, listeners, readPanelUFW(ctx), panels)
+	ufw := readPanelUFW(ctx)
+	f := assessReverseProxyRoutes(routes, listeners, ufw, panels)
+	f = withIncompleteEvidence(f, "host firewall discovery", ufw.collectionErr)
 	f = withIncompleteEvidence(f, "panel and container discovery", panelDiscoveryErr)
 	return withIncompleteEvidence(f, "reverse-proxy configuration discovery", discoveryErr)
 }

@@ -223,7 +223,7 @@ func checkProxyControlEndpoints(ctx *Context, summaries []proxyConfigSummary) mo
 		f.Status, f.Unavailable = model.Unknown, true
 		f.Error = "control API exposure could not be fully determined from listener and host-firewall evidence"
 	}
-	return f
+	return withIncompleteEvidence(f, "host firewall discovery", ufw.collectionErr)
 }
 
 var defaultProxySensitivePaths = []string{
@@ -380,7 +380,8 @@ func checkProxyEndpointRelations(ctx *Context, summaries []proxyConfigSummary) m
 		return unknown("WORK-009", "workloads", "ss + proxy configuration", err.Error())
 	}
 	active := activeProxyProducts(ctx)
-	graph := buildProxyEndpointGraph(inbounds, listeners, readPanelUFW(ctx))
+	ufw := readPanelUFW(ctx)
+	graph := buildProxyEndpointGraph(inbounds, listeners, ufw)
 	matched, missing, semanticProblems := 0, 0, 0
 	for _, endpoint := range inbounds {
 		if endpoint.RealityEnabled && (!endpoint.RealityKeySet || endpoint.RealityTargets == 0 || endpoint.RealityServerIDs == 0) {
@@ -439,7 +440,7 @@ func checkProxyEndpointRelations(ctx *Context, summaries []proxyConfigSummary) m
 	} else {
 		f.Evidence = append(f.Evidence, model.Evidence{Source: "ss established", Key: "connection_snapshot", Value: "unavailable: " + truncate(err.Error(), 180)})
 	}
-	return f
+	return withIncompleteEvidence(f, "host firewall discovery", ufw.collectionErr)
 }
 
 func proxyConnectionCounts(connections []activeConnection, proxyPorts map[string]bool) (map[string]int, int) {
@@ -514,7 +515,7 @@ func checkWireGuardRuntime(ctx *Context) model.Finding {
 	f.Facts["peers"] = strconv.Itoa(peers)
 	f.Facts["peers_with_recent_handshake"] = strconv.Itoa(recentPeers)
 	f.Evidence = append(f.Evidence, model.Evidence{Source: "wg show", Key: "peer_summary", Value: fmt.Sprintf("peers=%d recent_handshakes=%d; public keys and endpoints withheld", peers, recentPeers)})
-	return f
+	return withIncompleteEvidence(f, "host firewall discovery", ufw.collectionErr)
 }
 
 func discoverProxyConfigs(ctx *Context) ([]proxyConfigSummary, error) {

@@ -150,6 +150,7 @@ func checkPanelRuntimeConsistency(ctx *Context, summaries []proxyConfigSummary) 
 	} else if f.Status != model.Risk && (databaseUnavailable > 0 || unclassified > 0) {
 		f.Status = model.Info
 	}
+	f = withIncompleteEvidence(f, "host firewall discovery", ufw.collectionErr)
 	return withIncompleteEvidence(f, "panel and container discovery", panelDiscoveryErr)
 }
 
