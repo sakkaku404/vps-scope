@@ -6,6 +6,16 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 1.3.4 - 2026-07-16
+
+### Security
+
+- Proxy workload inventory now consumes the same bounded Docker snapshot as Docker isolation checks. It no longer bypasses the ceiling with a separate formatted `docker ps` command, and incomplete Docker or process inventory turns `WORK-003` into `UNKNOWN` instead of a clean no-workload conclusion.
+
+### Testing
+
+- Added proxy-inventory fixtures for Docker-backed Outline recognition and daemon collection failure propagation.
+
 ## 1.3.3 - 2026-07-16
 
 ### Security
