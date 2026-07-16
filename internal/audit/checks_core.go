@@ -420,15 +420,17 @@ func checkPrivileges(ctx *Context) []model.Finding {
 		return []model.Finding{sudo, notApplicable("PRIV-002", "privileges", "audit mode", "standard audit skips recursive SUID/SGID and capability discovery; run with --deep")}
 	}
 	privileged := model.Finding{ID: "PRIV-002", Category: "privileges", Status: model.Info, Facts: map[string]string{}}
+	var privilegeDiscoveryErr error
 	if !ctx.Commander.Exists("find") {
 		privileged = unknown("PRIV-002", "privileges", "find", "command not found")
 	} else {
 		// /bin, /sbin and /usr/local are normally links or descendants of /usr.
 		// Scanning them again can multiply runtime on small VPS disks.
 		r := ctx.Commander.Run(18*time.Second, "find", "/usr", "/opt", "-xdev", "-type", "f", "-perm", "/6000", "-print")
-		if r.Err != nil && r.Stdout == "" {
-			privileged = unknown("PRIV-002", "privileges", "find", commandError(r))
-		} else {
+		if r.Err != nil || r.Truncated {
+			privilegeDiscoveryErr = errors.Join(privilegeDiscoveryErr, fmt.Errorf("find SUID/SGID inventory: %s", commandError(r)))
+		}
+		if r.Err == nil || r.Stdout != "" {
 			items := lines(r.Stdout)
 			privileged.Facts["suid_sgid_count"] = strconv.Itoa(len(items))
 			for i, item := range items {
@@ -447,6 +449,9 @@ func checkPrivileges(ctx *Context) []model.Finding {
 	}
 	if ctx.Commander.Exists("getcap") {
 		r := ctx.Commander.Run(18*time.Second, "getcap", "-r", "/usr", "/opt")
+		if r.Err != nil || r.Truncated {
+			privilegeDiscoveryErr = errors.Join(privilegeDiscoveryErr, fmt.Errorf("getcap inventory: %s", commandError(r)))
+		}
 		caps := lines(r.Stdout)
 		if privileged.Facts == nil {
 			privileged.Facts = map[string]string{}
@@ -464,7 +469,7 @@ func checkPrivileges(ctx *Context) []model.Finding {
 			}
 		}
 	}
-	return []model.Finding{sudo, privileged}
+	return []model.Finding{sudo, withIncompleteEvidence(privileged, "privileged-file discovery", privilegeDiscoveryErr)}
 }
 
 func sudoNOPASSWDEvidence(line string) string {

@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -338,85 +339,178 @@ func checkAuth(ctx *Context) []model.Finding {
 	return []model.Finding{checkFailedLogins(ctx), checkSudoAudit(ctx), checkIntrusionPrevention(ctx)}
 }
 
-func checkFailedLogins(ctx *Context) model.Finding {
-	f := model.Finding{ID: "AUTH-001", Category: "auth", Status: model.Info, Facts: map[string]string{}}
-	var text, source string
-	if ctx.Commander.Exists("journalctl") {
-		r := ctx.Commander.Run(25*time.Second, "journalctl", "--since", sinceArg(ctx.LogSince), "--no-pager", "-o", "cat", "-u", "ssh.service", "-u", "sshd.service")
-		if r.Truncated {
-			return unknown("AUTH-001", "auth", "journalctl SSH units", commandError(r))
-		}
-		if r.Err == nil || r.Stdout != "" {
-			text, source = r.Stdout, "journalctl -u ssh.service -u sshd.service"
-		}
-	}
-	if text == "" {
-		for _, path := range []string{"/var/log/auth.log", "/var/log/secure"} {
-			if data, err := readSmall(path, 100<<20); err == nil {
-				text, source = data, path
-				break
-			}
-		}
-	}
-	if source == "" {
-		return unknown("AUTH-001", "auth", "journal/auth log", "no readable SSH authentication log source")
-	}
-	failedPasswordRE := regexp.MustCompile(`(?i)failed (?:password|publickey)`)
-	invalidUserRE := regexp.MustCompile(`(?i)invalid user`)
-	pamFailureRE := regexp.MustCompile(`(?i)authentication failure`)
-	maxAttemptsRE := regexp.MustCompile(`(?i)maximum authentication attempts exceeded`)
-	ipRE := regexp.MustCompile(`(?i)(?:from\s+|rhost=)([0-9a-fA-F:.]+)`)
-	anyIPRE := regexp.MustCompile(`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b`)
-	users := map[string]int{}
-	ips := map[string]int{}
-	failedPassword, invalidUser, pamFailure, maxAttempts := 0, 0, 0, 0
-	userRE := regexp.MustCompile(`(?i)(?:for invalid user|for user|for)\s+([^ ]+)`)
+// sshFailureJournalPattern makes journald perform the broad text filter before
+// output reaches the bounded command collector. A busy SSH daemon can emit
+// hundreds of thousands of successful-login records in a week; fetching that
+// full stream would turn an otherwise readable failed-login inventory into an
+// avoidable UNKNOWN result.
+const sshFailureJournalPattern = `[Ff]ailed (password|publickey)|[Ii]nvalid user|[Aa]uthentication failure|[Mm]aximum authentication attempts exceeded`
+
+const (
+	sshFailureJournalWindow    = 48 * time.Hour
+	sshFailureJournalMaxSlices = 8
+)
+
+var (
+	failedPasswordRE  = regexp.MustCompile(`(?i)failed (?:password|publickey)`)
+	invalidUserRE     = regexp.MustCompile(`(?i)invalid user`)
+	pamFailureRE      = regexp.MustCompile(`(?i)authentication failure`)
+	maxAttemptsRE     = regexp.MustCompile(`(?i)maximum authentication attempts exceeded`)
+	sshFailureIPRE    = regexp.MustCompile(`(?i)(?:from\s+|rhost=)([0-9a-fA-F:.]+)`)
+	sshFailureAnyIPRE = regexp.MustCompile(`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b`)
+	sshFailureUserRE  = regexp.MustCompile(`(?i)(?:for invalid user|for user|for)\s+([^ ]+)`)
+)
+
+type failedLoginActivity struct {
+	failedPassword, invalidUser, pamFailure, maxAttempts int
+	ips, users                                           map[string]int
+}
+
+func newFailedLoginActivity() failedLoginActivity {
+	return failedLoginActivity{ips: map[string]int{}, users: map[string]int{}}
+}
+
+func (a *failedLoginActivity) add(text string) {
 	for _, line := range lines(text) {
 		matched := false
 		if failedPasswordRE.MatchString(line) {
-			failedPassword++
+			a.failedPassword++
 			matched = true
 		}
 		if invalidUserRE.MatchString(line) {
-			invalidUser++
+			a.invalidUser++
 			matched = true
 		}
 		if pamFailureRE.MatchString(line) {
-			pamFailure++
+			a.pamFailure++
 			matched = true
 		}
 		if maxAttemptsRE.MatchString(line) {
-			maxAttempts++
+			a.maxAttempts++
 			matched = true
 		}
 		if !matched {
 			continue
 		}
-		if m := ipRE.FindStringSubmatch(line); len(m) > 1 {
-			ips[m[1]]++
-		} else if candidate := anyIPRE.FindString(line); candidate != "" {
-			ips[candidate]++
+		if m := sshFailureIPRE.FindStringSubmatch(line); len(m) > 1 {
+			a.ips[m[1]]++
+		} else if candidate := sshFailureAnyIPRE.FindString(line); candidate != "" {
+			a.ips[candidate]++
 		}
-		if m := userRE.FindStringSubmatch(line); len(m) > 1 {
-			users[m[1]]++
+		if m := sshFailureUserRE.FindStringSubmatch(line); len(m) > 1 {
+			a.users[m[1]]++
 		}
+	}
+}
+
+type sshJournalWindow struct{ since, until time.Time }
+
+func journalTimestamp(value time.Time) string {
+	// journalctl accepts this portable, explicit-UTC form on the supported
+	// Debian/Ubuntu systemd releases. RFC3339's T...Z form is rejected by some
+	// Debian builds even though Go normally uses it for machine timestamps.
+	return value.UTC().Truncate(time.Second).Format("2006-01-02 15:04:05 UTC")
+}
+
+func sshFailureJournalWindows(now time.Time, lookback time.Duration) []sshJournalWindow {
+	if lookback <= sshFailureJournalWindow {
+		return []sshJournalWindow{{since: now.Add(-lookback), until: now}}
+	}
+	slices := int((lookback + sshFailureJournalWindow - 1) / sshFailureJournalWindow)
+	if slices > sshFailureJournalMaxSlices {
+		slices = sshFailureJournalMaxSlices
+	}
+	start := now.Add(-lookback)
+	width := lookback / time.Duration(slices)
+	windows := make([]sshJournalWindow, 0, slices)
+	for index := 0; index < slices; index++ {
+		end := start.Add(width)
+		if index == slices-1 {
+			end = now
+		}
+		windows = append(windows, sshJournalWindow{since: start, until: end})
+		start = end
+	}
+	return windows
+}
+
+func journalNoMatches(r CommandResult) bool {
+	return !r.Truncated && r.Code == 1 && strings.TrimSpace(r.Stdout) == "" && strings.TrimSpace(r.Stderr) == ""
+}
+
+func collectSSHFailureJournal(ctx *Context) (failedLoginActivity, int, error) {
+	activity := newFailedLoginActivity()
+	if ctx.LogSince <= sshFailureJournalWindow {
+		r := ctx.Commander.Run(25*time.Second, "journalctl", "--since", sinceArg(ctx.LogSince), "--no-pager", "-o", "cat", "--grep", sshFailureJournalPattern, "-u", "ssh.service", "-u", "sshd.service")
+		if (r.Err != nil || r.Truncated) && !journalNoMatches(r) {
+			return activity, 0, fmt.Errorf("journalctl SSH units: %s", commandError(r))
+		}
+		activity.add(r.Stdout)
+		return activity, 1, nil
+	}
+	windows := sshFailureJournalWindows(ctx.Now(), ctx.LogSince)
+	for index, window := range windows {
+		args := []string{"--since", journalTimestamp(window.since), "--until", journalTimestamp(window.until), "--no-pager", "-o", "cat", "--grep", sshFailureJournalPattern, "-u", "ssh.service", "-u", "sshd.service"}
+		r := ctx.Commander.Run(15*time.Second, "journalctl", args...)
+		if (r.Err != nil || r.Truncated) && !journalNoMatches(r) {
+			return activity, index + 1, fmt.Errorf("journalctl SSH units slice %d/%d: %s", index+1, len(windows), commandError(r))
+		}
+		activity.add(r.Stdout)
+	}
+	return activity, len(windows), nil
+}
+
+func checkFailedLogins(ctx *Context) model.Finding {
+	f := model.Finding{ID: "AUTH-001", Category: "auth", Status: model.Info, Facts: map[string]string{}}
+	activity := newFailedLoginActivity()
+	var source string
+	var journalErr error
+	if ctx.Commander.Exists("journalctl") {
+		var slices int
+		activity, slices, journalErr = collectSSHFailureJournal(ctx)
+		if journalErr == nil {
+			suffix := ""
+			if slices != 1 {
+				suffix = "s"
+			}
+			source = fmt.Sprintf("journalctl filtered SSH units (%d slice%s)", slices, suffix)
+		} else {
+			// Do not count a journal prefix as a complete lookback window. A
+			// traditional log file can still provide independent full evidence.
+			activity = newFailedLoginActivity()
+		}
+	}
+	if source == "" {
+		for _, path := range []string{"/var/log/auth.log", "/var/log/secure"} {
+			if data, err := readSmall(path, 100<<20); err == nil {
+				activity.add(data)
+				source = path
+				break
+			}
+		}
+	}
+	if source == "" {
+		if journalErr != nil {
+			return unknown("AUTH-001", "auth", "journalctl SSH units", journalErr.Error())
+		}
+		return unknown("AUTH-001", "auth", "journal/auth log", "no readable SSH authentication log source")
 	}
 	// Categories can overlap on the same attempt, so expose each count rather
 	// than adding them into a misleading single total.
-	f.Facts["failed_password_or_key"] = strconv.Itoa(failedPassword)
-	f.Facts["invalid_user_lines"] = strconv.Itoa(invalidUser)
-	f.Facts["pam_auth_failure_lines"] = strconv.Itoa(pamFailure)
-	f.Facts["max_attempt_lines"] = strconv.Itoa(maxAttempts)
-	f.Facts["unique_sources"] = strconv.Itoa(len(ips))
-	f.Facts["targeted_users"] = strconv.Itoa(len(users))
+	f.Facts["failed_password_or_key"] = strconv.Itoa(activity.failedPassword)
+	f.Facts["invalid_user_lines"] = strconv.Itoa(activity.invalidUser)
+	f.Facts["pam_auth_failure_lines"] = strconv.Itoa(activity.pamFailure)
+	f.Facts["max_attempt_lines"] = strconv.Itoa(activity.maxAttempts)
+	f.Facts["unique_sources"] = strconv.Itoa(len(activity.ips))
+	f.Facts["targeted_users"] = strconv.Itoa(len(activity.users))
 	f.Evidence = []model.Evidence{
-		{Source: source, Key: "failed_password_or_key", Value: strconv.Itoa(failedPassword)},
-		{Source: source, Key: "invalid_user_lines", Value: strconv.Itoa(invalidUser)},
-		{Source: source, Key: "pam_auth_failure_lines", Value: strconv.Itoa(pamFailure)},
-		{Source: source, Key: "max_attempt_lines", Value: strconv.Itoa(maxAttempts)},
-		{Source: source, Key: "unique_sources", Value: strconv.Itoa(len(ips))},
+		{Source: source, Key: "failed_password_or_key", Value: strconv.Itoa(activity.failedPassword)},
+		{Source: source, Key: "invalid_user_lines", Value: strconv.Itoa(activity.invalidUser)},
+		{Source: source, Key: "pam_auth_failure_lines", Value: strconv.Itoa(activity.pamFailure)},
+		{Source: source, Key: "max_attempt_lines", Value: strconv.Itoa(activity.maxAttempts)},
+		{Source: source, Key: "unique_sources", Value: strconv.Itoa(len(activity.ips))},
 	}
-	for _, entry := range topCounts(ips, 10) {
+	for _, entry := range topCounts(activity.ips, 10) {
 		f.Evidence = append(f.Evidence, model.Evidence{Source: source, Key: "source_count", Value: entry})
 	}
 	return f
@@ -534,7 +628,7 @@ func checkPendingUpdates(ctx *Context) model.Finding {
 		return unknown("UPD-001", "updates", "apt-get", "command not found")
 	}
 	r := ctx.Commander.Run(45*time.Second, "apt-get", "-s", "-o", "Debug::NoLocking=true", "upgrade")
-	if r.Truncated || (r.Err != nil && r.Stdout == "") {
+	if r.Truncated || r.Err != nil {
 		return unknown("UPD-001", "updates", "apt-get -s upgrade", commandError(r))
 	}
 	regular, security, phased := 0, 0, 0
@@ -581,15 +675,37 @@ func checkPendingUpdates(ctx *Context) model.Finding {
 func checkUnattended(ctx *Context) model.Finding {
 	f := model.Finding{ID: "UPD-002", Category: "updates", Status: model.Pass}
 	installed := false
+	installedKnown := false
+	var discoveryErr error
 	if ctx.Commander.Exists("dpkg-query") {
 		r := ctx.Commander.Run(8*time.Second, "dpkg-query", "-W", "-f=${Status}", "unattended-upgrades")
-		installed = r.Err == nil && strings.Contains(r.Stdout, "install ok installed")
+		if r.Err != nil || r.Truncated {
+			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("dpkg-query unattended-upgrades: %s", commandError(r)))
+		} else {
+			installedKnown = true
+			installed = strings.Contains(r.Stdout, "install ok installed")
+		}
+	} else {
+		discoveryErr = errors.Join(discoveryErr, errors.New("dpkg-query command not found"))
 	}
-	timer := ctx.Commander.Run(8*time.Second, "systemctl", "is-enabled", "apt-daily-upgrade.timer")
-	enabled := strings.TrimSpace(timer.Stdout) == "enabled" || strings.TrimSpace(timer.Stdout) == "static"
-	f.Evidence = []model.Evidence{{Source: "dpkg-query", Key: "unattended-upgrades_installed", Value: strconv.FormatBool(installed)}, {Source: "systemctl is-enabled", Key: "apt-daily-upgrade.timer", Value: strings.TrimSpace(timer.Stdout)}}
-	if !installed || !enabled {
+	timerState := "unavailable"
+	enabled := false
+	enabledKnown := false
+	if ctx.Commander.Exists("systemctl") {
+		timer := ctx.Commander.Run(8*time.Second, "systemctl", "is-enabled", "apt-daily-upgrade.timer")
+		timerState = strings.TrimSpace(timer.Stdout)
+		if timer.Err != nil || timer.Truncated {
+			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("systemctl is-enabled apt-daily-upgrade.timer: %s", commandError(timer)))
+		} else {
+			enabledKnown = true
+			enabled = timerState == "enabled" || timerState == "static"
+		}
+	} else {
+		discoveryErr = errors.Join(discoveryErr, errors.New("systemctl command not found"))
+	}
+	f.Evidence = []model.Evidence{{Source: "dpkg-query", Key: "unattended-upgrades_installed", Value: strconv.FormatBool(installed)}, {Source: "systemctl is-enabled", Key: "apt-daily-upgrade.timer", Value: timerState}}
+	if (installedKnown && !installed) || (enabledKnown && !enabled) {
 		f.Status, f.Severity = model.Risk, model.Medium
 	}
-	return f
+	return withIncompleteEvidence(f, "automatic security update discovery", discoveryErr)
 }
