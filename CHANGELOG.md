@@ -6,6 +6,17 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 1.3.5 - 2026-07-16
+
+### Fixed
+
+- `NET-003` and `WORK-009` now consume one shared, bounded `ss established` snapshot. On a busy proxy, the general network inventory and per-proxy-ingress TCP count can no longer describe different instants of the same audit. A missing or truncated snapshot remains explicit evidence rather than a silent omission.
+
+### Testing
+
+- Added a scenario proving that network and proxy findings issue one established-connection collection, plus real read-only SQLite metadata fixtures for recognized S-UI and 3x-ui schemas and an unsupported-schema boundary.
+- The coverage ratchet now explicitly requires Linux. Windows skips filesystem-symlink semantics that belong to the Linux audit contract, so it reports the correct WSL/Linux or CI requirement rather than a misleading partial-coverage regression.
+
 ## 1.3.4 - 2026-07-16
 
 ### Security
