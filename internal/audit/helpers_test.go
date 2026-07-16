@@ -2,6 +2,7 @@ package audit
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -29,6 +30,118 @@ func TestReadSmallRejectsDirectory(t *testing.T) {
 	dir := t.TempDir()
 	if _, err := readSmall(dir, 1024); err == nil || !strings.Contains(err.Error(), "not a regular file") {
 		t.Fatalf("directory read error=%v", err)
+	}
+}
+
+func TestDiscoverExistingFilesIsSortedDeduplicatedAndFollowsDirectorySymlinks(t *testing.T) {
+	root := t.TempDir()
+	realDir := filepath.Join(root, "real")
+	if err := os.Mkdir(realDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"b.json", "a.json"} {
+		if err := os.WriteFile(filepath.Join(realDir, name), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := filepath.Join(root, "linked")
+	if err := os.Symlink(realDir, link); err != nil {
+		t.Skipf("directory symlinks unavailable: %v", err)
+	}
+	paths, err := discoverExistingFiles(8,
+		filepath.Join(root, "*", "*.json"),
+		filepath.Join(link, "a.json"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		filepath.Join(link, "a.json"),
+		filepath.Join(link, "b.json"),
+		filepath.Join(realDir, "a.json"),
+		filepath.Join(realDir, "b.json"),
+	}
+	if fmt.Sprint(paths) != fmt.Sprint(want) {
+		t.Fatalf("paths=%v, want %v", paths, want)
+	}
+}
+
+func TestDiscoverExistingFilesRejectsMatchOverflow(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"a.conf", "b.conf", "c.conf"} {
+		if err := os.WriteFile(filepath.Join(root, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	paths, err := discoverExistingFilesWithBudget(2, 16, filepath.Join(root, "*.conf"))
+	if !errors.Is(err, errFileDiscoveryLimit) {
+		t.Fatalf("error=%v, want discovery limit", err)
+	}
+	if paths != nil {
+		t.Fatalf("partial paths escaped on overflow: %v", paths)
+	}
+}
+
+func TestDiscoverExistingFilesRejectsDirectoryEntryOverflow(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"a.txt", "b.txt", "c.txt"} {
+		if err := os.WriteFile(filepath.Join(root, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	paths, err := discoverExistingFilesWithBudget(8, 2, filepath.Join(root, "*.json"))
+	if !errors.Is(err, errFileDiscoveryLimit) {
+		t.Fatalf("error=%v, want directory entry limit", err)
+	}
+	if paths != nil {
+		t.Fatalf("partial paths escaped on overflow: %v", paths)
+	}
+}
+
+func TestDiscoverExistingFilesIgnoresBrokenAliasInDirectorySegment(t *testing.T) {
+	root := t.TempDir()
+	broken := filepath.Join(root, "removed.service")
+	if err := os.Symlink(filepath.Join(root, "does-not-exist"), broken); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	paths, err := discoverExistingFiles(8, filepath.Join(root, "*", "*.conf"))
+	if err != nil {
+		t.Fatalf("broken non-directory alias made discovery incomplete: %v", err)
+	}
+	if len(paths) != 0 {
+		t.Fatalf("unexpected paths: %v", paths)
+	}
+}
+
+func TestWithIncompleteEvidenceCannotRemainPass(t *testing.T) {
+	f := withIncompleteEvidence(model.Finding{ID: "PKG-001", Category: "packages", Status: model.Pass}, "fixture", errFileDiscoveryLimit)
+	if f.Status != model.Unknown || !f.Unavailable || f.NotApplicable || f.Facts["evidence_discovery_incomplete"] != "true" {
+		t.Fatalf("unexpected finding: %+v", f)
+	}
+	risk := withIncompleteEvidence(model.Finding{ID: "PKG-001", Category: "packages", Status: model.Risk, Severity: model.High}, "fixture", errFileDiscoveryLimit)
+	if risk.Status != model.Risk || risk.Unavailable || risk.Facts["evidence_discovery_incomplete"] != "true" {
+		t.Fatalf("proven risk was lost or made semantically invalid: %+v", risk)
+	}
+}
+
+func TestPersistenceDiscoveryIgnoresMaskedAndBrokenUnitAliases(t *testing.T) {
+	root := t.TempDir()
+	broken := filepath.Join(root, "broken.service")
+	masked := filepath.Join(root, "masked.service")
+	if err := os.Symlink(filepath.Join(root, "missing"), broken); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := os.Symlink(os.DevNull, masked); err != nil {
+		t.Skipf("device symlink unavailable: %v", err)
+	}
+	for _, path := range []string{broken, masked} {
+		_, readErr := readSmall(path, 1024)
+		if readErr == nil {
+			t.Fatalf("expected read failure for %s", path)
+		}
+		if persistenceReadFailureIncomplete(path, readErr, true) {
+			t.Fatalf("disabled systemd alias became incomplete evidence: %s: %v", path, readErr)
+		}
 	}
 }
 
@@ -134,7 +247,7 @@ func TestSensitivePermissionCheckSkipsManagerDirectory(t *testing.T) {
 	if err := os.WriteFile(config, []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	f := checkProxySensitivePermissions([]proxyConfigSummary{{Path: dir, SensitiveFiles: []string{config}}})
+	f := checkProxySensitivePermissionsWithDefaults([]proxyConfigSummary{{Path: dir, SensitiveFiles: []string{config}}}, nil)
 	if f.Facts["files_checked"] != "1" {
 		t.Fatalf("directory counted as secret-bearing file: %+v", f)
 	}

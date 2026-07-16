@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -178,8 +179,11 @@ func checkSSHPermissions() model.Finding {
 			}
 		}
 	}
-	for _, path := range existingFiles("/etc/ssh/ssh_host_*_key") {
-		if info, err := os.Stat(path); err == nil && tooOpen(info, fs.FileMode(0o037)) {
+	hostKeyPaths, discoveryErr := discoverExistingFiles(64, "/etc/ssh/ssh_host_*_key")
+	for _, path := range hostKeyPaths {
+		if info, err := os.Stat(path); err != nil {
+			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s: %w", path, err))
+		} else if tooOpen(info, fs.FileMode(0o037)) {
 			problems = append(problems, fmt.Sprintf("%s mode=%s", path, modeString(info)))
 		}
 	}
@@ -191,7 +195,7 @@ func checkSSHPermissions() model.Finding {
 	}
 	f.Facts["authorized_keys_files"] = strconv.Itoa(keyCount)
 	f.Facts["permission_problems"] = strconv.Itoa(len(problems))
-	return f
+	return withIncompleteEvidence(f, "SSH host-key discovery", discoveryErr)
 }
 
 func checkSSHKeyInventory(ctx *Context) model.Finding {
@@ -380,11 +384,19 @@ func splitAuthorizedKeyOptions(value string) []string {
 
 func checkPrivileges(ctx *Context) []model.Finding {
 	sudo := model.Finding{ID: "PRIV-001", Category: "privileges", Status: model.Pass}
-	paths := append([]string{"/etc/sudoers"}, existingFiles("/etc/sudoers.d/*")...)
+	dropIns, discoveryErr := discoverExistingFiles(256, "/etc/sudoers.d/*")
+	paths := append([]string{"/etc/sudoers"}, dropIns...)
+	discovered := make(map[string]bool, len(dropIns))
+	for _, path := range dropIns {
+		discovered[path] = true
+	}
 	readable := 0
 	for _, path := range paths {
 		data, err := readSmall(path, 2<<20)
 		if err != nil {
+			if discovered[path] || !errors.Is(err, fs.ErrNotExist) {
+				discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s: %w", path, err))
+			}
 			continue
 		}
 		readable++
@@ -410,6 +422,7 @@ func checkPrivileges(ctx *Context) []model.Finding {
 	if readable == 0 {
 		sudo = unknown("PRIV-001", "privileges", "/etc/sudoers{,.d}", "no sudoers files were readable")
 	}
+	sudo = withIncompleteEvidence(sudo, "sudoers discovery", discoveryErr)
 
 	if !ctx.Deep {
 		return []model.Finding{sudo, notApplicable("PRIV-002", "privileges", "audit mode", "standard audit skips recursive SUID/SGID and capability discovery; run with --deep")}

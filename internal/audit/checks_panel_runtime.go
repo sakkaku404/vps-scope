@@ -143,10 +143,9 @@ func checkPanelRuntimeConsistency(ctx *Context, summaries []proxyConfigSummary) 
 	f.Facts["expired_inbounds"] = strconv.Itoa(expired)
 	f.Facts["quota_exhausted_inbounds"] = strconv.Itoa(exhausted)
 	if unsupportedSchemas > 0 {
-		f.Unavailable = true
 		f.Error = "one or more panel database schemas are not supported; runtime conclusions are incomplete"
 		if f.Status != model.Risk {
-			f.Status = model.Unknown
+			f.Status, f.Unavailable = model.Unknown, true
 		}
 	} else if f.Status != model.Risk && (databaseUnavailable > 0 || unclassified > 0) {
 		f.Status = model.Info

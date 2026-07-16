@@ -49,6 +49,7 @@ type panelSnapshot struct {
 	Inbounds               []panelInboundFact
 	DatabaseAvailable      bool
 	DatabaseError          string
+	DiscoveryError         string
 	RuntimeCommandError    string
 	DefaultCredential      bool
 	DefaultCredentialKnown bool

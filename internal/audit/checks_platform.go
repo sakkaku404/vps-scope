@@ -4,7 +4,9 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -15,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sakkaku404/vps-scope/internal/model"
+	"github.com/sakkaku404/vps-scope/internal/safefs"
 )
 
 func checkPackages(ctx *Context) []model.Finding {
@@ -26,12 +29,20 @@ func checkPackages(ctx *Context) []model.Finding {
 }
 
 func checkAPTRepositories() model.Finding {
-	paths := append([]string{"/etc/apt/sources.list"}, existingFiles("/etc/apt/sources.list.d/*.list", "/etc/apt/sources.list.d/*.sources")...)
+	dropIns, discoveryErr := discoverExistingFiles(512, "/etc/apt/sources.list.d/*.list", "/etc/apt/sources.list.d/*.sources")
+	paths := append([]string{"/etc/apt/sources.list"}, dropIns...)
+	discovered := make(map[string]bool, len(dropIns))
+	for _, path := range dropIns {
+		discovered[path] = true
+	}
 	f := model.Finding{ID: "PKG-001", Category: "packages", Status: model.Pass, Facts: map[string]string{}}
 	thirdParty, unsafe := 0, 0
 	for _, path := range paths {
 		data, err := readSmall(path, 4<<20)
 		if err != nil {
+			if discovered[path] || !errors.Is(err, fs.ErrNotExist) {
+				discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s: %w", path, err))
+			}
 			continue
 		}
 		for i, line := range lines(data) {
@@ -60,7 +71,7 @@ func checkAPTRepositories() model.Finding {
 	} else if thirdParty > 0 {
 		f.Status = model.Info
 	}
-	return f
+	return withIncompleteEvidence(f, "APT source discovery", discoveryErr)
 }
 
 var aptURLPattern = regexp.MustCompile(`(?i)https?://[^\s"']+`)
@@ -189,7 +200,7 @@ func checkProcesses(ctx *Context) []model.Finding {
 
 func checkDeletedExecutables() model.Finding {
 	f := model.Finding{ID: "PROC-002", Category: "processes", Status: model.Pass, Facts: map[string]string{}}
-	procEntries, err := os.ReadDir("/proc")
+	procEntries, err := safefs.ReadDirectoryBounded("/proc", procDirectoryEntryLimit)
 	if err != nil {
 		return unknown("PROC-002", "processes", "/proc", err.Error())
 	}
@@ -383,38 +394,33 @@ func checkTLS(ctx *Context) []model.Finding {
 }
 
 func checkFileTLS(ctx *Context) model.Finding {
-	paths, discoveryTruncated := discoverCertificatePaths(ctx)
+	paths, discoveryErr := discoverCertificatePaths(ctx)
 	if len(paths) == 0 {
-		if discoveryTruncated {
-			return unknown("TLS-001", "tls", "certificate discovery", "nginx configuration output exceeded the capture limit")
+		if discoveryErr != nil {
+			return unknown("TLS-001", "tls", "certificate discovery", discoveryErr.Error())
 		}
 		return notApplicable("TLS-001", "tls", "certificate discovery", "no file-backed server certificate found in supported locations")
 	}
 	f := model.Finding{ID: "TLS-001", Category: "tls", Status: model.Pass, Facts: map[string]string{"certificates": strconv.Itoa(len(paths))}}
 	now := ctx.Now()
 	minimumDays := int(^uint(0) >> 1)
-	if discoveryTruncated {
-		f.Status, f.Unavailable = model.Unknown, true
-		f.Error = "nginx configuration output exceeded the capture limit; certificate discovery may be incomplete"
-		f.Evidence = append(f.Evidence, model.Evidence{Source: "nginx -T", Key: "unavailable", Value: f.Error})
-	}
+	var certificateEvidenceErr error
 	for _, path := range paths {
 		data, err := readSmall(path, 2<<20)
 		if err != nil {
-			f.Status = model.Unknown
-			f.Unavailable = true
+			certificateEvidenceErr = errors.Join(certificateEvidenceErr, fmt.Errorf("%s: %w", path, err))
 			f.Evidence = append(f.Evidence, model.Evidence{Source: path, Value: err.Error()})
 			continue
 		}
 		block, _ := pem.Decode([]byte(data))
 		if block == nil {
-			f.Status = model.Unknown
+			certificateEvidenceErr = errors.Join(certificateEvidenceErr, fmt.Errorf("%s: no PEM certificate block", path))
 			f.Evidence = append(f.Evidence, model.Evidence{Source: path, Value: "no PEM certificate block"})
 			continue
 		}
 		cert, err := x509.ParseCertificate(block.Bytes)
 		if err != nil {
-			f.Status = model.Unknown
+			certificateEvidenceErr = errors.Join(certificateEvidenceErr, fmt.Errorf("%s: certificate parse failed", path))
 			f.Evidence = append(f.Evidence, model.Evidence{Source: path, Value: err.Error()})
 			continue
 		}
@@ -464,7 +470,11 @@ func checkFileTLS(ctx *Context) model.Finding {
 		f.Status, f.Unavailable = model.Unknown, true
 		f.Error = "certificate renewal scheduling or recent execution could not be established"
 	}
-	return f
+	if renewal.DiscoveryError != nil {
+		discoveryErr = errors.Join(discoveryErr, renewal.DiscoveryError)
+	}
+	discoveryErr = errors.Join(discoveryErr, certificateEvidenceErr)
+	return withIncompleteEvidence(f, "certificate and renewal discovery", discoveryErr)
 }
 
 func embeddedSUITLS(ctx *Context) (model.Finding, bool) {
@@ -491,19 +501,28 @@ func embeddedSUITLS(ctx *Context) (model.Finding, bool) {
 	return f, true
 }
 
-func discoverCertificatePaths(ctx *Context) ([]string, bool) {
+func discoverCertificatePaths(ctx *Context) ([]string, error) {
 	seen := map[string]bool{}
-	discoveryTruncated := false
+	var discoveryErr error
 	add := func(path string) {
 		path = strings.Trim(strings.TrimSpace(path), `"'`)
 		if path == "" || strings.Contains(path, "$s") || !filepath.IsAbs(path) {
 			return
 		}
-		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+		info, err := os.Stat(path)
+		if err != nil {
+			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s: %w", path, err))
+			return
+		}
+		if !info.IsDir() {
 			seen[path] = true
 		}
 	}
-	for _, path := range existingFiles("/etc/letsencrypt/live/*/fullchain.pem") {
+	letsencryptPaths, err := discoverExistingFiles(512, "/etc/letsencrypt/live/*/fullchain.pem")
+	if err != nil {
+		discoveryErr = errors.Join(discoveryErr, err)
+	}
+	for _, path := range letsencryptPaths {
 		add(path)
 	}
 	for _, panel := range ctx.Facts.Panels() {
@@ -516,7 +535,9 @@ func discoverCertificatePaths(ctx *Context) ([]string, bool) {
 	}
 	if ctx.Commander.Exists("nginx") {
 		r := ctx.Commander.Run(15*time.Second, "nginx", "-T")
-		discoveryTruncated = r.Truncated
+		if r.Truncated {
+			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("nginx configuration output exceeded the capture limit"))
+		}
 		re := regexp.MustCompile(`(?m)^\s*ssl_certificate\s+([^;]+);`)
 		for _, match := range re.FindAllStringSubmatch(r.Stdout+r.Stderr, -1) {
 			if len(match) > 1 {
@@ -541,7 +562,7 @@ func discoverCertificatePaths(ctx *Context) ([]string, bool) {
 		paths = append(paths, path)
 	}
 	sort.Strings(paths)
-	return paths, discoveryTruncated
+	return paths, discoveryErr
 }
 
 var workloadProcesses = regexp.MustCompile(`(?i)\b(sing-box|xray|x-ui|s-ui|sui|hysteria|tuic|trojan|ss-server|sslocal|marzban|hiddify|outline-ss-server|wg-quick|openvpn|nginx|caddy|haproxy|apache2|dockerd|containerd)\b`)

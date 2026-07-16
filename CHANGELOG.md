@@ -6,6 +6,24 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Security
+
+- Configuration discovery now uses a bounded glob walker instead of `filepath.Glob`. Each collector has an explicit match budget, the complete discovery has a directory-entry budget, and an overflow returns incomplete evidence rather than retaining a silent prefix.
+- SSH host keys, sudoers fragments, APT sources, persistence files, proxy configurations, reverse-proxy routes, certificate paths, and renewal hooks now propagate discovery and matched-file read failures. An incomplete inventory cannot remain `PASS` or ordinary `INFO`; a risk already proven by independent evidence remains visible with an explicit incompleteness marker.
+- `/proc` process scans and saved-report navigation now use a shared bounded directory reader. Excessive process or report inventories fail explicitly without returning a partial list, and `report show` no longer uses an allocating glob.
+
+### Fixed
+
+- Hiddify generated-configuration discovery no longer truncates silently after 64 paths.
+- A panel-runtime risk with an unsupported schema no longer combines `RISK` with the schema-invalid `unavailable` flag.
+- TLS parsing no longer leaves a proven expiry risk in the schema-invalid `RISK` plus `unavailable` state when another certificate is unreadable.
+
+### Testing
+
+- File-discovery tests cover deterministic sorting and deduplication, directory symlinks, broken non-directory aliases, match-count overflow, directory-entry overflow, absence of partial results, and the `PASS`/`RISK` incomplete-evidence transition.
+- Sensitive-permission and TLS-renewal tests now inject their filesystem inputs instead of inheriting panel databases or root cron entries from the host running the test binary.
+- Shared directory-reader tests require invalid budgets and entry overflows to return errors without a partial directory snapshot.
+
 ## 1.3.1 - 2026-07-16
 
 ### Security
