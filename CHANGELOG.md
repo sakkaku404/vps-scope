@@ -6,6 +6,16 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 1.3.7 - 2026-07-16
+
+### Fixed
+
+- SSH authentication posture and contextual password-policy assessment now consume one bounded `sshd -T` snapshot. A daemon reload during an audit can no longer make `SSH-001` and `ACC-003` reason from different effective configurations; missing, failed, or truncated output remains explicit `UNKNOWN` evidence.
+
+### Testing
+
+- Added shared-SSHD fact caching, defensive-copy, failure, and scenario coverage. Compared v1.3.6 and the candidate on all four lab VPS: all 204 finding status, severity, reason-code, and availability fields remained unchanged.
+
 ## 1.3.6 - 2026-07-16
 
 ### Changed
