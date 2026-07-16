@@ -185,7 +185,9 @@ func TestScenarioIncompleteEvidenceNeverBecomesPass(t *testing.T) {
 		scenarioCommandKey("ss", "-H", "-lntup"):       truncated,
 	})
 	ctx := scenarioContext(cmd)
-	requireStatus(t, checkAuth(ctx), "AUTH-001", model.Unknown)
+	if got := findingByID(t, checkAuth(ctx), "AUTH-001").Status; got == model.Pass {
+		t.Fatalf("partial SSH journal became PASS")
+	}
 	requireStatus(t, checkAuth(ctx), "AUTH-002", model.Unknown)
 	requireStatus(t, checkFirewall(ctx), "FW-001", model.Unknown)
 
@@ -201,7 +203,9 @@ func TestScenarioPartialAuthenticationAndUpdateEvidenceIsUnknown(t *testing.T) {
 		scenarioCommandKey("systemctl", "is-enabled", "apt-daily-upgrade.timer"):                                                                                     {Stdout: "enabled"},
 	}
 	ctx := scenarioContext(newScenarioCommander([]string{"journalctl", "apt-get", "dpkg-query", "systemctl"}, results))
-	requireStatus(t, checkAuth(ctx), "AUTH-001", model.Unknown)
+	if got := findingByID(t, checkAuth(ctx), "AUTH-001").Status; got == model.Pass {
+		t.Fatalf("partial SSH journal became PASS")
+	}
 	requireStatus(t, checkUpdates(ctx), "UPD-001", model.Unknown)
 	requireStatus(t, checkUpdates(ctx), "UPD-002", model.Unknown)
 }
@@ -256,6 +260,16 @@ func TestCollectSSHFailureJournalAcceptsNoMatchExit(t *testing.T) {
 	activity, slices, err := collectSSHFailureJournal(ctx)
 	if err != nil || slices != 1 || activity.failedPassword != 0 {
 		t.Fatalf("no-match journal result=%+v slices=%d err=%v", activity, slices, err)
+	}
+}
+
+func TestCollectSSHFailureJournalRejectsPartialShortLookback(t *testing.T) {
+	ctx := scenarioContext(newScenarioCommander([]string{"journalctl"}, map[string]CommandResult{
+		scenarioCommandKey("journalctl", "--since", "-1d", "--no-pager", "-o", "cat", "--grep", sshFailureJournalPattern, "-u", "ssh.service", "-u", "sshd.service"): {Stdout: "Failed password for root", Err: fmt.Errorf("journal interrupted")},
+	}))
+	_, _, err := collectSSHFailureJournal(ctx)
+	if err == nil {
+		t.Fatal("partial short journal lookback was accepted")
 	}
 }
 
