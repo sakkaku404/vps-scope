@@ -7,6 +7,16 @@ import (
 	"time"
 )
 
+const (
+	// A proxy VPS normally has only a small number of running containers. Keep
+	// the inventory finite so a hostile or accidentally huge Docker daemon
+	// cannot turn one audit into an unbounded argument list, output buffer, or
+	// series of slow inspect calls. The collector is deliberately all-or-error:
+	// callers never receive a clean-looking prefix of a larger inventory.
+	maxDockerContainerInventory = 128
+	dockerInspectBatchSize      = 32
+)
+
 // FactStore owns evidence that is expensive or privacy-sensitive to collect.
 // Every collector runs at most once per audit; checks consume the same typed
 // facts instead of invoking ps, ss, UFW, or Docker repeatedly.
@@ -129,25 +139,64 @@ func (f *FactStore) DockerContainers() ([]dockerInspect, error) {
 			f.dockerErr = fmt.Errorf("docker ps: %s", commandError(ps))
 			return
 		}
-		ids := lines(ps.Stdout)
+		ids, err := dockerContainerIDs(ps.Stdout)
+		if err != nil {
+			f.dockerErr = err
+			return
+		}
 		if len(ids) == 0 {
 			return
 		}
-		args := append([]string{"inspect"}, ids...)
-		inspect := f.cmd.Run(30*time.Second, "docker", args...)
-		if inspect.Truncated {
-			f.dockerErr = fmt.Errorf("docker inspect output exceeded the capture limit")
-			return
+		inspected := make([]dockerInspect, 0, len(ids))
+		for start := 0; start < len(ids); start += dockerInspectBatchSize {
+			end := start + dockerInspectBatchSize
+			if end > len(ids) {
+				end = len(ids)
+			}
+			args := append([]string{"inspect"}, ids[start:end]...)
+			inspect := f.cmd.Run(15*time.Second, "docker", args...)
+			batch := start/dockerInspectBatchSize + 1
+			total := (len(ids) + dockerInspectBatchSize - 1) / dockerInspectBatchSize
+			if inspect.Truncated {
+				f.dockerErr = fmt.Errorf("docker inspect batch %d/%d output exceeded the capture limit", batch, total)
+				return
+			}
+			if inspect.Err != nil {
+				f.dockerErr = fmt.Errorf("docker inspect batch %d/%d: %s", batch, total, commandError(inspect))
+				return
+			}
+			var decoded []dockerInspect
+			if err := decodeDockerInspect(inspect.Stdout, &decoded); err != nil {
+				f.dockerErr = fmt.Errorf("docker inspect batch %d/%d: %w", batch, total, err)
+				return
+			}
+			if len(decoded) != end-start {
+				f.dockerErr = fmt.Errorf("docker inspect batch %d/%d returned %d containers for %d requested", batch, total, len(decoded), end-start)
+				return
+			}
+			inspected = append(inspected, decoded...)
 		}
-		if inspect.Err != nil {
-			f.dockerErr = fmt.Errorf("docker inspect: %s", commandError(inspect))
-			return
-		}
-		if err := decodeDockerInspect(inspect.Stdout, &f.docker); err != nil {
-			f.dockerErr = err
-		}
+		f.docker = inspected
 	})
 	return append([]dockerInspect(nil), f.docker...), f.dockerErr
+}
+
+func dockerContainerIDs(output string) ([]string, error) {
+	ids := lines(output)
+	if len(ids) > maxDockerContainerInventory {
+		return nil, fmt.Errorf("docker ps returned %d running containers; safety limit is %d", len(ids), maxDockerContainerInventory)
+	}
+	for _, id := range ids {
+		if len(id) == 0 || len(id) > 64 {
+			return nil, fmt.Errorf("docker ps returned an invalid container ID")
+		}
+		for _, c := range id {
+			if !(c >= '0' && c <= '9') && !(c >= 'a' && c <= 'f') {
+				return nil, fmt.Errorf("docker ps returned an invalid container ID")
+			}
+		}
+	}
+	return ids, nil
 }
 
 func (f *FactStore) DockerFirewall() dockerFirewallFacts {
