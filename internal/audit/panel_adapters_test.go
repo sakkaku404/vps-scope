@@ -1,6 +1,9 @@
 package audit
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 func TestPanelSchemaAdapters(t *testing.T) {
 	xui := map[string]map[string]bool{
@@ -67,6 +70,24 @@ func TestInspectPanelSchemaReadsRealSQLiteMetadata(t *testing.T) {
 				t.Fatalf("inspection=%+v", inspection)
 			}
 		})
+	}
+}
+
+func TestInspectPanelSchemaSupportsSUI153SchemaFixture(t *testing.T) {
+	schema, err := os.ReadFile("testdata/panels/s-ui-1.5.3-schema.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, db := newSQLiteFixture(t)
+	if _, err := db.Exec(string(schema)); err != nil {
+		t.Fatal(err)
+	}
+	inspection, err := inspectPanelSchema(newScenarioCommander(nil, nil), path, "S-UI")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inspection.Version != "s-ui-db-v1" || len(inspection.Fingerprint) != 16 || len(inspection.Capabilities) == 0 {
+		t.Fatalf("inspection=%+v", inspection)
 	}
 }
 

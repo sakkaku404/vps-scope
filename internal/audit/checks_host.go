@@ -63,11 +63,15 @@ func checkPanelManagement(ctx *Context) model.Finding {
 	}
 	ufw := readPanelUFW(ctx)
 	products := make([]string, 0, len(panels))
-	unknowns, inactive := 0, 0
+	unknowns, inactive, unsupportedSchemas := 0, 0, 0
 	publicUnrestricted, publicPlaintext, publicDefaultPath, pathUnknown, publicReverseProxy := 0, 0, 0, 0, 0
 	for _, panel := range panels {
 		products = append(products, panel.Product)
 		f.Evidence = append(f.Evidence, model.Evidence{Source: "panel discovery", Key: "product", Value: fmt.Sprintf("product=%s version=%s adapter=%s schema=%s schema_supported=%t schema_fingerprint=%s capabilities=%s binary=%s", panel.Product, panel.Version, panel.Adapter, panel.SchemaVersion, panel.SchemaSupported, panel.SchemaFingerprint, strings.Join(panel.SchemaCapabilities, ","), panel.Binary)})
+		if panel.Database != "" && !panel.SchemaSupported && panel.SchemaFingerprint != "" {
+			unsupportedSchemas++
+			f.Evidence = append(f.Evidence, model.Evidence{Source: panel.Database, Key: "unsupported_schema", Value: "panel database layout is not supported; database-derived management metadata is incomplete"})
+		}
 		if panel.RuntimeCommandError != "" {
 			unknowns++
 			f.Evidence = append(f.Evidence, model.Evidence{Source: panel.Binary, Key: "runtime_command", Value: panel.RuntimeCommandError})
@@ -185,8 +189,12 @@ func checkPanelManagement(ctx *Context) model.Finding {
 	f.Facts["public_default_path_management"] = strconv.Itoa(publicDefaultPath)
 	f.Facts["management_path_unknown"] = strconv.Itoa(pathUnknown)
 	f.Facts["public_reverse_proxy_management"] = strconv.Itoa(publicReverseProxy)
+	f.Facts["unsupported_panel_schemas"] = strconv.Itoa(unsupportedSchemas)
 	if f.Status != model.Risk {
-		if unknowns > 0 {
+		if unsupportedSchemas > 0 {
+			f.Status, f.Unavailable = model.Unknown, true
+			f.Error = "one or more panel database schemas are not supported; management-panel conclusions are incomplete"
+		} else if unknowns > 0 {
 			f.Status, f.Unavailable = model.Unknown, true
 			f.Error = "management-panel exposure could not be determined from the available port, listener, and firewall evidence"
 		} else if inactive == len(panels) && len(containerPanels) == 0 {
