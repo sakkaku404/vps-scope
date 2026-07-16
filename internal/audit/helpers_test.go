@@ -653,7 +653,7 @@ func TestApplyPanelSettingsMergesDefaultsAndHonorsSubscriptionDisable(t *testing
 func TestProxyConnectionCountsOnlyConfiguredIngressWithoutPeers(t *testing.T) {
 	input := "tcp ESTAB 0 0 10.0.0.1:443 198.51.100.1:50000 users:((\"sing-box\",pid=1))\n" +
 		"tcp ESTAB 0 0 10.0.0.1:22 198.51.100.2:50001 users:((\"sshd\",pid=2))\n"
-	counts, total := proxyConnectionCounts(input, map[string]bool{"443": true})
+	counts, total := proxyConnectionCounts(parseEstablishedConnections(input), map[string]bool{"443": true})
 	if total != 1 || counts["443"] != 1 || counts["22"] != 0 {
 		t.Fatalf("counts=%v total=%d", counts, total)
 	}

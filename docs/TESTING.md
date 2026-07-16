@@ -16,7 +16,7 @@ CI also runs the freshly cross-built Linux amd64 binary on the GitHub Ubuntu run
 
 The release-script gate installs Cosign in a standard system path, then exercises both the temporary runner and installer against the pinned public `v1.0.0` release with signature verification required. This proves the explicit-version certificate identity, checksum path, architecture selection, installation path, and executable handoff rather than checking shell syntax alone. The third-party notice generator runs twice and must produce byte-identical output containing the linked SQLite module.
 
-`scripts/check-coverage.sh` enforces per-package ratchets rather than one misleading repository-wide percentage. The current Linux CI floors are app 56%, audit 54%, redact 86%, and report 82%; they may only move upward as more OS collectors gain deterministic fixtures.
+`scripts/check-coverage.sh` enforces per-package ratchets rather than one misleading repository-wide percentage. It deliberately requires Linux: standard Windows development environments skip filesystem-symlink cases that are part of the Linux audit contract, so their partial percentage is not comparable to CI. Run it in WSL/Linux or rely on the GitHub CI gate. The current Linux CI floors are app 56%, audit 54%, redact 86%, and report 82%; they may only move upward as more OS collectors gain deterministic fixtures.
 
 Proxy-specific fixtures also verify that configuration summaries never retain UUIDs, passwords, API secrets, inbound tags, SSH key comments, APT URL credentials, or complete process arguments.
 

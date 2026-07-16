@@ -298,18 +298,11 @@ func hasPasswordQualityPolicy(input string) bool {
 }
 
 func checkActiveConnections(ctx *Context) model.Finding {
-	if !ctx.Commander.Exists("ss") {
-		return unknown("NET-003", "network", "ss", "command not found")
-	}
-	r := ctx.Commander.Run(15*time.Second, "ss", "-H", "-ntup", "state", "established")
-	if r.Err != nil && r.Stdout == "" {
-		r = ctx.Commander.Run(15*time.Second, "ss", "-H", "-ntu", "state", "established")
-	}
-	if r.Err != nil {
-		return unknown("NET-003", "network", "ss established", commandError(r))
+	connections, err := ctx.Facts.EstablishedConnections()
+	if err != nil {
+		return unknown("NET-003", "network", "ss established", err.Error())
 	}
 	f := model.Finding{ID: "NET-003", Category: "network", Status: model.Info, Facts: map[string]string{}}
-	connections := parseEstablishedConnections(r.Stdout)
 	counts := map[string]int{}
 	for i, connection := range connections {
 		counts[connection.scope]++
@@ -322,34 +315,4 @@ func checkActiveConnections(ctx *Context) model.Finding {
 		f.Facts["peer_"+scope] = strconv.Itoa(count)
 	}
 	return f
-}
-
-type activeConnection struct {
-	protocol, local, peer, scope, process string
-}
-
-func parseEstablishedConnections(output string) []activeConnection {
-	var out []activeConnection
-	for _, line := range lines(output) {
-		fields := strings.Fields(line)
-		if len(fields) < 5 || !strings.HasPrefix(strings.ToLower(fields[0]), "tcp") {
-			continue
-		}
-		localIndex := 3
-		if len(fields) >= 6 && (strings.EqualFold(fields[1], "ESTAB") || strings.EqualFold(fields[1], "ESTABLISHED")) {
-			localIndex = 4
-		}
-		peerIndex := localIndex + 1
-		if peerIndex >= len(fields) {
-			continue
-		}
-		local, peer := fields[localIndex], fields[peerIndex]
-		peerAddress, _ := splitHostPortLoose(peer)
-		process := ""
-		if len(fields) > peerIndex+1 {
-			process = strings.Join(fields[peerIndex+1:], " ")
-		}
-		out = append(out, activeConnection{protocol: strings.ToLower(fields[0]), local: local, peer: peer, scope: classifyAddress(peerAddress), process: process})
-	}
-	return out
 }

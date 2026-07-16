@@ -415,38 +415,34 @@ func checkProxyEndpointRelations(ctx *Context, summaries []proxyConfigSummary) m
 	f.Facts["matched_listener_relations"] = strconv.Itoa(matched)
 	f.Facts["missing_listener_relations"] = strconv.Itoa(missing)
 	f.Facts["semantic_problems"] = strconv.Itoa(semanticProblems)
-	if ctx.Commander.Exists("ss") {
-		r := ctx.Commander.Run(12*time.Second, "ss", "-H", "-ntup", "state", "established")
-		if r.Err != nil && r.Stdout == "" {
-			r = ctx.Commander.Run(12*time.Second, "ss", "-H", "-ntu", "state", "established")
-		}
-		if r.Err == nil && !r.Truncated {
-			ports := map[string]bool{}
-			for _, endpoint := range inbounds {
-				for _, transport := range endpoint.Transports {
-					if transport == "tcp" {
-						ports[endpoint.Port] = true
-					}
+	if connections, err := ctx.Facts.EstablishedConnections(); err == nil {
+		ports := map[string]bool{}
+		for _, endpoint := range inbounds {
+			for _, transport := range endpoint.Transports {
+				if transport == "tcp" {
+					ports[endpoint.Port] = true
 				}
 			}
-			counts, total := proxyConnectionCounts(r.Stdout, ports)
-			for port := range ports {
-				if _, ok := counts[port]; !ok {
-					counts[port] = 0
-				}
-			}
-			f.Facts["established_proxy_tcp_connections"] = strconv.Itoa(total)
-			for _, port := range sortedCountKeys(counts) {
-				f.Evidence = append(f.Evidence, model.Evidence{Source: "ss established + proxy ingress", Key: "connection_snapshot", Value: fmt.Sprintf("port=%s/tcp established=%d; peer addresses withheld from this workload summary", port, counts[port])})
+		}
+		counts, total := proxyConnectionCounts(connections, ports)
+		for port := range ports {
+			if _, ok := counts[port]; !ok {
+				counts[port] = 0
 			}
 		}
+		f.Facts["established_proxy_tcp_connections"] = strconv.Itoa(total)
+		for _, port := range sortedCountKeys(counts) {
+			f.Evidence = append(f.Evidence, model.Evidence{Source: "ss established + proxy ingress", Key: "connection_snapshot", Value: fmt.Sprintf("port=%s/tcp established=%d; peer addresses withheld from this workload summary", port, counts[port])})
+		}
+	} else {
+		f.Evidence = append(f.Evidence, model.Evidence{Source: "ss established", Key: "connection_snapshot", Value: "unavailable: " + truncate(err.Error(), 180)})
 	}
 	return f
 }
 
-func proxyConnectionCounts(output string, proxyPorts map[string]bool) (map[string]int, int) {
+func proxyConnectionCounts(connections []activeConnection, proxyPorts map[string]bool) (map[string]int, int) {
 	counts, total := map[string]int{}, 0
-	for _, connection := range parseEstablishedConnections(output) {
+	for _, connection := range connections {
 		_, port := splitHostPortLoose(connection.local)
 		if proxyPorts[port] {
 			counts[port]++

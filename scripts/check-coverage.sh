@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# The ratchet is intentionally a Linux gate.  The audited product only runs on
+# Linux and a small set of filesystem tests needs unprivileged symlink support,
+# which standard Windows development environments do not provide.  Refuse with
+# an actionable message rather than presenting the resulting partial coverage
+# as a regression in the Linux CI baseline.
+if [[ "$(go env GOOS)" != "linux" ]]; then
+  echo "coverage ratchet requires Linux; run it in WSL/Linux or use GitHub CI" >&2
+  exit 2
+fi
+
 check_package() {
   package="$1"
   threshold="$2"
