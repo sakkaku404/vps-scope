@@ -252,6 +252,22 @@ func TestScenarioUnknownPanelSchemaIsUnknown(t *testing.T) {
 	}
 }
 
+func TestScenarioUnknownPanelSchemaDoesNotPassManagementCheck(t *testing.T) {
+	ctx := scenarioContext(newScenarioCommander(nil, nil))
+	ctx.Facts.listenersOnce.Do(func() {
+		ctx.Facts.listeners = []Listener{{Protocol: "tcp", Address: "127.0.0.1", Port: "2053", Scope: "loopback", Process: "x-ui"}}
+	})
+	ctx.Facts.ufwOnce.Do(func() {
+		ctx.Facts.ufw = parsePanelUFW("Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)")
+	})
+	panel := panelSnapshot{Product: "3x-ui", Database: "/etc/x-ui/x-ui.db", SchemaFingerprint: "0123456789abcdef", Endpoints: []panelEndpoint{{Role: "management", Listen: "127.0.0.1", Port: "2053", Source: "fixture"}}}
+	ctx.Facts.panelsOnce.Do(func() { ctx.Facts.panels = []panelSnapshot{panel} })
+	f := checkPanelManagement(ctx)
+	if f.Status != model.Unknown || !f.Unavailable || f.Facts["unsupported_panel_schemas"] != "1" || reasonCode(f) != "work.002.unsupported-panel-schema" {
+		t.Fatalf("management finding=%#v", f)
+	}
+}
+
 func TestScenarioPublicControlAPIAndPanelRuntimeMismatch(t *testing.T) {
 	cmd := newScenarioCommander(nil, nil)
 	ctx := scenarioContext(cmd)
