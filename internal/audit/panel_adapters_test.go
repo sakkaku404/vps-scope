@@ -35,3 +35,48 @@ func TestPanelSchemaFingerprintIsOrderIndependentAndCapabilityBound(t *testing.T
 		t.Fatalf("unexpected capabilities: %#v", capabilities)
 	}
 }
+
+func TestInspectPanelSchemaReadsRealSQLiteMetadata(t *testing.T) {
+	tests := []struct {
+		name, product, schema, wantVersion string
+	}{
+		{
+			name:        "s-ui",
+			product:     "S-UI",
+			schema:      `CREATE TABLE settings (key TEXT, value TEXT); CREATE TABLE inbounds (type TEXT, options TEXT, tls_id INTEGER); CREATE TABLE tls (id INTEGER, server TEXT);`,
+			wantVersion: "s-ui-db-v1",
+		},
+		{
+			name:        "3x-ui",
+			product:     "3x-ui",
+			schema:      `CREATE TABLE settings (key TEXT, value TEXT); CREATE TABLE inbounds (enable INTEGER, port INTEGER, protocol TEXT, settings TEXT, stream_settings TEXT);`,
+			wantVersion: "x-ui-db-v1",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path, db := newSQLiteFixture(t)
+			if _, err := db.Exec(test.schema); err != nil {
+				t.Fatal(err)
+			}
+			inspection, err := inspectPanelSchema(newScenarioCommander(nil, nil), path, test.product)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if inspection.Version != test.wantVersion || len(inspection.Fingerprint) != 16 || len(inspection.Capabilities) == 0 {
+				t.Fatalf("inspection=%+v", inspection)
+			}
+		})
+	}
+}
+
+func TestInspectPanelSchemaKeepsUnknownLayoutUnsupported(t *testing.T) {
+	path, db := newSQLiteFixture(t)
+	if _, err := db.Exec(`CREATE TABLE settings (key TEXT, value TEXT); CREATE TABLE future_inbounds (port INTEGER);`); err != nil {
+		t.Fatal(err)
+	}
+	inspection, err := inspectPanelSchema(newScenarioCommander(nil, nil), path, "3x-ui")
+	if err == nil || inspection.Version != "" || len(inspection.Fingerprint) != 16 {
+		t.Fatalf("inspection=%+v err=%v, want unsupported schema", inspection, err)
+	}
+}

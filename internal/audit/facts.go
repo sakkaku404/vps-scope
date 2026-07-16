@@ -19,13 +19,18 @@ const (
 
 // FactStore owns evidence that is expensive or privacy-sensitive to collect.
 // Every collector runs at most once per audit; checks consume the same typed
-// facts instead of invoking ps, ss, UFW, or Docker repeatedly.
+// facts instead of invoking ps, ss, UFW, or Docker repeatedly. Listener and
+// established-connection snapshots therefore remain internally consistent.
 type FactStore struct {
 	cmd Commander
 
 	listenersOnce sync.Once
 	listeners     []Listener
 	listenersErr  error
+
+	connectionsOnce sync.Once
+	connections     []activeConnection
+	connectionsErr  error
 
 	processesOnce sync.Once
 	processes     []ProcessInfo
@@ -89,6 +94,62 @@ func (f *FactStore) Listeners() ([]Listener, error) {
 		f.listeners = parseListeners(r.Stdout)
 	})
 	return append([]Listener(nil), f.listeners...), f.listenersErr
+}
+
+// EstablishedConnections is a point-in-time connection snapshot shared by
+// NET-003 and proxy ingress summaries. Sharing it prevents a busy proxy from
+// reporting general and per-ingress counts from different ss invocations.
+func (f *FactStore) EstablishedConnections() ([]activeConnection, error) {
+	f.connectionsOnce.Do(func() {
+		if !f.cmd.Exists("ss") {
+			f.connectionsErr = fmt.Errorf("ss command not found")
+			return
+		}
+		r := f.cmd.Run(15*time.Second, "ss", "-H", "-ntup", "state", "established")
+		if r.Err != nil && r.Stdout == "" {
+			r = f.cmd.Run(15*time.Second, "ss", "-H", "-ntu", "state", "established")
+		}
+		if r.Truncated {
+			f.connectionsErr = fmt.Errorf("ss established output exceeded the capture limit")
+			return
+		}
+		if r.Err != nil {
+			f.connectionsErr = fmt.Errorf("ss established: %s", commandError(r))
+			return
+		}
+		f.connections = parseEstablishedConnections(r.Stdout)
+	})
+	return append([]activeConnection(nil), f.connections...), f.connectionsErr
+}
+
+type activeConnection struct {
+	protocol, local, peer, scope, process string
+}
+
+func parseEstablishedConnections(output string) []activeConnection {
+	var out []activeConnection
+	for _, line := range lines(output) {
+		fields := strings.Fields(line)
+		if len(fields) < 5 || !strings.HasPrefix(strings.ToLower(fields[0]), "tcp") {
+			continue
+		}
+		localIndex := 3
+		if len(fields) >= 6 && (strings.EqualFold(fields[1], "ESTAB") || strings.EqualFold(fields[1], "ESTABLISHED")) {
+			localIndex = 4
+		}
+		peerIndex := localIndex + 1
+		if peerIndex >= len(fields) {
+			continue
+		}
+		local, peer := fields[localIndex], fields[peerIndex]
+		peerAddress, _ := splitHostPortLoose(peer)
+		process := ""
+		if len(fields) > peerIndex+1 {
+			process = strings.Join(fields[peerIndex+1:], " ")
+		}
+		out = append(out, activeConnection{protocol: strings.ToLower(fields[0]), local: local, peer: peer, scope: classifyAddress(peerAddress), process: process})
+	}
+	return out
 }
 
 func (f *FactStore) Processes() ([]ProcessInfo, error) {

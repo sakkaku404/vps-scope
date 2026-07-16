@@ -143,6 +143,33 @@ func TestScenarioPanelAndDockerRiskRelations(t *testing.T) {
 	requireStatus(t, checkDocker(ctx), "DOCKER-001", model.Risk)
 }
 
+func TestScenarioConnectionSnapshotIsSharedAcrossNetworkAndProxyFindings(t *testing.T) {
+	key := scenarioCommandKey("ss", "-H", "-ntup", "state", "established")
+	cmd := newScenarioCommander([]string{"ss", "ps"}, map[string]CommandResult{
+		key: {Stdout: `tcp ESTAB 0 0 10.0.0.1:443 8.8.8.8:50000 users:(("sing-box",pid=1,fd=3))`},
+		scenarioCommandKey("ps", "-eo", "pid=,user=,comm=,args="): {Stdout: "1 root sing-box /usr/bin/sing-box run"},
+	})
+	ctx := scenarioContext(cmd)
+	ctx.Facts.listenersOnce.Do(func() {
+		ctx.Facts.listeners = []Listener{{Protocol: "tcp", Address: "0.0.0.0", Port: "443", Scope: "public-wildcard", Process: "sing-box"}}
+	})
+	ctx.Facts.ufwOnce.Do(func() {
+		ctx.Facts.ufw = parsePanelUFW("Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n443/tcp ALLOW IN Anywhere")
+	})
+	summary := proxyConfigSummary{Product: "sing-box", Path: "/etc/sing-box/config.json", Inbounds: []proxyInbound{{Product: "sing-box", Protocol: "vless", Port: "443", Transports: []string{"tcp"}}}}
+
+	if got := checkActiveConnections(ctx).Facts["peer_public"]; got != "1" {
+		t.Fatalf("public connection count=%q, want 1", got)
+	}
+	finding := checkProxyEndpointRelations(ctx, []proxyConfigSummary{summary})
+	if got := finding.Facts["established_proxy_tcp_connections"]; got != "1" {
+		t.Fatalf("proxy connection count=%q, want 1", got)
+	}
+	if got := cmd.calls[key]; got != 1 {
+		t.Fatalf("established snapshot calls=%d, want exactly one", got)
+	}
+}
+
 func TestScenarioIncompleteEvidenceNeverBecomesPass(t *testing.T) {
 	truncated := CommandResult{Stdout: "partial", Truncated: true, Err: errCommandOutputTruncated}
 	cmd := newScenarioCommander([]string{"journalctl", "ufw", "ss"}, map[string]CommandResult{
