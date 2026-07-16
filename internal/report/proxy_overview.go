@@ -9,10 +9,24 @@ import (
 	"github.com/sakkaku404/vps-scope/internal/model"
 )
 
-// writeProxyOverviewText promotes the non-secret relationship evidence already
-// collected by the proxy checks. It is intentionally an inventory: the check
-// findings remain the source of truth for their status and severity.
-func writeProxyOverviewText(w io.Writer, r model.Report, zh bool, line string) {
+type proxyOverview struct {
+	Components []string
+	Groups     []proxyOverviewGroup
+}
+
+type proxyOverviewGroup struct {
+	Title string
+	Lines []string
+}
+
+func (o proxyOverview) HasContent() bool {
+	return len(o.Components) > 0 || len(o.Groups) > 0
+}
+
+// collectProxyOverview promotes non-secret relationship evidence already
+// collected by the proxy checks. It is intentionally an inventory: findings
+// remain the source of truth for status and severity in every renderer.
+func collectProxyOverview(r model.Report, zh bool) proxyOverview {
 	panels, panelOK := findingByID(r, "WORK-002")
 	inventory, inventoryOK := findingByID(r, "WORK-003")
 	relations, relationsOK := findingByID(r, "WORK-009")
@@ -22,7 +36,7 @@ func writeProxyOverviewText(w io.Writer, r model.Report, zh bool, line string) {
 	reverseProxy, reverseProxyOK := findingByID(r, "WORK-013")
 	docker, dockerOK := findingByID(r, "DOCKER-001")
 	if !panelOK && !inventoryOK && !relationsOK && !controlsOK && !runtimeOK && !activityOK && !reverseProxyOK && !dockerOK {
-		return
+		return proxyOverview{}
 	}
 
 	components := setFromCSV(inventory.Facts["products"])
@@ -33,20 +47,59 @@ func writeProxyOverviewText(w io.Writer, r model.Report, zh bool, line string) {
 	activityLines := activityOverviewLines(activity, zh)
 	deploymentLines := deploymentOverviewLines(reverseProxy, docker, zh)
 	if len(components) == 0 && len(panelLines) == 0 && len(endpointLines) == 0 && len(controlLines) == 0 && len(runtimeLines) == 0 && len(activityLines) == 0 && len(deploymentLines) == 0 {
+		return proxyOverview{}
+	}
+	groups := []proxyOverviewGroup{
+		{Title: choose(zh, "管理面板", "Management panels"), Lines: panelLines},
+		{Title: choose(zh, "代理入口", "Proxy ingress"), Lines: endpointLines},
+		{Title: choose(zh, "控制接口", "Control APIs"), Lines: controlLines},
+		{Title: choose(zh, "运行态异常", "Runtime mismatches"), Lines: runtimeLines},
+		{Title: choose(zh, "运行与攻击日志信号", "Operational and attack log signals"), Lines: activityLines},
+		{Title: choose(zh, "部署关系", "Deployment relationships"), Lines: deploymentLines},
+	}
+	filtered := make([]proxyOverviewGroup, 0, len(groups))
+	for _, group := range groups {
+		if len(group.Lines) > 0 {
+			filtered = append(filtered, group)
+		}
+	}
+	return proxyOverview{Components: components, Groups: filtered}
+}
+
+// writeProxyOverviewText renders the relationship inventory before the full
+// check list, so a terminal user can understand the proxy layout at a glance.
+func writeProxyOverviewText(w io.Writer, r model.Report, zh bool, line string) {
+	overview := collectProxyOverview(r, zh)
+	if !overview.HasContent() {
 		return
 	}
 
 	fmt.Fprintln(w, choose(zh, "代理工作负载概览", "Proxy workload overview"))
 	fmt.Fprintln(w, line)
-	if len(components) > 0 {
-		fmt.Fprintf(w, "%s: %s\n", choose(zh, "已识别组件", "Detected components"), strings.Join(components, ", "))
+	if len(overview.Components) > 0 {
+		fmt.Fprintf(w, "%s: %s\n", choose(zh, "已识别组件", "Detected components"), strings.Join(overview.Components, ", "))
 	}
-	writeOverviewGroup(w, choose(zh, "管理面板", "Management panels"), panelLines)
-	writeOverviewGroup(w, choose(zh, "代理入口", "Proxy ingress"), endpointLines)
-	writeOverviewGroup(w, choose(zh, "控制接口", "Control APIs"), controlLines)
-	writeOverviewGroup(w, choose(zh, "运行态异常", "Runtime mismatches"), runtimeLines)
-	writeOverviewGroup(w, choose(zh, "运行与攻击日志信号", "Operational and attack log signals"), activityLines)
-	writeOverviewGroup(w, choose(zh, "部署关系", "Deployment relationships"), deploymentLines)
+	for _, group := range overview.Groups {
+		writeOverviewGroup(w, group.Title, group.Lines)
+	}
+	fmt.Fprintln(w)
+}
+
+func writeProxyOverviewMarkdown(w io.Writer, r model.Report, zh bool) {
+	overview := collectProxyOverview(r, zh)
+	if !overview.HasContent() {
+		return
+	}
+	fmt.Fprintf(w, "## %s\n\n", choose(zh, "代理工作负载概览", "Proxy workload overview"))
+	if len(overview.Components) > 0 {
+		fmt.Fprintf(w, "- **%s:** %s\n", choose(zh, "已识别组件", "Detected components"), escapeMD(strings.Join(overview.Components, ", ")))
+	}
+	for _, group := range overview.Groups {
+		fmt.Fprintf(w, "\n### %s\n\n", escapeMD(group.Title))
+		for _, line := range group.Lines {
+			fmt.Fprintf(w, "- %s\n", escapeMD(line))
+		}
+	}
 	fmt.Fprintln(w)
 }
 

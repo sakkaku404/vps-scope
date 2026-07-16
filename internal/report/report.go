@@ -216,6 +216,7 @@ func Markdown(w io.Writer, r model.Report, opts Options) error {
 	fmt.Fprintf(w, "**%s**  \n%s\n\n", escapeMD(verdict.Headline), escapeMD(verdict.Detail))
 	writeActionSummaryMarkdown(w, summarizeActions(r, opts.Locale), zh)
 	writeExposureMarkdown(w, r, zh)
+	writeProxyOverviewMarkdown(w, r, zh)
 	for _, category := range audit.CategoryOrder {
 		items := filterCategory(r.Findings, category)
 		if len(items) == 0 {
@@ -374,12 +375,13 @@ func strconvOrZero(value string) string {
 
 func HTML(w io.Writer, r model.Report, opts Options) error {
 	type page struct {
-		Report   model.Report
-		Findings []localizedFinding
-		Actions  actionSummary
-		Verdict  overallVerdict
-		Locale   string
-		ZH       bool
+		Report        model.Report
+		Findings      []localizedFinding
+		Actions       actionSummary
+		Verdict       overallVerdict
+		ProxyOverview proxyOverview
+		Locale        string
+		ZH            bool
 	}
 	items := make([]localizedFinding, 0, len(r.Findings))
 	for _, f := range r.Findings {
@@ -389,7 +391,7 @@ func HTML(w io.Writer, r model.Report, opts Options) error {
 		"cat": func(category string) string { return i18n.Pick(i18n.Categories[category], opts.Locale) },
 		"t":   func(zh, en string) string { return choose(opts.Locale == "zh-CN", zh, en) },
 	}).Parse(htmlTemplate))
-	return t.Execute(w, page{Report: r, Findings: items, Actions: summarizeActions(r, opts.Locale), Verdict: overallVerdictFor(r, opts.Locale), Locale: opts.Locale, ZH: opts.Locale == "zh-CN"})
+	return t.Execute(w, page{Report: r, Findings: items, Actions: summarizeActions(r, opts.Locale), Verdict: overallVerdictFor(r, opts.Locale), ProxyOverview: collectProxyOverview(r, opts.Locale == "zh-CN"), Locale: opts.Locale, ZH: opts.Locale == "zh-CN"})
 }
 
 func filterCategory(findings []model.Finding, category string) []model.Finding {
@@ -805,6 +807,7 @@ const htmlTemplate = `<!doctype html>
 <section class="card"><h2>{{.Verdict.Headline}}</h2><p>{{.Verdict.Detail}}</p><p class="muted">PASS = {{t "证据支持当前判断" "evidence supports the current judgment"}} · INFO = {{t "事实与上下文" "facts and context"}} · UNKNOWN = {{t "证据不足，不代表安全" "insufficient evidence, not safe by default"}}</p></section>
 {{if or .Actions.Urgent .Actions.Availability .Actions.Maintenance .Actions.EvidenceGaps}}<section class="card"><h2>Action summary / 处理摘要</h2>{{if .Actions.Urgent}}<h3>Handle now / 优先处理</h3><ul>{{range .Actions.Urgent}}<li>{{.Localized.Title}} ({{.Localized.ID}}) — {{.Verdict}}</li>{{end}}</ul>{{end}}{{if .Actions.Availability}}<h3>May affect availability / 可用性</h3><ul>{{range .Actions.Availability}}<li>{{.Localized.Title}} ({{.Localized.ID}}) — {{.Verdict}}</li>{{end}}</ul>{{end}}{{if .Actions.Maintenance}}<h3>Maintenance and review / 维护复核</h3><ul>{{range .Actions.Maintenance}}<li>{{.Localized.Title}} ({{.Localized.ID}}) — {{.Verdict}}</li>{{end}}</ul>{{end}}{{if .Actions.EvidenceGaps}}<h3>Evidence gaps / 证据不足</h3><ul>{{range .Actions.EvidenceGaps}}<li>{{.Localized.Title}} ({{.Localized.ID}}) — {{.Verdict}}</li>{{end}}</ul>{{end}}</section>{{end}}
 <div class="toolbar"><div class="filters" role="group" aria-label="status filters"><button class="filter" data-filter="ALL" aria-pressed="true">{{t "全部" "All"}}</button><button class="filter" data-filter="RISK" aria-pressed="false">RISK</button><button class="filter" data-filter="UNKNOWN" aria-pressed="false">UNKNOWN</button><button class="filter" data-filter="PASS" aria-pressed="false">PASS</button><button class="filter" data-filter="INFO" aria-pressed="false">INFO</button></div><input class="search" type="search" placeholder="{{t "搜索检查、证据或 ID" "Search checks, evidence, or IDs"}}" aria-label="{{t "搜索报告" "Search report"}}"></div>
+{{if .ProxyOverview.HasContent}}<section class="card"><h2>{{t "代理工作负载概览" "Proxy workload overview"}}</h2>{{if .ProxyOverview.Components}}<p><b>{{t "已识别组件" "Detected components"}}:</b> {{range $index, $component := .ProxyOverview.Components}}{{if $index}}, {{end}}{{$component}}{{end}}</p>{{end}}{{range .ProxyOverview.Groups}}<h3>{{.Title}}</h3><ul>{{range .Lines}}<li>{{.}}</li>{{end}}</ul>{{end}}</section>{{end}}
 <section class="findings" aria-label="findings">{{range .Findings}}<article class="finding" data-status="{{.Status}}" data-na="{{.NotApplicable}}"><header class="finding-head"><div class="pill">{{.Status}}</div><div><h2>{{.Title}}</h2><div class="finding-meta">{{.ID}} · {{cat .Category}}{{if .ReasonCode}} · {{.ReasonCode}}{{end}}{{if .NotApplicable}} · {{t "不适用" "Not applicable"}}{{end}}</div></div>{{if .Severity}}<div class="severity">{{.Severity}}</div>{{end}}</header><div class="finding-body">{{if .Error}}<p class="error">{{.Error}}</p>{{end}}{{if or (eq .Status "RISK") (eq .Status "UNKNOWN")}}<div class="explain"><p><b>{{t "风险解释" "Why it matters"}}</b>{{.Why}}</p><p><b>{{t "建议" "Suggestion"}}</b>{{.Recommendation}}</p></div>{{end}}{{if .Evidence}}<details {{if or (eq .Status "RISK") (eq .Status "UNKNOWN")}}open{{end}}><summary>{{t "证据" "Evidence"}} · {{len .Evidence}}</summary><div class="evidence-list">{{range .Evidence}}<div class="evidence"><span class="source">[{{.Source}}]</span> {{if .Key}}{{.Key}}={{end}}{{.Value}}</div>{{end}}</div></details>{{end}}</div></article>{{end}}</section>
 <div class="empty">{{t "没有符合当前筛选条件的结果。" "No findings match the current filters."}}</div><footer class="footer">VPS Scope {{.Report.ToolVersion}} · schema {{.Report.SchemaVersion}} · {{t "报告保存在本地" "Report remains local"}}</footer>
 </main><script>

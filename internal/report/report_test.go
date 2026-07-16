@@ -295,6 +295,35 @@ func TestProxyOverviewShowsPanelsAndIngressWithoutVerbose(t *testing.T) {
 	}
 }
 
+func TestProxyOverviewIsPresentInMarkdownAndHTML(t *testing.T) {
+	r := sampleReport()
+	r.Findings = append(r.Findings,
+		model.Finding{ID: "WORK-002", Category: "workloads", Status: model.Risk, Severity: model.High, Evidence: []model.Evidence{{Key: "management_posture", Value: "product=S-UI port=2095/tcp scope=public-wildcard firewall=allow-anywhere tls=true path_default=false judgment=public-management-exposed"}}},
+		model.Finding{ID: "WORK-003", Category: "workloads", Status: model.Info, Facts: map[string]string{"products": "S-UI,sing-box"}},
+		model.Finding{ID: "WORK-009", Category: "workloads", Status: model.Pass, Evidence: []model.Evidence{{Key: "endpoint_relation", Value: "port=443/tcp process=sing-box purpose=sing-box/vless security=reality scope=public-wildcard firewall=allow-anywhere judgment=expected-proxy-ingress"}}},
+	)
+	r.Recount()
+	for _, render := range []struct {
+		name string
+		fn   func(io.Writer, model.Report, Options) error
+	}{
+		{"markdown", Markdown},
+		{"html", HTML},
+	} {
+		t.Run(render.name, func(t *testing.T) {
+			var out bytes.Buffer
+			if err := render.fn(&out, r, Options{Locale: "en"}); err != nil {
+				t.Fatal(err)
+			}
+			for _, expected := range []string{"Proxy workload overview", "S-UI, sing-box", "Management panels", "443/tcp  sing-box/vless (reality)"} {
+				if !strings.Contains(out.String(), expected) {
+					t.Errorf("output missing %q:\n%s", expected, out.String())
+				}
+			}
+		})
+	}
+}
+
 func TestProxyOverviewShowsPostureActivityRuntimeAndDeployment(t *testing.T) {
 	r := sampleReport()
 	r.Findings = append(r.Findings,
