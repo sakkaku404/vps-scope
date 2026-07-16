@@ -42,6 +42,8 @@ The shared bounded directory reader is tested independently: invalid budgets and
 
 Docker inventory tests cover the 128-container ceiling, fixed inspect batching, and a deliberately incomplete batch. The latter must return no usable container prefix, so `DOCKER-001` and `DOCKER-002` cannot be derived from only the first successful batch.
 
+Proxy inventory tests additionally require Docker-backed recognition to use the shared bounded snapshot and require a Docker collection failure to make `WORK-003` unavailable rather than silently reporting no proxy workload.
+
 When adding a new decision rule, add at least one ordinary expected-state scenario and one adverse or incomplete-evidence scenario. Keep fixtures small, synthetic, and free of real host identifiers or secrets.
 
 ## Cross compilation

@@ -53,8 +53,12 @@ func proxyChecks(ctx *Context) []model.Finding {
 func checkProxyInventory(ctx *Context, summaries []proxyConfigSummary) model.Finding {
 	f := model.Finding{ID: "WORK-003", Category: "workloads", Status: model.Info, Facts: map[string]string{}}
 	products := map[string]bool{}
+	var inventoryErr error
 	if ctx.Facts != nil {
-		processes, _ := ctx.Facts.Processes()
+		processes, err := ctx.Facts.Processes()
+		if err != nil {
+			inventoryErr = errors.Join(inventoryErr, fmt.Errorf("ps process inventory: %w", err))
+		}
 		for _, process := range processes {
 			line := processLine(process)
 			product, ok := proxyProcessLine(line)
@@ -71,20 +75,28 @@ func checkProxyInventory(ctx *Context, summaries []proxyConfigSummary) model.Fin
 		products[summary.Product] = true
 	}
 	for _, inbound := range uniqueProxyInbounds(summaries) {
-		f.Evidence = append(f.Evidence, model.Evidence{Source: inbound.Path, Key: "proxy_ingress", Value: fmt.Sprintf("product=%s protocol=%s listen=%s port=%s", inbound.Product, inbound.Protocol, inbound.Listen, inbound.Port)})
+		if len(f.Evidence) < 80 {
+			f.Evidence = append(f.Evidence, model.Evidence{Source: inbound.Path, Key: "proxy_ingress", Value: fmt.Sprintf("product=%s protocol=%s listen=%s port=%s", inbound.Product, inbound.Protocol, inbound.Listen, inbound.Port)})
+		}
 	}
-	if ctx.Commander.Exists("docker") {
-		r := ctx.Commander.Run(10*time.Second, "docker", "ps", "--format", "{{.Names}} {{.Image}}")
-		for _, line := range lines(r.Stdout) {
+	if ctx.Facts != nil && ctx.Commander.Exists("docker") {
+		containers, err := ctx.Facts.DockerContainers()
+		if err != nil {
+			inventoryErr = errors.Join(inventoryErr, fmt.Errorf("docker container inventory: %w", err))
+		}
+		for _, container := range containers {
+			line := strings.TrimPrefix(container.Name, "/") + " " + container.Config.Image
 			if proxyProcessPattern.MatchString(line) || containsAny(strings.ToLower(line), "marzban", "hiddify", "outline") {
 				product := proxyProductFromText(line)
 				products[product] = true
-				f.Evidence = append(f.Evidence, model.Evidence{Source: "docker ps", Key: "proxy_container", Value: truncate(line, 240)})
+				if len(f.Evidence) < 80 {
+					f.Evidence = append(f.Evidence, model.Evidence{Source: "docker inspect", Key: "proxy_container", Value: truncate(line, 240)})
+				}
 			}
 		}
 	}
 	if len(products) == 0 {
-		return notApplicable("WORK-003", "workloads", "process, config, and container discovery", "no supported proxy workload detected")
+		return withIncompleteEvidence(notApplicable("WORK-003", "workloads", "process, config, and container discovery", "no supported proxy workload detected"), "proxy workload inventory", inventoryErr)
 	}
 	names := make([]string, 0, len(products))
 	for product := range products {
@@ -94,7 +106,7 @@ func checkProxyInventory(ctx *Context, summaries []proxyConfigSummary) model.Fin
 	f.Facts["products"] = strings.Join(names, ",")
 	f.Facts["product_count"] = strconv.Itoa(len(names))
 	f.Facts["configured_inbounds"] = strconv.Itoa(len(uniqueProxyInbounds(summaries)))
-	return f
+	return withIncompleteEvidence(f, "proxy workload inventory", inventoryErr)
 }
 
 func checkProxyConfiguration(ctx *Context, summaries []proxyConfigSummary) model.Finding {

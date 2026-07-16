@@ -28,6 +28,8 @@ Directory inventories outside configuration discovery are bounded as well. `/pro
 
 Docker inventory follows the same all-or-error rule. `docker ps -q` accepts at most 128 running container IDs, validates the daemon-provided ID shape, and inspects them in fixed batches of 32 rather than creating one unbounded argument list. A batch timeout, truncated output, malformed JSON, or count mismatch invalidates the complete Docker snapshot; Docker findings become `UNKNOWN` instead of reporting on an incomplete subset.
 
+The proxy workload inventory consumes that same Docker snapshot; it does not issue a second unbounded formatted `docker ps` command. If either process or Docker inventory is incomplete, `WORK-003` records the failure and becomes `UNKNOWN` rather than claiming that no supported workload was found.
+
 Panel adapters expose a versioned adapter ID, a recognized database schema ID, a privacy-safe fingerprint made only from table and column names, and an explicit capability list. An unknown fingerprint stops schema-specific queries and produces incomplete/`UNKNOWN` evidence instead of applying a nearby version optimistically.
 
 The embedded SQLite reader opens panel databases read-only after a regular-file preflight. Metadata queries have a fixed deadline and explicit database, column, row, cell, and aggregate-result limits. These limits apply before any returned value becomes retained evidence, preventing a malformed or unexpectedly large database from turning a read-only audit into an unbounded resource consumer. The target host never needs the `sqlite3` command.
