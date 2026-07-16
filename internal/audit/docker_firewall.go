@@ -210,5 +210,5 @@ func checkDockerFirewallPath(ctx *Context, containers []dockerInspect) model.Fin
 		f.Status, f.Unavailable, f.Error = model.Unknown, true, "Docker forwarding policy could not be established"
 	}
 	sort.Slice(f.Evidence, func(i, j int) bool { return f.Evidence[i].Value < f.Evidence[j].Value })
-	return f
+	return withIncompleteEvidence(f, "host firewall discovery", hostFirewall.collectionErr)
 }

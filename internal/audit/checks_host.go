@@ -193,6 +193,7 @@ func checkPanelManagement(ctx *Context) model.Finding {
 			f.Status = model.Info
 		}
 	}
+	f = withIncompleteEvidence(f, "host firewall discovery", ufw.collectionErr)
 	f = withIncompleteEvidence(f, "panel and container discovery", panelDiscoveryErr)
 	return withIncompleteEvidence(f, "reverse-proxy configuration discovery", reverseProxyErr)
 }
