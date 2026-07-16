@@ -6,6 +6,17 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 1.4.2 - 2026-07-16
+
+### Fixed
+
+- TLS renewal inventory no longer turns partial `systemctl` output into enabled-timer or successful-service evidence. Only a fully collected, relevant systemd result contributes to renewal state.
+- Certificate discovery now records a failed or truncated `nginx -T` invocation as incomplete evidence instead of trusting any configuration fragment it happened to emit.
+
+### Testing
+
+- Added negative fixtures for partial enabled-timer and loaded-service results, plus Nginx configuration-command failure propagation. Read-only regression audits completed on all four laboratory VPS with no unexpected finding-status change; temporary files were removed afterward.
+
 ## 1.4.1 - 2026-07-16
 
 ### Fixed

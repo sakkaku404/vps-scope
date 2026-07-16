@@ -1,6 +1,9 @@
 package audit
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestRenewalJournalSignals(t *testing.T) {
 	success, failure := renewalJournalSignals("Certificate not due for renewal\nrenewal failed: timeout\nSuccessfully renewed certificate")
@@ -59,6 +62,26 @@ func TestCollectTLSRenewalFactsSeparatesScheduleSuccessAndReload(t *testing.T) {
 	}
 	if len(f.Methods) != 1 || f.Methods[0] != "certbot" {
 		t.Fatalf("unexpected methods: %#v", f.Methods)
+	}
+}
+
+func TestCollectTLSRenewalFactsRejectsPartialEnabledTimer(t *testing.T) {
+	results := map[string]CommandResult{
+		scenarioCommandKey("systemctl", "is-enabled", "certbot.timer"): {Stdout: "enabled\n", Err: fmt.Errorf("transport interrupted")},
+	}
+	f := collectTLSRenewalFactsWithDiscovery(scenarioContext(newScenarioCommander([]string{"systemctl"}, results)), noRenewalFiles)
+	if f.Schedules != 0 || f.DiscoveryError == nil {
+		t.Fatalf("partial timer result became schedule evidence: %#v", f)
+	}
+}
+
+func TestCollectTLSRenewalFactsRejectsPartialLoadedService(t *testing.T) {
+	results := map[string]CommandResult{
+		scenarioCommandKey("systemctl", "show", "certbot.service", "--property=LoadState,ActiveState,Result,ExecMainStatus,ActiveEnterTimestamp,ExecReload"): {Stdout: "LoadState=loaded\nResult=success\nExecMainStatus=0\n", Err: fmt.Errorf("transport interrupted")},
+	}
+	f := collectTLSRenewalFactsWithDiscovery(scenarioContext(newScenarioCommander([]string{"systemctl"}, results)), noRenewalFiles)
+	if f.SuccessSignals != 0 || f.DiscoveryError == nil {
+		t.Fatalf("partial service result became success evidence: %#v", f)
 	}
 }
 

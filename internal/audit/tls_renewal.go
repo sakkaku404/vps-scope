@@ -40,15 +40,38 @@ func collectTLSRenewalFactsWithDiscovery(ctx *Context, discover renewalFileDisco
 			if strings.TrimSpace(r.Stdout) != "enabled" {
 				continue
 			}
+			// A non-zero result is normally how systemctl reports an absent or
+			// disabled timer. Once it has claimed "enabled", however, a failed
+			// or truncated command must not become schedule evidence.
+			if r.Err != nil || r.Truncated {
+				f.DiscoveryError = errors.Join(f.DiscoveryError, fmt.Errorf("systemctl is-enabled %s: %s", timer, commandError(r)))
+				f.Evidence = append(f.Evidence, model.Evidence{Source: "systemctl", Key: timer, Value: "enabled state could not be verified: " + commandError(r)})
+				continue
+			}
 			f.Schedules++
 			methods[renewalMethod(timer)] = true
 			show := ctx.Commander.Run(6*time.Second, "systemctl", "show", timer, "--property=LastTriggerUSec,NextElapseUSecRealtime")
+			if show.Err != nil || show.Truncated {
+				f.DiscoveryError = errors.Join(f.DiscoveryError, fmt.Errorf("systemctl show %s: %s", timer, commandError(show)))
+				f.Evidence = append(f.Evidence, model.Evidence{Source: "systemctl", Key: timer, Value: "enabled schedule timing unavailable: " + commandError(show)})
+				continue
+			}
 			v := parseKeyValues(show.Stdout)
 			f.Evidence = append(f.Evidence, model.Evidence{Source: "systemctl", Key: timer, Value: fmt.Sprintf("enabled last_trigger=%s next=%s", valueOrUnknown(v["LastTriggerUSec"]), valueOrUnknown(v["NextElapseUSecRealtime"]))})
 		}
 		for _, service := range []string{"certbot.service", "acme.service", "acme-renew.service", "lego.service", "caddy.service"} {
 			r := ctx.Commander.Run(6*time.Second, "systemctl", "show", service, "--property=LoadState,ActiveState,Result,ExecMainStatus,ActiveEnterTimestamp,ExecReload")
 			v := parseKeyValues(r.Stdout)
+			if r.Err != nil || r.Truncated {
+				// Do not penalize a host merely because a candidate service is
+				// absent. If partial output identifies it as loaded, though, its
+				// result must not be used as renewal-success evidence.
+				if v["LoadState"] == "loaded" {
+					f.DiscoveryError = errors.Join(f.DiscoveryError, fmt.Errorf("systemctl show %s: %s", service, commandError(r)))
+					f.Evidence = append(f.Evidence, model.Evidence{Source: "systemctl", Key: service, Value: "loaded service state unavailable: " + commandError(r)})
+				}
+				continue
+			}
 			if v["LoadState"] != "loaded" {
 				continue
 			}
