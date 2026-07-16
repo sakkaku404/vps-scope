@@ -35,10 +35,13 @@ func checkWorkloads(ctx *Context) []model.Finding {
 }
 
 func checkPanelManagement(ctx *Context) model.Finding {
-	panels := ctx.Facts.Panels()
-	containerPanels := discoverContainerPanels(ctx)
+	panels, panelDiscoveryErr := ctx.Facts.Panels()
+	containerPanels, containerDiscoveryErr := discoverContainerPanels(ctx)
+	if panelDiscoveryErr == nil {
+		panelDiscoveryErr = containerDiscoveryErr
+	}
 	if len(panels) == 0 && len(containerPanels) == 0 {
-		return notApplicable("WORK-002", "workloads", "binary and container discovery", "no supported S-UI, 3x-ui, x-ui, Hiddify, Marzban, or Outline panel found")
+		return withIncompleteEvidence(notApplicable("WORK-002", "workloads", "binary and container discovery", "no supported S-UI, 3x-ui, x-ui, Hiddify, Marzban, or Outline panel found"), "panel and container discovery", panelDiscoveryErr)
 	}
 	nativeProducts := map[string]bool{}
 	for _, panel := range panels {
@@ -190,6 +193,7 @@ func checkPanelManagement(ctx *Context) model.Finding {
 			f.Status = model.Info
 		}
 	}
+	f = withIncompleteEvidence(f, "panel and container discovery", panelDiscoveryErr)
 	return withIncompleteEvidence(f, "reverse-proxy configuration discovery", reverseProxyErr)
 }
 
@@ -217,10 +221,13 @@ type containerPanelInstall struct {
 	hostNetwork bool
 }
 
-func discoverContainerPanels(ctx *Context) []containerPanelInstall {
+func discoverContainerPanels(ctx *Context) ([]containerPanelInstall, error) {
+	if !ctx.Commander.Exists("docker") {
+		return nil, nil
+	}
 	containers, err := ctx.Facts.DockerContainers()
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("Docker container panel discovery: %w", err)
 	}
 	var out []containerPanelInstall
 	for _, container := range containers {
@@ -239,7 +246,7 @@ func discoverContainerPanels(ctx *Context) []containerPanelInstall {
 		out = append(out, containerPanelInstall{product: product, name: name, image: container.Config.Image, ports: ports, hostNetwork: container.HostConfig.NetworkMode == "host"})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
-	return out
+	return out, nil
 }
 
 func panelProductFromContainer(value string) (string, bool) {
@@ -299,20 +306,14 @@ type panelUFW struct {
 	lines                          []string
 	backend                        string
 	rules                          []firewallRule
+	collectionErr                  error
 }
 
 func readPanelUFW(ctx *Context) panelUFW {
 	if ctx.Facts != nil {
 		return ctx.Facts.UFW()
 	}
-	if !ctx.Commander.Exists("ufw") {
-		return panelUFW{}
-	}
-	r := ctx.Commander.Run(12*time.Second, "ufw", "status", "verbose")
-	if r.Err != nil {
-		return panelUFW{}
-	}
-	return parsePanelUFW(r.Stdout)
+	return collectHostFirewall(ctx.Commander)
 }
 
 func parsePanelUFW(output string) panelUFW {

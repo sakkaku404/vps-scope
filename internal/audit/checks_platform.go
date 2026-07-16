@@ -525,7 +525,9 @@ func discoverCertificatePaths(ctx *Context) ([]string, error) {
 	for _, path := range letsencryptPaths {
 		add(path)
 	}
-	for _, panel := range ctx.Facts.Panels() {
+	panels, panelDiscoveryErr := ctx.Facts.Panels()
+	discoveryErr = errors.Join(discoveryErr, panelDiscoveryErr)
+	for _, panel := range panels {
 		for _, endpoint := range panel.Endpoints {
 			add(endpoint.CertFile)
 		}

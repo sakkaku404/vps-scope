@@ -138,3 +138,29 @@ func TestProxyInventoryDoesNotHideDockerCollectionFailure(t *testing.T) {
 		t.Fatalf("proxy inventory = %#v, want unavailable UNKNOWN", f)
 	}
 }
+
+func TestDockerPanelDiscoveryFailureIsNotReportedAsNoPanel(t *testing.T) {
+	cmd := newScenarioCommander([]string{"docker"}, map[string]CommandResult{
+		scenarioCommandKey("docker", "ps", "-q"): {Err: fmt.Errorf("daemon unavailable"), Code: 1},
+	})
+	ctx := scenarioContext(cmd)
+	panels, err := ctx.Facts.Panels()
+	if err == nil || !strings.Contains(err.Error(), "Docker-backed panel discovery") {
+		t.Fatalf("Panels error = %v, want Docker-backed discovery error", err)
+	}
+	if len(panels) != 0 {
+		t.Fatalf("Panels = %#v, want no native panels in fixture", panels)
+	}
+	requireStatus(t, []model.Finding{checkPanelManagement(ctx)}, "WORK-002", model.Unknown)
+	requireStatus(t, []model.Finding{checkPanelRuntimeConsistency(ctx, nil)}, "WORK-012", model.Unknown)
+}
+
+func TestPanelDiscoveryDoesNotRequireDocker(t *testing.T) {
+	panels, err := NewFactStore(newScenarioCommander(nil, nil)).Panels()
+	if err != nil {
+		t.Fatalf("Panels error = %v, want nil when Docker is absent", err)
+	}
+	if len(panels) != 0 {
+		t.Fatalf("Panels = %#v, want no panels in fixture", panels)
+	}
+}
