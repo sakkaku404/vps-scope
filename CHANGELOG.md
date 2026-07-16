@@ -6,6 +6,49 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 1.4.1 - 2026-07-16
+
+### Fixed
+
+- Reliability findings now treat failed or truncated kernel-journal and core-dump inventories as incomplete evidence. `REL-001` therefore becomes `UNKNOWN` unless a separate OOM, core-dump, or disk-pressure risk is already proven.
+- Proxy log activity counts no longer use a partial `journalctl` result after a non-zero exit.
+- The opt-in external observation check now distinguishes DNS and TLS failures. A successful DNS lookup with an unavailable TLS observation is `UNKNOWN`, while a separately proven CDN-origin exposure remains `RISK`.
+
+### Testing
+
+- Added negative scenarios for partial proxy logs, unavailable reliability inventories, and failed TLS observations. The release candidate completed read-only audits on the Debian 12, Ubuntu 22.04, Ubuntu 26.04, and S-UI laboratory hosts; temporary binaries were removed from every host.
+
+## 1.4.0 - 2026-07-16
+
+### Fixed
+
+- `WORK-002` now reports an unsupported panel database schema as `UNKNOWN` whenever no independent management-exposure risk is proven. A proven exposure risk remains a risk instead of being hidden by incomplete schema metadata.
+
+### Testing
+
+- Added a data-free S-UI 1.5.3 schema fixture and coverage for the stable unsupported-schema reason code.
+
+## 1.3.9 - 2026-07-16
+
+### Fixed
+
+- Incomplete host-firewall evidence now propagates to panel management and runtime, proxy control APIs and ingress relations, WireGuard, reverse-proxy, and Docker-forwarding findings. Independently proven risks remain visible.
+
+### Testing
+
+- Added negative scenarios for every affected conclusion style and Docker forwarding.
+
+## 1.3.8 - 2026-07-16
+
+### Fixed
+
+- Docker-backed panel discovery no longer treats a failed Docker inventory as “no panel found”.
+- Firewall consumers now share one normalized UFW, nftables, firewalld, and iptables snapshot, preventing point-in-time disagreement within one report.
+
+### Testing
+
+- Added shared-snapshot, failed Docker/firewall collection, and minimal iptables regression coverage.
+
 ## 1.3.7 - 2026-07-16
 
 ### Fixed

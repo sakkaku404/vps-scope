@@ -397,6 +397,29 @@ func TestScenarioProxyAbuseSignalsAreCountedWithoutRawLogs(t *testing.T) {
 	}
 }
 
+func TestScenarioIncompleteProxyLogsAreUnknown(t *testing.T) {
+	results := map[string]CommandResult{
+		scenarioCommandKey("systemctl", "list-units", "--type=service", "--all", "--no-legend", "--plain"):  {Stdout: "s-ui.service loaded active running S-UI"},
+		scenarioCommandKey("journalctl", "--since", "-1d", "--no-pager", "-o", "cat", "-u", "s-ui.service"): {Stdout: "panel login failed", Err: fmt.Errorf("access denied")},
+	}
+	f := checkProxyLogSignals(scenarioContext(newScenarioCommander([]string{"systemctl", "journalctl"}, results)))
+	if f.Status != model.Unknown || !f.Unavailable {
+		t.Fatalf("finding=%+v", f)
+	}
+}
+
+func TestScenarioUnavailableReliabilityEvidenceNeverPasses(t *testing.T) {
+	results := map[string]CommandResult{
+		scenarioCommandKey("journalctl", "-k", "--since", "-1d", "--no-pager", "-o", "cat"):      {Err: fmt.Errorf("journal unavailable")},
+		scenarioCommandKey("coredumpctl", "list", "--since", "-1d", "--no-pager", "--no-legend"): {Err: fmt.Errorf("coredump unavailable")},
+	}
+	ctx := scenarioContext(newScenarioCommander([]string{"journalctl", "coredumpctl"}, results))
+	f := findingByID(t, checkReliability(ctx), "REL-001")
+	if f.Status != model.Unknown || !f.Unavailable || f.Facts["evidence_discovery_incomplete"] != "true" {
+		t.Fatalf("finding=%+v", f)
+	}
+}
+
 func TestScenarioDockerComposeAndEffectiveMounts(t *testing.T) {
 	cmd := newScenarioCommander([]string{"docker"}, nil)
 	ctx := scenarioContext(cmd)
