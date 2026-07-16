@@ -118,6 +118,9 @@ func TestScenarioFirewallUpdatesAndAuthentication(t *testing.T) {
 	if got := findingByID(t, auth, "AUTH-001").Facts["unique_sources"]; got != "1" {
 		t.Fatalf("unique_sources=%q, want 1", got)
 	}
+	if got := cmd.calls[scenarioCommandKey("ufw", "status", "verbose")]; got != 1 {
+		t.Fatalf("ufw snapshot calls=%d, want one shared firewall snapshot", got)
+	}
 }
 
 func TestScenarioPanelAndDockerRiskRelations(t *testing.T) {
@@ -188,6 +191,19 @@ func TestScenarioIncompleteEvidenceNeverBecomesPass(t *testing.T) {
 
 	summary := proxyConfigSummary{Product: "sing-box", Path: "/etc/sing-box/config.json", Inbounds: []proxyInbound{{Product: "sing-box", Protocol: "vless", Port: "443", Transports: []string{"tcp"}}}}
 	requireStatus(t, []model.Finding{checkProxyEndpointRelations(ctx, []proxyConfigSummary{summary})}, "WORK-009", model.Unknown)
+}
+
+func TestScenarioUnreadableFirewallIsUnknownForBothFirewallFindings(t *testing.T) {
+	cmd := newScenarioCommander([]string{"ufw"}, map[string]CommandResult{
+		scenarioCommandKey("ufw", "status", "verbose"): {Err: fmt.Errorf("permission denied"), Code: 1},
+	})
+	ctx := scenarioContext(cmd)
+	findings := checkFirewall(ctx)
+	requireStatus(t, findings, "FW-001", model.Unknown)
+	requireStatus(t, findings, "FW-002", model.Unknown)
+	if got := cmd.calls[scenarioCommandKey("ufw", "status", "verbose")]; got != 1 {
+		t.Fatalf("ufw snapshot calls=%d, want one", got)
+	}
 }
 
 func TestScenarioUnknownPanelSchemaIsUnknown(t *testing.T) {

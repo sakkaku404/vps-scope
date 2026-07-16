@@ -53,16 +53,27 @@ type FactStore struct {
 
 	panelsOnce sync.Once
 	panels     []panelSnapshot
+	panelsErr  error
 }
 
-func (f *FactStore) Panels() []panelSnapshot {
+// Panels returns native panel facts plus container-backed panel facts. Docker
+// is optional: a host without Docker still has a complete native-panel
+// inventory. If Docker is present but its inventory cannot be collected, the
+// error is returned so a Docker-only panel is never mistaken for no panel.
+func (f *FactStore) Panels() ([]panelSnapshot, error) {
 	f.panelsOnce.Do(func() {
 		f.panels = collectPanelSnapshots(f.cmd)
-		if containers, err := f.DockerContainers(); err == nil {
-			f.panels = append(f.panels, collectContainerPanelSnapshots(containers)...)
+		if !f.cmd.Exists("docker") {
+			return
 		}
+		containers, err := f.DockerContainers()
+		if err != nil {
+			f.panelsErr = fmt.Errorf("Docker-backed panel discovery: %w", err)
+			return
+		}
+		f.panels = append(f.panels, collectContainerPanelSnapshots(containers)...)
 	})
-	return append([]panelSnapshot(nil), f.panels...)
+	return append([]panelSnapshot(nil), f.panels...), f.panelsErr
 }
 
 type ProcessInfo struct {

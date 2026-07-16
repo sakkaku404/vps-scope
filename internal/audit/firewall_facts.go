@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 	"time"
@@ -15,9 +16,12 @@ type firewallRule struct {
 func collectHostFirewall(cmd Commander) panelUFW {
 	var inactive panelUFW
 	var active panelUFW
+	var collectionErr error
 	if cmd.Exists("ufw") {
 		r := cmd.Run(12*time.Second, "ufw", "status", "verbose")
-		if r.Err == nil && !r.Truncated {
+		if r.Err != nil || r.Truncated {
+			collectionErr = fmt.Errorf("ufw status verbose: %s", commandError(r))
+		} else {
 			f := parsePanelUFW(r.Stdout)
 			if f.active {
 				active = f
@@ -39,57 +43,87 @@ func collectHostFirewall(cmd Commander) panelUFW {
 				active.defaultDenyByFamily[family] = active.defaultDenyByFamily[family] || deny
 			}
 			active.defaultDeny = active.defaultDeny || nft.defaultDeny
+		} else {
+			active.collectionErr = fmt.Errorf("nft list ruleset: %s", commandError(r))
 		}
 		return active
 	}
 	if active.available {
+		active.collectionErr = collectionErr
 		return active
 	}
 	if cmd.Exists("firewall-cmd") {
 		state := cmd.Run(8*time.Second, "firewall-cmd", "--state")
+		if state.Err != nil || state.Truncated {
+			collectionErr = fmt.Errorf("firewall-cmd --state: %s", commandError(state))
+		}
 		if strings.TrimSpace(state.Stdout) == "running" {
 			if f := collectFirewalld(cmd); f.available {
+				f.collectionErr = collectionErr
 				return f
+			} else if f.collectionErr != nil {
+				collectionErr = f.collectionErr
 			}
 		}
 	}
 	if cmd.Exists("nft") {
 		r := cmd.Run(15*time.Second, "nft", "list", "ruleset")
 		if r.Err == nil && !r.Truncated {
-			return parseNFTFirewall(r.Stdout)
+			f := parseNFTFirewall(r.Stdout)
+			f.collectionErr = collectionErr
+			return f
 		}
+		collectionErr = fmt.Errorf("nft list ruleset: %s", commandError(r))
 	}
 	if cmd.Exists("iptables-save") || cmd.Exists("ip6tables-save") {
-		f := panelUFW{available: true, active: true, backend: "iptables", defaultDenyByFamily: map[string]bool{}}
+		f := panelUFW{backend: "iptables", defaultDenyByFamily: map[string]bool{}}
 		for _, spec := range []struct{ command, family string }{{"iptables-save", "ipv4"}, {"ip6tables-save", "ipv6"}} {
 			if !cmd.Exists(spec.command) {
 				continue
 			}
 			r := cmd.Run(12*time.Second, spec.command)
 			if r.Err == nil && !r.Truncated {
+				f.available, f.active = true, true
 				rules, deny := parseIPTablesFirewall(r.Stdout, spec.family)
 				f.rules = append(f.rules, rules...)
 				f.defaultDenyByFamily[spec.family] = deny
 				f.defaultDeny = f.defaultDeny || deny
 				f.lines = append(f.lines, lines(r.Stdout)...)
+			} else {
+				collectionErr = fmt.Errorf("%s: %s", spec.command, commandError(r))
 			}
 		}
-		return f
+		f.collectionErr = collectionErr
+		if f.available {
+			return f
+		}
 	}
+	// Minimal Debian/Ubuntu installations occasionally retain iptables itself
+	// without iptables-save. Keep that backend observable rather than calling
+	// it absent merely because the richer exporter is unavailable.
+	if cmd.Exists("iptables") {
+		r := cmd.Run(12*time.Second, "iptables", "-S", "INPUT")
+		if r.Err == nil && !r.Truncated {
+			rules, deny := parseIPTablesFirewall(r.Stdout, "ipv4")
+			return panelUFW{available: true, active: true, defaultDeny: deny, defaultDenyByFamily: map[string]bool{"ipv4": deny}, backend: "iptables", rules: rules, lines: lines(r.Stdout), collectionErr: collectionErr}
+		}
+		collectionErr = fmt.Errorf("iptables -S INPUT: %s", commandError(r))
+	}
+	inactive.collectionErr = collectionErr
 	return inactive
 }
 
 func collectFirewalld(cmd Commander) panelUFW {
 	zonesResult := cmd.Run(10*time.Second, "firewall-cmd", "--get-active-zones")
 	if zonesResult.Err != nil || zonesResult.Truncated {
-		return panelUFW{}
+		return panelUFW{collectionErr: fmt.Errorf("firewall-cmd --get-active-zones: %s", commandError(zonesResult))}
 	}
 	f := panelUFW{available: true, active: true, backend: "firewalld", defaultDenyByFamily: map[string]bool{}}
 	servicePorts := map[string]string{"ssh": "22", "http": "80", "https": "443"}
 	for _, zone := range parseFirewalldActiveZones(zonesResult.Stdout) {
 		detail := cmd.Run(10*time.Second, "firewall-cmd", "--zone="+zone, "--list-all")
 		if detail.Err != nil || detail.Truncated {
-			return panelUFW{}
+			return panelUFW{collectionErr: fmt.Errorf("firewall-cmd --zone=%s --list-all: %s", zone, commandError(detail))}
 		}
 		f.lines = append(f.lines, lines(detail.Stdout)...)
 		restricted := false
@@ -396,7 +430,7 @@ func collectNFTHookDefaultPolicies(target map[string]bool, output, hook string) 
 }
 
 func parseIPTablesFirewall(output, family string) ([]firewallRule, bool) {
-	defaultDeny := regexp.MustCompile(`(?m)^:INPUT\s+(DROP|REJECT)\b`).MatchString(output)
+	defaultDeny := regexp.MustCompile(`(?m)^(?::INPUT\s+|-P\s+INPUT\s+)(DROP|REJECT)\b`).MatchString(output)
 	var out []firewallRule
 	for _, line := range lines(output) {
 		if !strings.HasPrefix(line, "-A INPUT ") || !containsAny(line, "-j ACCEPT", "-j DROP", "-j REJECT") {

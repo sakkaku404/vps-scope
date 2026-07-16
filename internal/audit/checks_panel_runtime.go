@@ -9,9 +9,9 @@ import (
 )
 
 func checkPanelRuntimeConsistency(ctx *Context, summaries []proxyConfigSummary) model.Finding {
-	panels := ctx.Facts.Panels()
+	panels, panelDiscoveryErr := ctx.Facts.Panels()
 	if len(panels) == 0 {
-		return notApplicable("WORK-012", "workloads", "panel facts", "no supported native panel found")
+		return withIncompleteEvidence(notApplicable("WORK-012", "workloads", "panel facts", "no supported panel found"), "panel and container discovery", panelDiscoveryErr)
 	}
 	listeners, listenerErr := ctx.Facts.Listeners()
 	if listenerErr != nil {
@@ -150,7 +150,7 @@ func checkPanelRuntimeConsistency(ctx *Context, summaries []proxyConfigSummary) 
 	} else if f.Status != model.Risk && (databaseUnavailable > 0 || unclassified > 0) {
 		f.Status = model.Info
 	}
-	return f
+	return withIncompleteEvidence(f, "panel and container discovery", panelDiscoveryErr)
 }
 
 func panelOwnsProcess(product, process string) bool {

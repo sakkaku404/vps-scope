@@ -18,7 +18,9 @@ import (
 
 func proxyChecks(ctx *Context) []model.Finding {
 	summaries, discoveryErr := discoverProxyConfigs(ctx)
-	for _, panel := range ctx.Facts.Panels() {
+	panels, panelDiscoveryErr := ctx.Facts.Panels()
+	discoveryErr = errors.Join(discoveryErr, panelDiscoveryErr)
+	for _, panel := range panels {
 		if panel.DiscoveryError != "" {
 			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s: %s", panel.Product, panel.DiscoveryError))
 		}
@@ -556,7 +558,9 @@ func discoverProxyConfigs(ctx *Context) ([]proxyConfigSummary, error) {
 		}
 		out = append(out, summary)
 	}
-	for _, panel := range ctx.Facts.Panels() {
+	panels, panelDiscoveryErr := ctx.Facts.Panels()
+	discoveryErr = errors.Join(discoveryErr, panelDiscoveryErr)
+	for _, panel := range panels {
 		if summary, ok := panelProxySummary(panel); ok {
 			out = append(out, summary)
 		}

@@ -96,6 +96,19 @@ func TestActiveUFWIncludesDirectNFTInputRules(t *testing.T) {
 	}
 }
 
+func TestFirewallCollectorFallsBackToIPTablesWhenSaveIsUnavailable(t *testing.T) {
+	cmd := newScenarioCommander([]string{"iptables"}, map[string]CommandResult{
+		scenarioCommandKey("iptables", "-S", "INPUT"): {Stdout: "-P INPUT DROP\n-A INPUT -p tcp --dport 22 -j ACCEPT"},
+	})
+	f := collectHostFirewall(cmd)
+	if !f.available || !f.active || f.backend != "iptables" || !f.defaultDeny {
+		t.Fatalf("iptables fallback = %+v", f)
+	}
+	if got := firewallDispositionFamily(f, "22", "tcp", "ipv4"); got != "allow-anywhere" {
+		t.Fatalf("iptables fallback SSH disposition=%q", got)
+	}
+}
+
 func TestNFTParserExpandsReachablePortSetsAndUniformVerdictMaps(t *testing.T) {
 	input := `table inet filter {
  set proxy_ports { type inet_service; elements = { 8443, 9443 } }

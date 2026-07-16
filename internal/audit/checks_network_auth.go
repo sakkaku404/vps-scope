@@ -118,128 +118,49 @@ func checkFirewall(ctx *Context) []model.Finding {
 }
 
 func checkFirewallBase(ctx *Context) []model.Finding {
-	f := model.Finding{ID: "FW-001", Category: "firewall", Facts: map[string]string{}}
-	if ctx.Commander.Exists("ufw") {
-		r := ctx.Commander.Run(15*time.Second, "ufw", "status", "verbose")
-		if r.Err != nil {
-			return []model.Finding{unknown("FW-001", "firewall", "ufw status verbose", commandError(r))}
+	normalized := ctx.Facts.UFW()
+	if !normalized.available {
+		if normalized.collectionErr != nil {
+			return []model.Finding{unknown("FW-001", "firewall", "host firewall discovery", normalized.collectionErr.Error())}
 		}
-		text := r.Stdout
-		active := regexp.MustCompile(`(?mi)^Status:\s+active\s*$`).MatchString(text)
-		defaultDeny := regexp.MustCompile(`(?mi)^Default:\s+deny \(incoming\)`).MatchString(text)
-		f.Facts["backend"] = "ufw"
-		f.Facts["active"] = strconv.FormatBool(active)
-		f.Facts["default_deny_incoming"] = strconv.FormatBool(defaultDeny)
-		useActiveFirewalld := !active && firewalldRunning(ctx)
-		if useActiveFirewalld {
-			// UFW may be installed but intentionally unused. Prefer the active backend.
-			f = model.Finding{ID: "FW-001", Category: "firewall", Facts: map[string]string{}}
-		} else if !active || !defaultDeny {
-			f.Status, f.Severity = model.Risk, model.High
-		} else {
-			f.Status = model.Pass
-		}
-		if !useActiveFirewalld {
-			for i, line := range lines(text) {
-				if i >= 60 {
-					break
-				}
-				f.Evidence = append(f.Evidence, model.Evidence{Source: "ufw status verbose", Value: line})
-			}
-			return []model.Finding{f}
-		}
+		return []model.Finding{{ID: "FW-001", Category: "firewall", Status: model.Risk, Severity: model.High, Evidence: []model.Evidence{{Source: "command lookup", Value: "ufw, firewalld, nft, and iptables-save not found"}}}}
 	}
-	if ctx.Commander.Exists("firewall-cmd") {
-		state := ctx.Commander.Run(10*time.Second, "firewall-cmd", "--state")
-		f.Facts["backend"] = "firewalld"
-		f.Facts["active"] = strconv.FormatBool(strings.TrimSpace(state.Stdout) == "running")
-		f.Evidence = append(f.Evidence, model.Evidence{Source: "firewall-cmd --state", Value: strings.TrimSpace(state.Stdout + " " + state.Stderr)})
-		if strings.TrimSpace(state.Stdout) != "running" {
-			f.Status, f.Severity = model.Risk, model.High
-			return []model.Finding{f}
-		}
-		zones := ctx.Commander.Run(12*time.Second, "firewall-cmd", "--get-active-zones")
-		if zones.Err != nil {
-			return []model.Finding{unknown("FW-001", "firewall", "firewall-cmd --get-active-zones", commandError(zones))}
-		}
-		activeZones := parseFirewalldActiveZones(zones.Stdout)
-		f.Facts["active_zones"] = strconv.Itoa(len(activeZones))
-		f.Evidence = append(f.Evidence, model.Evidence{Source: "firewall-cmd --get-active-zones", Value: truncate(zones.Stdout, 1200)})
-		if len(activeZones) == 0 {
-			f.Status = model.Info
-		} else {
-			f.Status = model.Pass
-		}
-		return []model.Finding{f}
-	}
-	if ctx.Commander.Exists("nft") {
-		r := ctx.Commander.Run(20*time.Second, "nft", "list", "ruleset")
-		if r.Err != nil {
-			return []model.Finding{unknown("FW-001", "firewall", "nft list ruleset", commandError(r))}
-		}
-		if strings.TrimSpace(r.Stdout) == "" {
-			f.Status, f.Severity = model.Risk, model.High
-			f.Evidence = []model.Evidence{{Source: "nft list ruleset", Value: "empty ruleset"}}
-		} else {
-			normalized := parseNFTFirewall(r.Stdout)
-			f.Status = model.Info
-			if normalized.defaultDeny {
-				f.Status = model.Pass
-			}
-			f.Facts["backend"] = "nftables"
-			f.Facts["default_deny_incoming"] = strconv.FormatBool(normalized.defaultDeny)
-			f.Facts["normalized_rules"] = strconv.Itoa(len(normalized.rules))
-			for i, line := range lines(r.Stdout) {
-				if i >= 60 {
-					break
-				}
-				f.Evidence = append(f.Evidence, model.Evidence{Source: "nft list ruleset", Value: line})
-			}
-		}
-		return []model.Finding{f}
-	}
-	if ctx.Commander.Exists("iptables-save") || ctx.Commander.Exists("ip6tables-save") {
-		normalized := collectHostFirewall(ctx.Commander)
-		f.Facts["backend"] = normalized.backend
-		f.Facts["active"] = strconv.FormatBool(normalized.active)
-		f.Facts["default_deny_incoming"] = strconv.FormatBool(normalized.defaultDeny)
-		f.Facts["normalized_rules"] = strconv.Itoa(len(normalized.rules))
-		if normalized.active && normalized.defaultDeny {
-			f.Status = model.Pass
-		} else {
-			f.Status = model.Info
-		}
-		for _, rule := range normalized.rules {
-			if len(f.Evidence) < 60 {
-				f.Evidence = append(f.Evidence, model.Evidence{Source: "normalized host firewall", Value: rule.Raw})
-			}
-		}
-		return []model.Finding{f}
-	}
-	if ctx.Commander.Exists("iptables") {
-		r := ctx.Commander.Run(15*time.Second, "iptables", "-S", "INPUT")
-		if r.Err != nil {
-			return []model.Finding{unknown("FW-001", "firewall", "iptables -S INPUT", commandError(r))}
-		}
+	f := model.Finding{ID: "FW-001", Category: "firewall", Facts: map[string]string{
+		"backend":               normalized.backend,
+		"active":                strconv.FormatBool(normalized.active),
+		"default_deny_incoming": strconv.FormatBool(normalized.defaultDeny),
+		"normalized_rules":      strconv.Itoa(len(normalized.rules)),
+	}}
+	isUFW := normalized.backend == "ufw" || strings.HasPrefix(normalized.backend, "ufw+")
+	emptyNFT := normalized.backend == "nftables" && len(normalized.lines) == 0
+	if !normalized.active || emptyNFT || isUFW && !normalized.defaultDeny {
+		f.Status, f.Severity = model.Risk, model.High
+	} else if normalized.defaultDeny {
+		f.Status = model.Pass
+	} else {
 		f.Status = model.Info
-		f.Facts["backend"] = "iptables"
-		for i, line := range lines(r.Stdout) {
-			if i >= 60 {
+	}
+	for i, line := range normalized.lines {
+		if i >= 60 {
+			break
+		}
+		f.Evidence = append(f.Evidence, model.Evidence{Source: firewallEvidenceSource(normalized), Value: line})
+	}
+	if len(f.Evidence) == 0 {
+		for _, rule := range normalized.rules {
+			if len(f.Evidence) >= 60 {
 				break
 			}
-			f.Evidence = append(f.Evidence, model.Evidence{Source: "iptables -S INPUT", Value: line})
+			f.Evidence = append(f.Evidence, model.Evidence{Source: "normalized host firewall", Value: rule.Raw})
 		}
-		return []model.Finding{f}
 	}
-	f.Status, f.Severity = model.Risk, model.High
-	f.Evidence = []model.Evidence{{Source: "command lookup", Value: "ufw, firewalld, nft, and iptables not found"}}
-	return []model.Finding{f}
+	return []model.Finding{withIncompleteEvidence(f, "host firewall discovery", normalized.collectionErr)}
 }
 
 func checkFirewallExposure(ctx *Context) model.Finding {
 	normalized := ctx.Facts.UFW()
 	if !normalized.available {
-		return notApplicable("FW-002", "firewall", "backend", "no readable active host-firewall backend")
+		return withIncompleteEvidence(notApplicable("FW-002", "firewall", "backend", "no readable active host-firewall backend"), "host firewall discovery", normalized.collectionErr)
 	}
 	f := model.Finding{ID: "FW-002", Category: "firewall", Status: model.Pass, Facts: map[string]string{"backend": normalized.backend}}
 	type ruleGroup struct {
@@ -341,7 +262,7 @@ func checkFirewallExposure(ctx *Context) model.Finding {
 	} else if !normalized.defaultDeny {
 		f.Status = model.Info
 	}
-	return f
+	return withIncompleteEvidence(f, "host firewall discovery", normalized.collectionErr)
 }
 
 func includeFirewallExposureRule(backend, origin string) bool {
@@ -362,59 +283,6 @@ func sortedBoolKeys(values map[string]bool) string {
 	}
 	sort.Strings(keys)
 	return strings.Join(keys, ",")
-}
-
-func ufwRunning(ctx *Context) bool {
-	if !ctx.Commander.Exists("ufw") {
-		return false
-	}
-	r := ctx.Commander.Run(10*time.Second, "ufw", "status")
-	return regexp.MustCompile(`(?mi)^Status:\s+active\s*$`).MatchString(r.Stdout)
-}
-
-func firewalldRunning(ctx *Context) bool {
-	if !ctx.Commander.Exists("firewall-cmd") {
-		return false
-	}
-	r := ctx.Commander.Run(10*time.Second, "firewall-cmd", "--state")
-	return strings.TrimSpace(r.Stdout) == "running"
-}
-
-func checkFirewalldExposure(ctx *Context) model.Finding {
-	state := ctx.Commander.Run(10*time.Second, "firewall-cmd", "--state")
-	if strings.TrimSpace(state.Stdout) != "running" {
-		return model.Finding{ID: "FW-002", Category: "firewall", Status: model.Risk, Severity: model.High, Evidence: []model.Evidence{{Source: "firewall-cmd --state", Value: strings.TrimSpace(state.Stdout + " " + state.Stderr)}}}
-	}
-	zonesResult := ctx.Commander.Run(12*time.Second, "firewall-cmd", "--get-active-zones")
-	if zonesResult.Err != nil {
-		return unknown("FW-002", "firewall", "firewall-cmd --get-active-zones", commandError(zonesResult))
-	}
-	zones := parseFirewalldActiveZones(zonesResult.Stdout)
-	f := model.Finding{ID: "FW-002", Category: "firewall", Status: model.Pass, Facts: map[string]string{"active_zones": strconv.Itoa(len(zones))}}
-	unrestricted, exposedItems := 0, 0
-	for _, zone := range zones {
-		detail := ctx.Commander.Run(12*time.Second, "firewall-cmd", "--zone="+zone, "--list-all")
-		if detail.Err != nil {
-			return unknown("FW-002", "firewall", "firewall-cmd --zone="+zone+" --list-all", commandError(detail))
-		}
-		analysis := parseFirewalldZone(detail.Stdout)
-		exposedItems += len(analysis.services) + len(analysis.ports)
-		if analysis.unrestricted {
-			unrestricted++
-		}
-		for _, line := range lines(detail.Stdout) {
-			if len(f.Evidence) >= 80 {
-				break
-			}
-			f.Evidence = append(f.Evidence, model.Evidence{Source: "firewall-cmd --zone=" + zone + " --list-all", Value: line})
-		}
-	}
-	f.Facts["allowed_services_and_ports"] = strconv.Itoa(exposedItems)
-	f.Facts["unrestricted_accept_zones_or_rules"] = strconv.Itoa(unrestricted)
-	if unrestricted > 0 {
-		f.Status, f.Severity = model.Risk, model.High
-	}
-	return f
 }
 
 func parseFirewalldActiveZones(output string) []string {
