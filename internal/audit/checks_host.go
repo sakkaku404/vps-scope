@@ -30,6 +30,7 @@ func checkWorkloads(ctx *Context) []model.Finding {
 			}
 		}
 	}
+	f = withIncompleteEvidence(f, "process-based workload profile detection", ctx.ProfileDiscoveryError)
 	findings := []model.Finding{f, checkPanelManagement(ctx)}
 	return append(findings, proxyChecks(ctx)...)
 }
@@ -141,7 +142,7 @@ func checkPanelManagement(ctx *Context) model.Finding {
 	// A loopback-bound panel can still be Internet-facing through Nginx,
 	// Caddy, or HAProxy. Treat that as management exposure here as well as in
 	// the detailed reverse-proxy relationship check.
-	reverseProxyRoutes, reverseProxyErr := discoverReverseProxyRoutes()
+	reverseProxyRoutes, reverseProxyErr := discoverReverseProxyRoutes(ctx.Commander)
 	for _, route := range reverseProxyRoutes {
 		frontend := matchingListener(listeners, route.FrontendPort, route.FrontendTransport)
 		if frontend == nil || (frontend.Scope != "public" && frontend.Scope != "public-wildcard") {
@@ -355,15 +356,20 @@ func checkFilesystem(ctx *Context) []model.Finding {
 		path      string
 		forbidden fs.FileMode
 	}
-	targets := []target{
-		{"/etc/passwd", 0o022}, {"/etc/shadow", 0o027}, {"/etc/sudoers", 0o022},
-		{"/etc/ssh/sshd_config", 0o022},
+	targets := []target{{"/etc/passwd", 0o022}, {"/etc/shadow", 0o027}}
+	if ctx.Commander.Exists("sudo") {
+		targets = append(targets, target{"/etc/sudoers", 0o022})
+	}
+	if ctx.Commander.Exists("sshd") {
+		targets = append(targets, target{"/etc/ssh/sshd_config", 0o022})
 	}
 	problems := 0
 	checked := 0
+	var discoveryErr error
 	for _, t := range targets {
 		info, err := os.Stat(t.path)
 		if err != nil {
+			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s: %w", t.path, err))
 			continue
 		}
 		checked++
@@ -371,10 +377,17 @@ func checkFilesystem(ctx *Context) []model.Finding {
 			problems++
 			f.Evidence = append(f.Evidence, model.Evidence{Source: "stat", Key: "insecure_mode", Value: fmt.Sprintf("%s mode=%s", t.path, modeString(info))})
 		}
+		if owner, ownerErr := fileOwnerUID(info); ownerErr != nil {
+			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s owner: %w", t.path, ownerErr))
+		} else if owner != 0 {
+			problems++
+			f.Evidence = append(f.Evidence, model.Evidence{Source: "stat", Key: "unexpected_owner", Value: fmt.Sprintf("%s owner_uid=%d expected_uid=0", t.path, owner)})
+		}
 	}
 	for _, path := range []string{"/tmp", "/var/tmp", "/dev/shm"} {
 		info, err := os.Stat(path)
 		if err != nil {
+			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s: %w", path, err))
 			continue
 		}
 		checked++
@@ -382,13 +395,19 @@ func checkFilesystem(ctx *Context) []model.Finding {
 			problems++
 			f.Evidence = append(f.Evidence, model.Evidence{Source: "stat", Key: "missing_sticky_bit", Value: path + " mode=" + modeString(info)})
 		}
+		if owner, ownerErr := fileOwnerUID(info); ownerErr != nil {
+			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s owner: %w", path, ownerErr))
+		} else if owner != 0 {
+			problems++
+			f.Evidence = append(f.Evidence, model.Evidence{Source: "stat", Key: "unexpected_owner", Value: fmt.Sprintf("%s owner_uid=%d expected_uid=0", path, owner)})
+		}
 	}
 	f.Facts["checked_paths"] = strconv.Itoa(checked)
 	f.Facts["permission_problems"] = strconv.Itoa(problems)
 	if problems > 0 {
 		f.Status, f.Severity = model.Risk, model.High
 	}
-	return []model.Finding{f}
+	return []model.Finding{withIncompleteEvidence(f, "sensitive filesystem metadata", discoveryErr)}
 }
 
 func checkTemporaryExecutables() model.Finding {
@@ -398,6 +417,7 @@ func checkTemporaryExecutables() model.Finding {
 		return unknown("PERSIST-002", "persistence", "/proc", err.Error())
 	}
 	seen := map[string]bool{}
+	unavailable := 0
 	self, _ := os.Executable()
 	self, _ = filepath.EvalSymlinks(self)
 	for _, entry := range entries {
@@ -408,7 +428,13 @@ func checkTemporaryExecutables() model.Finding {
 			continue
 		}
 		target, err := os.Readlink(filepath.Join("/proc", entry.Name(), "exe"))
-		if err != nil || !(strings.HasPrefix(target, "/tmp/") || strings.HasPrefix(target, "/var/tmp/") || strings.HasPrefix(target, "/dev/shm/")) {
+		if err != nil {
+			if !errors.Is(err, fs.ErrNotExist) {
+				unavailable++
+			}
+			continue
+		}
+		if !(strings.HasPrefix(target, "/tmp/") || strings.HasPrefix(target, "/var/tmp/") || strings.HasPrefix(target, "/dev/shm/")) {
 			continue
 		}
 		cleanTarget := strings.TrimSuffix(target, " (deleted)")
@@ -423,8 +449,12 @@ func checkTemporaryExecutables() model.Finding {
 		}
 	}
 	f.Facts["temporary_executables"] = strconv.Itoa(len(seen))
+	f.Facts["unavailable_process_executables"] = strconv.Itoa(unavailable)
 	if len(seen) > 0 {
 		f.Status, f.Severity = model.Risk, model.High
+	}
+	if unavailable > 0 {
+		return withIncompleteEvidence(f, "/proc/*/exe", fmt.Errorf("%d process executable links were unreadable", unavailable))
 	}
 	return f
 }

@@ -41,7 +41,7 @@ if [[ "$INSTALL_DIR" != /* || "$INSTALL_DIR" == *$'\n'* ]]; then
   exit 2
 fi
 
-for command_name in curl sha256sum install mktemp uname awk; do
+for command_name in curl sha256sum install mktemp mv uname awk; do
   command -v "$command_name" >/dev/null 2>&1 || {
     echo "Required command not found: $command_name" >&2
     exit 1
@@ -96,6 +96,9 @@ else
 fi
 
 install -d -m 0755 "$INSTALL_DIR"
-install -m 0755 "$asset" "$INSTALL_DIR/vps-scope"
+install_temp="$(mktemp "$INSTALL_DIR/.vps-scope.XXXXXX")"
+trap 'rm -f "$install_temp"; rm -rf "$temp_dir"' EXIT
+install -m 0755 "$asset" "$install_temp"
+mv -f -- "$install_temp" "$INSTALL_DIR/vps-scope"
 echo "Installed: ${INSTALL_DIR}/vps-scope"
 "$INSTALL_DIR/vps-scope" version

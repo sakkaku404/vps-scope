@@ -140,6 +140,7 @@ func checkSSHPermissions() model.Finding {
 	}
 	f := model.Finding{ID: "SSH-004", Category: "ssh", Status: model.Pass, Facts: map[string]string{}}
 	var problems []string
+	var discoveryErr error
 	keyCount := 0
 	for _, e := range entries {
 		if !loginShell(e.Shell) || e.Home == "" {
@@ -150,6 +151,13 @@ func checkSSHPermissions() model.Finding {
 			if tooOpen(info, 0o022) {
 				problems = append(problems, fmt.Sprintf("%s mode=%s", sshDir, modeString(info)))
 			}
+			if owner, ownerErr := fileOwnerUID(info); ownerErr != nil {
+				discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s owner: %w", sshDir, ownerErr))
+			} else if owner != 0 && owner != e.UID {
+				problems = append(problems, fmt.Sprintf("%s owner_uid=%d expected_uid=%d-or-root", sshDir, owner, e.UID))
+			}
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s: %w", sshDir, err))
 		}
 		for _, name := range []string{"authorized_keys", "authorized_keys2"} {
 			path := filepath.Join(sshDir, name)
@@ -167,15 +175,25 @@ func checkSSHPermissions() model.Finding {
 							f.Evidence = append(f.Evidence, model.Evidence{Source: path, Key: "authorized_key_options", Value: strings.Join(options, ",")})
 						}
 					}
+				} else {
+					discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s: %w", path, err))
 				}
+				if owner, ownerErr := fileOwnerUID(info); ownerErr != nil {
+					discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s owner: %w", path, ownerErr))
+				} else if owner != 0 && owner != e.UID {
+					problems = append(problems, fmt.Sprintf("%s owner_uid=%d expected_uid=%d-or-root", path, owner, e.UID))
+				}
+			} else if !errors.Is(err, fs.ErrNotExist) {
+				discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s: %w", path, err))
 			}
 		}
 	}
-	hostKeyPaths, discoveryErr := discoverExistingFiles(64, "/etc/ssh/ssh_host_*_key")
+	hostKeyPaths, hostKeyDiscoveryErr := discoverExistingFiles(64, "/etc/ssh/ssh_host_*_key")
+	discoveryErr = errors.Join(discoveryErr, hostKeyDiscoveryErr)
 	for _, path := range hostKeyPaths {
 		if info, err := os.Stat(path); err != nil {
 			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s: %w", path, err))
-		} else if tooOpen(info, fs.FileMode(0o037)) {
+		} else if tooOpen(info, fs.FileMode(0o077)) {
 			problems = append(problems, fmt.Sprintf("%s mode=%s", path, modeString(info)))
 		}
 	}
@@ -207,7 +225,18 @@ func checkSSHKeyInventory(ctx *Context) model.Finding {
 		}
 		for _, name := range []string{"authorized_keys", "authorized_keys2"} {
 			path := filepath.Join(entry.Home, ".ssh", name)
-			if !regularFile(path) {
+			info, statErr := os.Stat(path)
+			if errors.Is(statErr, fs.ErrNotExist) {
+				continue
+			}
+			if statErr != nil {
+				parseFailures++
+				f.Evidence = append(f.Evidence, model.Evidence{Source: "authorized_keys", Key: "unavailable", Value: path})
+				continue
+			}
+			if !info.Mode().IsRegular() {
+				parseFailures++
+				f.Evidence = append(f.Evidence, model.Evidence{Source: "authorized_keys", Key: "not_regular", Value: path})
 				continue
 			}
 			files++

@@ -39,9 +39,9 @@ func checkNetwork(ctx *Context) []model.Finding {
 
 func checkUnexpectedListeners(ctx *Context, listeners []Listener) model.Finding {
 	f := model.Finding{ID: "NET-002", Category: "network", Status: model.Pass, Facts: map[string]string{}}
-	unexpected := 0
+	unexpected, uncertainRuntimeUDP := 0, 0
 	seen := map[string]bool{}
-	runtimeExpected := runtimeExpectedPublicListeners(ctx)
+	runtimeExpected, runtimeExpectedErr := runtimeExpectedPublicListeners(ctx)
 	for _, listener := range listeners {
 		if listener.Scope != "public" && listener.Scope != "public-wildcard" {
 			continue
@@ -55,32 +55,54 @@ func checkUnexpectedListeners(ctx *Context, listeners []Listener) model.Finding 
 		if runtimeExpected[key] || expectedListener(ctx, listener, key) {
 			continue
 		}
+		if runtimeExpectedErr != nil && proto == "udp" {
+			uncertainRuntimeUDP++
+			f.Evidence = append(f.Evidence, model.Evidence{Source: "ss + runtime listener discovery", Key: "unclassified_public_udp_listener", Value: fmt.Sprintf("%s %s:%s process=%s profile=%s", proto, listener.Address, listener.Port, truncate(listener.Process, 180), ctx.Profile.Effective)})
+			continue
+		}
 		unexpected++
 		f.Evidence = append(f.Evidence, model.Evidence{Source: "ss + profile policy", Key: "unexpected_public_listener", Value: fmt.Sprintf("%s %s:%s process=%s profile=%s", proto, listener.Address, listener.Port, truncate(listener.Process, 180), ctx.Profile.Effective)})
 	}
 	f.Facts["unexpected_public_listeners"] = strconv.Itoa(unexpected)
+	f.Facts["unclassified_public_udp_listeners"] = strconv.Itoa(uncertainRuntimeUDP)
 	if unexpected > 0 {
 		f.Status, f.Severity = model.Risk, model.Medium
 	}
+	if uncertainRuntimeUDP > 0 && unexpected == 0 {
+		f.Status, f.Severity, f.Unavailable = model.Unknown, "", true
+		f.Error = "runtime listener classification could not be completed"
+	}
+	if ctx.Profile.Requested == "auto" && ctx.ProfileDiscoveryError != nil {
+		f.Status, f.Severity, f.Unavailable = model.Unknown, "", true
+		f.Error = "automatic profile detection could not be completed"
+	}
+	f = withIncompleteEvidence(f, "runtime expected-listener discovery", runtimeExpectedErr)
+	f = withIncompleteEvidence(f, "automatic profile detection", func() error {
+		if ctx.Profile.Requested == "auto" {
+			return ctx.ProfileDiscoveryError
+		}
+		return nil
+	}())
 	return f
 }
 
-func runtimeExpectedPublicListeners(ctx *Context) map[string]bool {
+func runtimeExpectedPublicListeners(ctx *Context) (map[string]bool, error) {
 	out := map[string]bool{}
 	if !ctx.Commander.Exists("wg") {
-		return out
+		return out, nil
 	}
 	r := ctx.Commander.Run(8*time.Second, "wg", "show", "all", "listen-port")
 	if r.Err != nil || r.Truncated {
-		return out
+		return out, fmt.Errorf("wg listen-port inventory: %s", commandError(r))
 	}
 	for _, line := range lines(r.Stdout) {
 		fields := strings.Fields(line)
-		if len(fields) >= 2 && validPort(fields[len(fields)-1]) {
-			out[fields[len(fields)-1]+"/udp"] = true
+		if len(fields) < 2 || !validPort(fields[len(fields)-1]) {
+			return nil, fmt.Errorf("wg listen-port inventory returned malformed output")
 		}
+		out[fields[len(fields)-1]+"/udp"] = true
 	}
-	return out
+	return out, nil
 }
 
 func expectedListener(ctx *Context, listener Listener, key string) bool {
@@ -190,6 +212,9 @@ func checkFirewallExposure(ctx *Context) model.Finding {
 	sort.Strings(groupKeys)
 	for _, key := range groupKeys {
 		group := groups[key]
+		if group.port == "any" && group.source == "any" {
+			unrestricted++
+		}
 		f.Evidence = append(f.Evidence, model.Evidence{Source: firewallEvidenceSource(normalized), Key: "allow_rule", Value: fmt.Sprintf("port=%s/%s families=%s source=%s origin=%s", group.port, group.protocol, sortedBoolKeys(group.families), group.source, sortedBoolKeys(group.origins))})
 	}
 	// UFW can express a completely unrestricted all-port rule that is not a
@@ -202,7 +227,9 @@ func checkFirewallExposure(ctx *Context) model.Finding {
 		target := strings.TrimSpace(line[:idx])
 		from := strings.TrimSpace(line[idx+len("ALLOW IN"):])
 		if (target == "Anywhere" || target == "Anywhere (v6)") && strings.HasPrefix(from, "Anywhere") {
-			unrestricted++
+			if len(groups) == 0 {
+				unrestricted++
+			}
 		}
 	}
 	ipv6Enabled := false

@@ -125,3 +125,20 @@ func TestCheckDockerFirewallPathDoesNotPassWithIncompleteHostFirewallFacts(t *te
 		t.Fatalf("unexpected finding: %#v", f)
 	}
 }
+
+func TestDockerFirewallFailureDoesNotInvalidateLoopbackOnlyPublishing(t *testing.T) {
+	ctx := scenarioContext(newScenarioCommander(nil, nil))
+	ctx.Facts.dockerFirewallOnce.Do(func() {
+		ctx.Facts.dockerFirewall = dockerFirewallFacts{Error: "ip6tables unavailable"}
+	})
+	var container dockerInspect
+	container.Name = "/loopback-only"
+	container.NetworkSettings.Ports = map[string][]struct {
+		HostIP   string `json:"HostIp"`
+		HostPort string `json:"HostPort"`
+	}{"80/tcp": {{HostIP: "127.0.0.1", HostPort: "3001"}}}
+	f := checkDockerFirewallPath(ctx, []dockerInspect{container})
+	if f.Status != model.Pass || f.Unavailable {
+		t.Fatalf("loopback-only publication became %s: %+v", f.Status, f)
+	}
+}

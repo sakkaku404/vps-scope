@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sakkaku404/vps-scope/internal/model"
 )
@@ -30,18 +31,29 @@ var (
 	caddyProxyRE  = regexp.MustCompile(`(?i)^\s*reverse_proxy\s+([^\s{]+)`)
 )
 
-func discoverReverseProxyRoutes() ([]reverseProxyRoute, error) {
+func discoverReverseProxyRoutes(cmd Commander) ([]reverseProxyRoute, error) {
 	var routes []reverseProxyRoute
 	var discoveryErr error
-	nginxPaths, err := discoverExistingFiles(512, "/etc/nginx/sites-enabled/*", "/etc/nginx/conf.d/*.conf")
-	discoveryErr = errors.Join(discoveryErr, err)
-	for _, path := range nginxPaths {
-		data, readErr := readSmall(path, 4<<20)
-		if readErr != nil {
-			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s: %w", path, readErr))
-			continue
+	if cmd.Exists("nginx") {
+		result := cmd.Run(20*time.Second, "nginx", "-T")
+		if result.Err != nil || result.Truncated {
+			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("nginx -T: %s", commandError(result)))
+		} else {
+			routes = append(routes, parseNginxRoutes("nginx -T (effective configuration)", result.Stdout+"\n"+result.Stderr)...)
+			discoveryErr = errors.Join(discoveryErr, reverseProxySyntaxGaps("nginx", result.Stdout+"\n"+result.Stderr))
 		}
-		routes = append(routes, parseNginxRoutes(path, data)...)
+	} else {
+		nginxPaths, err := discoverExistingFiles(512, "/etc/nginx/sites-enabled/*", "/etc/nginx/conf.d/*.conf")
+		discoveryErr = errors.Join(discoveryErr, err)
+		for _, path := range nginxPaths {
+			data, readErr := readSmall(path, 4<<20)
+			if readErr != nil {
+				discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s: %w", path, readErr))
+				continue
+			}
+			routes = append(routes, parseNginxRoutes(path, data)...)
+			discoveryErr = errors.Join(discoveryErr, reverseProxySyntaxGaps("nginx", data))
+		}
 	}
 	caddyPaths, err := discoverExistingFiles(16, "/etc/caddy/Caddyfile", "/usr/local/etc/caddy/Caddyfile")
 	discoveryErr = errors.Join(discoveryErr, err)
@@ -52,6 +64,7 @@ func discoverReverseProxyRoutes() ([]reverseProxyRoute, error) {
 			continue
 		}
 		routes = append(routes, parseCaddyRoutes(path, data)...)
+		discoveryErr = errors.Join(discoveryErr, reverseProxySyntaxGaps("caddy", data))
 	}
 	haproxyPaths, err := discoverExistingFiles(512, "/etc/haproxy/haproxy.cfg", "/opt/hiddify-manager/haproxy/*.cfg")
 	discoveryErr = errors.Join(discoveryErr, err)
@@ -62,8 +75,43 @@ func discoverReverseProxyRoutes() ([]reverseProxyRoute, error) {
 			continue
 		}
 		routes = append(routes, parseHAProxyRoutes(path, data)...)
+		discoveryErr = errors.Join(discoveryErr, reverseProxySyntaxGaps("haproxy", data))
 	}
 	return uniqueReverseProxyRoutes(routes), discoveryErr
+}
+
+func reverseProxySyntaxGaps(product, data string) error {
+	lower := strings.ToLower(data)
+	switch product {
+	case "nginx":
+		for _, line := range lines(data) {
+			match := nginxProxyRE.FindStringSubmatch(strings.SplitN(line, "#", 2)[0])
+			if len(match) != 2 {
+				continue
+			}
+			target := strings.TrimSpace(match[1])
+			if strings.Contains(target, "$") {
+				return fmt.Errorf("nginx reverse-proxy target uses variables and cannot be resolved statically")
+			}
+			if _, _, ok := parseProxyTarget(target); !ok {
+				return fmt.Errorf("nginx reverse-proxy target could not be parsed")
+			}
+		}
+	case "caddy":
+		for _, line := range lines(data) {
+			fields := strings.Fields(strings.SplitN(line, "#", 2)[0])
+			if len(fields) > 0 && strings.EqualFold(fields[0], "reverse_proxy") {
+				if len(fields) < 2 || len(fields) > 2 || strings.Contains(fields[1], "{") {
+					return fmt.Errorf("caddy reverse_proxy uses a dynamic or multi-upstream form that is not fully modeled")
+				}
+			}
+		}
+	case "haproxy":
+		if strings.Contains(lower, "\nserver-template ") || strings.HasPrefix(strings.TrimSpace(lower), "server-template ") {
+			return fmt.Errorf("haproxy server-template targets are not fully modeled")
+		}
+	}
+	return nil
 }
 
 func parseNginxRoutes(path, data string) []reverseProxyRoute {
@@ -120,6 +168,9 @@ func parseNginxListen(value string) (string, string, bool) {
 
 func parseProxyTarget(value string) (string, string, bool) {
 	value = strings.TrimSpace(strings.Trim(value, `"'`))
+	if value == "" || strings.Contains(value, "$") {
+		return "", "", false
+	}
 	if parsed, err := url.Parse(value); err == nil && parsed.Host != "" {
 		host, port, ok := splitEndpoint(parsed.Host)
 		if ok {
@@ -298,7 +349,7 @@ func uniqueReverseProxyRoutes(routes []reverseProxyRoute) []reverseProxyRoute {
 }
 
 func checkReverseProxyRelations(ctx *Context) model.Finding {
-	routes, discoveryErr := discoverReverseProxyRoutes()
+	routes, discoveryErr := discoverReverseProxyRoutes(ctx.Commander)
 	if len(routes) == 0 {
 		if discoveryErr != nil {
 			return unknown("WORK-013", "workloads", "reverse-proxy configuration discovery", discoveryErr.Error())

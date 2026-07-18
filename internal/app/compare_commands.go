@@ -3,7 +3,6 @@ package app
 import (
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -14,7 +13,7 @@ import (
 )
 
 func (e environment) diff(args []string) error {
-	fs := flag.NewFlagSet("diff", flag.ContinueOnError)
+	fs := e.newFlagSet("diff")
 	lang := fs.String("lang", "auto", "language")
 	all := fs.Bool("all", false, "include same-status raw evidence changes")
 	if err := fs.Parse(args); err != nil {
@@ -72,7 +71,7 @@ func (e environment) diff(args []string) error {
 }
 
 func (e environment) fleet(args []string) error {
-	fs := flag.NewFlagSet("fleet", flag.ContinueOnError)
+	fs := e.newFlagSet("fleet")
 	lang := fs.String("lang", "auto", "language")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -121,17 +120,19 @@ func openLimitedJSON(path string) (*os.File, error) {
 	if before.Size() < 0 || before.Size() > maxLocalJSONSize {
 		return nil, fmt.Errorf("JSON input %q is too large (%d bytes; limit %d)", path, before.Size(), maxLocalJSONSize)
 	}
+	// #nosec G304 -- path is the explicit CLI input and is checked with Lstat,
+	// a size limit, regular-file validation and SameFile after opening.
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	after, err := file.Stat()
 	if err != nil {
-		file.Close()
+		_ = file.Close()
 		return nil, err
 	}
 	if !after.Mode().IsRegular() || !os.SameFile(before, after) || after.Size() != before.Size() {
-		file.Close()
+		_ = file.Close()
 		return nil, fmt.Errorf("JSON input %q changed while being opened", path)
 	}
 	return file, nil

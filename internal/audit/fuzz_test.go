@@ -18,3 +18,23 @@ func FuzzProxyConfigParsersDoNotPanic(f *testing.F) {
 		_ = parseShadowsocksSummary("/etc/shadowsocks/config.json", data)
 	})
 }
+
+func FuzzEvidenceTextParsersDoNotPanic(f *testing.F) {
+	for _, seed := range []string{
+		"tcp LISTEN 0 128 0.0.0.0:22 0.0.0.0:*",
+		"tcp ESTAB 0 0 10.0.0.1:443 203.0.113.1:50000",
+		"table inet filter { chain input { type filter hook input priority 0; policy drop; tcp dport 443 accept } }",
+		"Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n443/tcp ALLOW IN Anywhere",
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, input string) {
+		if len(input) > 1<<20 {
+			t.Skip()
+		}
+		_, _ = parseListeners(input)
+		_, _ = parseEstablishedConnections(input)
+		_ = parseNFTFirewall(input)
+		_ = parsePanelUFW(input)
+	})
+}

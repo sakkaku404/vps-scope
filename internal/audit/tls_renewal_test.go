@@ -85,4 +85,15 @@ func TestCollectTLSRenewalFactsRejectsPartialLoadedService(t *testing.T) {
 	}
 }
 
+func TestTLSRenewalJournalFailureIsRecordedSeparately(t *testing.T) {
+	args := []string{"--since", "30 days ago", "-u", "certbot.service", "-u", "acme.service", "-u", "acme-renew.service", "-u", "lego.service", "-u", "caddy.service", "--no-pager", "-o", "cat"}
+	cmd := newScenarioCommander([]string{"journalctl"}, map[string]CommandResult{
+		scenarioCommandKey("journalctl", args...): {Err: fmt.Errorf("journal unavailable")},
+	})
+	f := collectTLSRenewalFactsWithDiscovery(scenarioContext(cmd), noRenewalFiles)
+	if f.JournalError == nil || f.DiscoveryError != nil {
+		t.Fatalf("journal=%v discovery=%v", f.JournalError, f.DiscoveryError)
+	}
+}
+
 func noRenewalFiles(int, ...string) ([]string, error) { return nil, nil }

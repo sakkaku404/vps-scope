@@ -109,6 +109,37 @@ func TestFirewallCollectorFallsBackToIPTablesWhenSaveIsUnavailable(t *testing.T)
 	}
 }
 
+func TestFirewallParsersPreserveAllPortAllows(t *testing.T) {
+	ufw := parsePanelUFW("Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)\nAnywhere ALLOW IN Anywhere")
+	if got := firewallDisposition(ufw, "2095", "tcp"); got != "allow-anywhere" {
+		t.Fatalf("UFW all-port disposition=%q", got)
+	}
+	rules, _ := parseIPTablesFirewall("*filter\n:INPUT DROP [0:0]\n-A INPUT -i eth0 -j ACCEPT\nCOMMIT", "ipv4")
+	iptables := panelUFW{available: true, active: true, defaultDeny: true, rules: rules}
+	if got := firewallDisposition(iptables, "2095", "tcp"); got != "allow-anywhere" {
+		t.Fatalf("iptables all-port disposition=%q rules=%+v", got, rules)
+	}
+	nft := parseNFTFirewall("table inet filter {\n chain input {\n  type filter hook input priority filter; policy drop;\n  iifname \"eth0\" accept\n }\n}")
+	if got := firewallDisposition(nft, "2095", "tcp"); got != "allow-anywhere" {
+		t.Fatalf("nft all-port disposition=%q rules=%+v", got, nft.rules)
+	}
+}
+
+func TestNFTAllPortParserIgnoresEstablishedAndLoopbackRules(t *testing.T) {
+	for _, line := range []string{"ct state established,related accept", `iifname "lo" accept`, "icmp type echo-request accept"} {
+		if rule, ok := parseNFTAllPortRule(line, "any", "nft-input"); ok {
+			t.Fatalf("state/loopback rule became public all-port allow: %+v", rule)
+		}
+	}
+}
+
+func TestNFTParserMarksUnknownReachableExposureExpressionsIncomplete(t *testing.T) {
+	f := parseNFTFirewall("table inet filter {\n chain input {\n type filter hook input priority 0; policy drop;\n tcp dport @public_ports accept\n }\n}")
+	if f.collectionErr == nil {
+		t.Fatal("unresolved reachable nftables accept expression was treated as complete")
+	}
+}
+
 func TestNFTParserExpandsReachablePortSetsAndUniformVerdictMaps(t *testing.T) {
 	input := `table inet filter {
  set proxy_ports { type inet_service; elements = { 8443, 9443 } }

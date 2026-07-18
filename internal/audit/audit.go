@@ -44,9 +44,10 @@ type Options struct {
 
 type Context struct {
 	Options
-	Host    model.Host
-	Profile model.Profile
-	Facts   *FactStore
+	Host                  model.Host
+	Profile               model.Profile
+	ProfileDiscoveryError error
+	Facts                 *FactStore
 }
 
 type CheckFunc func(*Context) []model.Finding
@@ -75,6 +76,12 @@ func Run(opts Options) (model.Report, error) {
 	if opts.Profile == "" {
 		opts.Profile = "auto"
 	}
+	if opts.Locale == "" {
+		opts.Locale = "en"
+	}
+	if opts.Build.Version == "" {
+		opts.Build.Version = "dev"
+	}
 	started := opts.Now().UTC()
 	host, err := collectHost(opts.Commander)
 	if err != nil {
@@ -84,8 +91,8 @@ func Run(opts Options) (model.Report, error) {
 		return model.Report{}, fmt.Errorf("unsupported distribution %q; v1 supports Ubuntu and Debian only", host.OS)
 	}
 	facts := NewFactStore(opts.Commander)
-	profile := detectProfile(opts.Commander, facts, opts.Profile)
-	ctx := &Context{Options: opts, Host: host, Profile: profile, Facts: facts}
+	profile, profileErr := detectProfile(opts.Commander, facts, opts.Profile)
+	ctx := &Context{Options: opts, Host: host, Profile: profile, ProfileDiscoveryError: profileErr, Facts: facts}
 	findings := make([]model.Finding, 0, 64)
 	for i, category := range CategoryOrder {
 		if opts.Progress != nil {
@@ -116,6 +123,9 @@ func Run(opts Options) (model.Report, error) {
 		},
 	}
 	report.Recount()
+	if failures := ValidateReport(report, opts.Build.Version); len(failures) > 0 {
+		return model.Report{}, fmt.Errorf("internal report contract validation failed: %s", strings.Join(failures, "; "))
+	}
 	return report, nil
 }
 
@@ -149,14 +159,33 @@ func collectHost(cmd Commander) (model.Host, error) {
 		return model.Host{}, fmt.Errorf("read /etc/os-release: %w", err)
 	}
 	values := parseKeyValues(data)
-	hostname, _ := os.Hostname()
-	kernel := cmd.Run(5*time.Second, "uname", "-r").Stdout
-	arch := cmd.Run(5*time.Second, "uname", "-m").Stdout
+	hostname, err := os.Hostname()
+	if err != nil {
+		return model.Host{}, fmt.Errorf("read hostname: %w", err)
+	}
+	if strings.TrimSpace(hostname) == "" {
+		return model.Host{}, fmt.Errorf("read hostname: empty value")
+	}
+	kernelResult := cmd.Run(5*time.Second, "uname", "-r")
+	if kernelResult.Err != nil || kernelResult.Truncated || strings.TrimSpace(kernelResult.Stdout) == "" {
+		return model.Host{}, fmt.Errorf("read kernel release: %s", commandError(kernelResult))
+	}
+	archResult := cmd.Run(5*time.Second, "uname", "-m")
+	if archResult.Err != nil || archResult.Truncated || strings.TrimSpace(archResult.Stdout) == "" {
+		return model.Host{}, fmt.Errorf("read architecture: %s", commandError(archResult))
+	}
+	kernel, arch := kernelResult.Stdout, archResult.Stdout
 	virt := ""
 	if cmd.Exists("systemd-detect-virt") {
 		virt = cmd.Run(5*time.Second, "systemd-detect-virt").Stdout
 	}
-	machineID, _ := readSmall("/etc/machine-id", 4<<10)
+	machineID, machineIDErr := readSmall("/etc/machine-id", 4<<10)
+	if machineIDErr != nil {
+		return model.Host{}, fmt.Errorf("read machine identity: %w", machineIDErr)
+	}
+	if strings.TrimSpace(machineID) == "" {
+		return model.Host{}, fmt.Errorf("read machine identity: empty value")
+	}
 	sum := sha256.Sum256([]byte(strings.TrimSpace(machineID) + "\x00" + hostname))
 	return model.Host{
 		StableID: hex.EncodeToString(sum[:8]), Hostname: hostname,
@@ -165,8 +194,8 @@ func collectHost(cmd Commander) (model.Host, error) {
 	}, nil
 }
 
-func detectProfile(cmd Commander, facts *FactStore, requested string) model.Profile {
-	processList, _ := facts.Processes()
+func detectProfile(cmd Commander, facts *FactStore, requested string) (model.Profile, error) {
+	processList, processErr := facts.Processes()
 	var processText strings.Builder
 	for _, process := range processList {
 		processText.WriteString(processLine(process))
@@ -221,7 +250,7 @@ func detectProfile(cmd Commander, facts *FactStore, requested string) model.Prof
 	if requested == "" || requested == "auto" {
 		effective = detected
 	}
-	return model.Profile{Requested: requested, Detected: detected, Effective: effective, Reasons: reasons}
+	return model.Profile{Requested: requested, Detected: detected, Effective: effective, Reasons: reasons}, processErr
 }
 
 func parseKeyValues(s string) map[string]string {

@@ -6,6 +6,60 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 1.5.0 - 2026-07-18
+
+This release freezes the existing 51-check feature set and completes a
+consolidated correctness and resilience pass. It adds no new audit category,
+panel, protocol, or check ID.
+
+### Fixed
+
+- Host identity, effective SSH settings, account databases, listeners,
+  established connections, panel rows, WireGuard listeners, TLS renewal
+  journals, sensitive-file metadata, process links, and automatic profile
+  detection now reject missing, malformed, truncated, or failed evidence
+  instead of allowing it to contribute to a clean conclusion.
+- Firewall analysis now recognizes unrestricted UFW, firewalld, iptables, and
+  reachable nftables input rules, including rules without a destination port.
+  Unresolved reachable nftables accept or jump expressions make the relevant
+  conclusion incomplete rather than implying that a listener is blocked.
+- Docker firewall-path checks no longer inherit unrelated IPv6 backend errors
+  when every published endpoint is non-public, while public forwarding paths
+  retain complete IPv4 and IPv6 evidence requirements.
+- Reverse-proxy discovery uses effective `nginx -T` output and rejects dynamic
+  Nginx, Caddy, or HAProxy targets that cannot be related safely to a concrete
+  backend listener.
+- SSH key and directory checks now include ownership, require strict host
+  private-key permissions, and preserve filesystem failures as explicit
+  evidence gaps. Sensitive system files and temporary directories receive the
+  same ownership and metadata treatment.
+- UUID, email, account-name, and structured finding-fact redaction was
+  tightened. The CPU utilization calculation now rejects inconsistent counter
+  deltas and cannot underflow or overflow.
+- Subcommand help now exits successfully and writes through the caller-provided
+  diagnostic stream. Reports are contract-validated before publication.
+- Installation publishes a checksum-verified candidate through an atomic
+  rename, preserving an existing executable if preparation fails.
+- The disposable connectivity runner no longer advertises a scenario lifetime
+  shorter than Windows job startup and SSH handshakes can reliably support.
+
+### Quality
+
+- CI now runs pinned Gosec analysis and fuzzes the listener, connection,
+  firewall, UFW, and nftables parser boundary in addition to the existing
+  Staticcheck, race, coverage, CodeQL, vulnerability, and parser-fuzz gates.
+- All unit tests passed ten shuffled repetitions; the parser fuzz targets
+  completed hundreds of thousands of executions; vet, Staticcheck, Gosec,
+  ineffassign, reachable-vulnerability analysis, Linux amd64/arm64 builds, and
+  the complete offline report workflow passed.
+- The four-host TCP/UDP matrix passed all 24 cross-host probes with no retained
+  firewall rule, process, or runtime file. Fault injection rejected four
+  corrupted report-bundle classes, and a real 32-container Docker stress run
+  completed with cleanup.
+- Final deep audits on Debian 12, Ubuntu 22.04, Ubuntu 26.04, and the Japan
+  S-UI host each produced 51 semantically valid findings. Their status and
+  semantic results matched the preceding validated reports exactly.
+
 ## 1.4.4 - 2026-07-18
 
 ### Fixed

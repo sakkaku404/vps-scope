@@ -142,6 +142,9 @@ func collectFirewalld(cmd Commander) panelUFW {
 		if restricted {
 			source = "zone-sources"
 		}
+		if analysis.unrestricted {
+			f.rules = append(f.rules, firewallRule{Family: "any", Protocol: "any", Port: "any", Source: source, Action: "allow", Origin: "firewalld-zone", Raw: "unrestricted active zone"})
+		}
 		for _, item := range analysis.ports {
 			parts := strings.SplitN(item, "/", 2)
 			if len(parts) != 2 || !validPort(parts[0]) {
@@ -171,6 +174,14 @@ func parseUFWRules(input []string) []firewallRule {
 			family = "ipv6"
 		}
 		target = strings.TrimSpace(strings.ReplaceAll(target, "(v6)", ""))
+		if target == "Anywhere" {
+			source := strings.TrimSpace(line[idx+len("ALLOW IN"):])
+			if strings.HasPrefix(source, "Anywhere") {
+				source = "any"
+			}
+			out = append(out, firewallRule{Family: family, Protocol: "any", Port: "any", Source: source, Action: "allow", Origin: "ufw-user", Raw: line})
+			continue
+		}
 		port, protocol := target, "any"
 		if parts := strings.SplitN(target, "/", 2); len(parts) == 2 {
 			port, protocol = parts[0], strings.ToLower(parts[1])
@@ -190,7 +201,11 @@ func parseUFWRules(input []string) []firewallRule {
 func parseNFTFirewall(output string) panelUFW {
 	f := panelUFW{available: true, active: true, backend: "nftables", lines: lines(output), defaultDenyByFamily: map[string]bool{}}
 	collectNFTDefaultPolicies(&f, output)
-	f.rules = parseNFTHookRules(f.lines, "input")
+	var unresolved int
+	f.rules, unresolved = parseNFTHookRulesDetailed(f.lines, "input")
+	if unresolved > 0 {
+		f.collectionErr = fmt.Errorf("%d reachable nftables input accept/jump expressions were not understood", unresolved)
+	}
 	if len(f.rules) > 0 {
 		return f
 	}
@@ -234,6 +249,11 @@ type nftInputChain struct {
 // they jump or go to. Parsing every accept statement in a ruleset would mix
 // unrelated paths such as OUTPUT, FORWARD, and Docker NAT into one policy.
 func parseNFTHookRules(input []string, hook string) []firewallRule {
+	rules, _ := parseNFTHookRulesDetailed(input, hook)
+	return rules
+}
+
+func parseNFTHookRulesDetailed(input []string, hook string) ([]firewallRule, int) {
 	tableRE := regexp.MustCompile(`(?i)^table\s+(ip|ip6|inet)\s+([^\s{]+)\s*\{`)
 	chainRE := regexp.MustCompile(`(?i)^chain\s+([^\s{]+)\s*\{`)
 	tableFamily, tableName := "", ""
@@ -272,6 +292,7 @@ func parseNFTHookRules(input []string, hook string) []firewallRule {
 
 	jumpRE := regexp.MustCompile(`(?i)\b(?:jump|goto)\s+([^\s;]+)`)
 	reachable := map[string]bool{}
+	unresolved := 0
 	var visit func(*nftInputChain)
 	visit = func(chain *nftInputChain) {
 		key := nftChainKey(chain.family, chain.table, chain.name)
@@ -283,6 +304,8 @@ func parseNFTHookRules(input []string, hook string) []firewallRule {
 			for _, match := range jumpRE.FindAllStringSubmatch(line, -1) {
 				if next := chains[nftChainKey(chain.family, chain.table, match[1])]; next != nil {
 					visit(next)
+				} else {
+					unresolved++
 				}
 			}
 		}
@@ -302,10 +325,53 @@ func parseNFTHookRules(input []string, hook string) []firewallRule {
 			origin = "nft-" + hook
 		}
 		for _, line := range chain.lines {
-			out = append(out, parseNFTRuleLine(line, chain.family, origin, portSets)...)
+			parsed := parseNFTRuleLine(line, chain.family, origin, portSets)
+			out = append(out, parsed...)
+			if len(parsed) == 0 {
+				if rule, ok := parseNFTAllPortRule(line, chain.family, origin); ok {
+					out = append(out, rule)
+				} else if nftPotentialExposureExpression(line) {
+					unresolved++
+				}
+			}
 		}
 	}
-	return out
+	return out, unresolved
+}
+
+func nftPotentialExposureExpression(line string) bool {
+	lower := strings.ToLower(line)
+	if !regexp.MustCompile(`\baccept\b`).MatchString(lower) {
+		return false
+	}
+	return !containsAny(lower,
+		"type filter hook", " policy ",
+		"ct state established", "ct state related", "ct state { established",
+		`iif "lo"`, `iifname "lo"`, "icmp type", "icmpv6 type",
+	)
+}
+
+func parseNFTAllPortRule(line, family, origin string) (firewallRule, bool) {
+	lower := strings.ToLower(line)
+	if !regexp.MustCompile(`\baccept\b`).MatchString(lower) ||
+		strings.Contains(lower, "type filter hook") || strings.Contains(lower, " policy ") ||
+		containsAny(lower, "ct state established", "ct state related", "ct state { established", "iif \"lo\"", "iifname \"lo\"", "icmp type", "icmpv6 type") {
+		return firewallRule{}, false
+	}
+	if strings.Contains(lower, " dport ") {
+		return firewallRule{}, false
+	}
+	protocol := "any"
+	if regexp.MustCompile(`\b(?:meta\s+l4proto|ip\s+protocol)\s+tcp\b`).MatchString(lower) {
+		protocol = "tcp"
+	} else if regexp.MustCompile(`\b(?:meta\s+l4proto|ip\s+protocol)\s+udp\b`).MatchString(lower) {
+		protocol = "udp"
+	}
+	source := "any"
+	if match := regexp.MustCompile(`(?i)\b(?:ip|ip6)\s+saddr\s+([^\s]+)`).FindStringSubmatch(line); len(match) > 1 {
+		source = match[1]
+	}
+	return firewallRule{Family: family, Protocol: protocol, Port: "any", Source: source, Action: "allow", Origin: origin, Raw: line}, true
 }
 
 func nftChainKey(family, table, chain string) string {
@@ -444,9 +510,6 @@ func parseIPTablesFirewall(output, family string) ([]firewallRule, bool) {
 			return fallback
 		}
 		port := value("--dport", "")
-		if !validPort(port) {
-			continue
-		}
 		action := "deny"
 		if value("-j", "") == "ACCEPT" {
 			action = "allow"
@@ -454,6 +517,12 @@ func parseIPTablesFirewall(output, family string) ([]firewallRule, bool) {
 		source := value("-s", "any")
 		if source == "0.0.0.0/0" || source == "::/0" {
 			source = "any"
+		}
+		if !validPort(port) {
+			if action != "allow" || containsAny(line, "--ctstate ESTABLISHED", "--ctstate RELATED", "-i lo", "-p icmp", "-p ipv6-icmp") {
+				continue
+			}
+			port = "any"
 		}
 		out = append(out, firewallRule{Family: family, Protocol: value("-p", "any"), Port: port, Source: source, Action: action, Origin: "iptables-input", Raw: line})
 	}
@@ -480,7 +549,7 @@ func firewallDispositionFamily(f panelUFW, port, protocol, family string) string
 		if family != "any" && rule.Family != "any" && rule.Family != family {
 			continue
 		}
-		if rule.Port != port || (rule.Protocol != "any" && rule.Protocol != protocol) {
+		if (rule.Port != "any" && rule.Port != port) || (rule.Protocol != "any" && rule.Protocol != protocol) {
 			continue
 		}
 		if rule.Action != "allow" {

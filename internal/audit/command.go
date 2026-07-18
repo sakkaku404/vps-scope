@@ -77,6 +77,9 @@ func (OSCommander) Run(timeout time.Duration, name string, args ...string) Comma
 	if trustErr != nil {
 		return CommandResult{Err: fmt.Errorf("refusing untrusted executable %q: %w", name, trustErr), Code: -1}
 	}
+	// #nosec G204 -- path resolves through a fixed system search path, every
+	// component is root-owned and non-writable, and collectors supply argv
+	// directly without a shell.
 	cmd := exec.CommandContext(ctx, path, args...)
 	// A fixed search path avoids accidental command resolution through a
 	// caller-controlled PATH while retaining standard Debian/Ubuntu locations.

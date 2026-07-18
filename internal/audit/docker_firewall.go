@@ -71,7 +71,7 @@ func collectDockerFirewall(cmd Commander) dockerFirewallFacts {
 		f.Error = "nft: " + commandError(r)
 		return f
 	}
-	rules := parseNFTHookRules(lines(r.Stdout), "forward")
+	rules, unresolved := parseNFTHookRulesDetailed(lines(r.Stdout), "forward")
 	if len(rules) == 0 && !regexp.MustCompile(`(?i)hook\s+forward`).MatchString(r.Stdout) {
 		return f
 	}
@@ -80,6 +80,9 @@ func collectDockerFirewall(cmd Commander) dockerFirewallFacts {
 	f.AvailableByFamily["ipv6"] = true
 	f.UserChain = regexp.MustCompile(`(?i)chain\s+(?:DOCKER-USER|docker-user|docker_user)\b`).MatchString(r.Stdout)
 	f.Rules = rules
+	if unresolved > 0 {
+		f.Error = fmt.Sprintf("%d reachable nftables forward accept/jump expressions were not understood", unresolved)
+	}
 	collectNFTHookDefaultPolicies(f.DefaultDropByFamily, r.Stdout, "forward")
 	return f
 }
@@ -210,5 +213,11 @@ func checkDockerFirewallPath(ctx *Context, containers []dockerInspect) model.Fin
 		f.Status, f.Unavailable, f.Error = model.Unknown, true, "Docker forwarding policy could not be established"
 	}
 	sort.Slice(f.Evidence, func(i, j int) bool { return f.Evidence[i].Value < f.Evidence[j].Value })
-	return withIncompleteEvidence(f, "host firewall discovery", hostFirewall.collectionErr)
+	if public > 0 {
+		f = withIncompleteEvidence(f, "host firewall discovery", hostFirewall.collectionErr)
+		if facts.Error != "" {
+			f = withIncompleteEvidence(f, "Docker forwarding firewall discovery", fmt.Errorf("%s", facts.Error))
+		}
+	}
+	return f
 }

@@ -132,8 +132,29 @@ func sampleCPUUsage(interval time.Duration) (int, bool) {
 	if !ok || second.total <= first.total || second.idle < first.idle {
 		return 0, false
 	}
+	return cpuUsagePercent(first, second)
+}
+
+func cpuUsagePercent(first, second cpuTicks) (int, bool) {
+	if second.total <= first.total || second.idle < first.idle {
+		return 0, false
+	}
 	totalDelta, idleDelta := second.total-first.total, second.idle-first.idle
-	return int((totalDelta - idleDelta) * 100 / totalDelta), true
+	if idleDelta > totalDelta {
+		return 0, false
+	}
+	return ratioPercent(totalDelta-idleDelta, totalDelta)
+}
+
+func ratioPercent(part, total uint64) (int, bool) {
+	if total == 0 || part > total {
+		return 0, false
+	}
+	percent := int(float64(part) / float64(total) * 100)
+	if percent < 0 || percent > 100 {
+		return 0, false
+	}
+	return percent, true
 }
 
 func parseMemInfo(input string) map[string]int64 {
@@ -223,8 +244,9 @@ func checkPasswordPolicy(ctx *Context, entries []passwdEntry) model.Finding {
 	passwordUsers := []string{}
 	shadowReadable := false
 	if data, err := readSmall("/etc/shadow", 4<<20); err == nil {
-		shadowReadable = true
-		passwordUsers = parseShadowPasswordUsers(data, loginUsers)
+		var parseErr error
+		passwordUsers, parseErr = parseShadowPasswordUsers(data, loginUsers)
+		shadowReadable = parseErr == nil
 	}
 	f.Facts["shadow_readable"] = strconv.FormatBool(shadowReadable)
 	f.Facts["login_accounts_with_password_hash"] = strconv.Itoa(len(passwordUsers))
@@ -267,11 +289,14 @@ func parseSpaceSettings(output string) map[string]string {
 	return out
 }
 
-func parseShadowPasswordUsers(input string, loginUsers map[string]bool) []string {
+func parseShadowPasswordUsers(input string, loginUsers map[string]bool) ([]string, error) {
 	var users []string
-	for _, line := range lines(input) {
+	for index, line := range lines(input) {
 		parts := strings.Split(line, ":")
-		if len(parts) < 2 || !loginUsers[parts[0]] {
+		if len(parts) < 2 {
+			return nil, fmt.Errorf("/etc/shadow line %d is malformed", index+1)
+		}
+		if !loginUsers[parts[0]] {
 			continue
 		}
 		value := parts[1]
@@ -280,7 +305,7 @@ func parseShadowPasswordUsers(input string, loginUsers map[string]bool) []string
 		}
 	}
 	sort.Strings(users)
-	return users
+	return users, nil
 }
 
 func hasPasswordQualityPolicy(input string) bool {

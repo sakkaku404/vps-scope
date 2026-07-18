@@ -23,6 +23,7 @@ type tlsRenewalFacts struct {
 	Methods        []string
 	Evidence       []model.Evidence
 	DiscoveryError error
+	JournalError   error
 }
 
 func collectTLSRenewalFacts(ctx *Context) tlsRenewalFacts {
@@ -135,6 +136,9 @@ func collectTLSRenewalFactsWithDiscovery(ctx *Context, discover renewalFileDisco
 			if success+failure > 0 {
 				f.Evidence = append(f.Evidence, model.Evidence{Source: "journalctl (30 days, content withheld)", Key: "renewal_signals", Value: fmt.Sprintf("success=%d failure=%d", success, failure)})
 			}
+		} else {
+			f.JournalError = fmt.Errorf("renewal journal discovery: %s", commandError(r))
+			f.Evidence = append(f.Evidence, model.Evidence{Source: "journalctl (30 days, content withheld)", Key: "unavailable", Value: commandError(r)})
 		}
 	}
 	for method := range methods {

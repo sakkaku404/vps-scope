@@ -577,6 +577,51 @@ func TestScenarioWireGuardPartialRuntimeIsUnknown(t *testing.T) {
 	}
 }
 
+func TestScenarioWireGuardListenerInventoryFailureDoesNotBecomeRisk(t *testing.T) {
+	cmd := newScenarioCommander([]string{"wg"}, map[string]CommandResult{
+		scenarioCommandKey("wg", "show", "all", "listen-port"): {Err: fmt.Errorf("wireguard unavailable")},
+	})
+	ctx := scenarioContext(cmd)
+	ctx.Profile.Requested = "proxy"
+	f := checkUnexpectedListeners(ctx, []Listener{{Protocol: "udp", Address: "::", Port: "51820", Scope: "public-wildcard"}})
+	if f.Status != model.Unknown || !f.Unavailable {
+		t.Fatalf("status=%s unavailable=%t facts=%v", f.Status, f.Unavailable, f.Facts)
+	}
+}
+
+func TestScenarioWireGuardInventoryFailurePreservesIndependentTCPRisk(t *testing.T) {
+	cmd := newScenarioCommander([]string{"wg"}, map[string]CommandResult{
+		scenarioCommandKey("wg", "show", "all", "listen-port"): {Err: fmt.Errorf("wireguard unavailable")},
+	})
+	ctx := scenarioContext(cmd)
+	ctx.Profile.Requested = "proxy"
+	f := checkUnexpectedListeners(ctx, []Listener{
+		{Protocol: "udp", Address: "::", Port: "51820", Scope: "public-wildcard"},
+		{Protocol: "tcp", Address: "0.0.0.0", Port: "65000", Scope: "public-wildcard", Process: "unknown-service"},
+	})
+	if f.Status != model.Risk || f.Severity != model.Medium || f.Unavailable {
+		t.Fatalf("status=%s severity=%s unavailable=%t facts=%v", f.Status, f.Severity, f.Unavailable, f.Facts)
+	}
+	if f.Facts["unexpected_public_listeners"] != "1" || f.Facts["unclassified_public_udp_listeners"] != "1" || f.Facts["evidence_discovery_incomplete"] != "true" {
+		t.Fatalf("facts=%v", f.Facts)
+	}
+}
+
+func TestScenarioAutomaticProfileFailureInvalidatesPolicyPass(t *testing.T) {
+	cmd := newScenarioCommander(nil, nil)
+	ctx := scenarioContext(cmd)
+	ctx.Profile.Requested = "auto"
+	ctx.ProfileDiscoveryError = fmt.Errorf("process inventory unavailable")
+	f := checkUnexpectedListeners(ctx, nil)
+	if f.Status != model.Unknown || !f.Unavailable {
+		t.Fatalf("status=%s unavailable=%t", f.Status, f.Unavailable)
+	}
+	workload := checkWorkloads(ctx)[0]
+	if workload.Status != model.Unknown || !workload.Unavailable {
+		t.Fatalf("workload status=%s unavailable=%t", workload.Status, workload.Unavailable)
+	}
+}
+
 func TestScenarioPanelCapabilityFailuresDoNotBecomePass(t *testing.T) {
 	ctx := scenarioContext(newScenarioCommander(nil, nil))
 	ctx.Facts.listenersOnce.Do(func() {

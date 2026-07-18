@@ -74,6 +74,8 @@ jobs:
         run: |
           go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
           staticcheck ./...
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.22.4
+          gosec -quiet ./...
 
       - name: Test with race detector
         run: go test -race -count=1 ./...
@@ -81,6 +83,7 @@ jobs:
       - name: Fuzz parser trust boundaries
         run: |
           go test ./internal/audit -run=^$ -fuzz=FuzzProxyConfigParsersDoNotPanic -fuzztime=5s
+          go test ./internal/audit -run=^$ -fuzz=FuzzEvidenceTextParsersDoNotPanic -fuzztime=5s
           go test ./internal/report -run=^$ -fuzz=FuzzSafeBundleFileName -fuzztime=5s
 
       - name: Enforce coverage ratchet
