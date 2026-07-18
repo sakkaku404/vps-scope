@@ -13,6 +13,8 @@ func ReadDirectoryBounded(path string, maxEntries int) ([]os.DirEntry, error) {
 	if maxEntries <= 0 {
 		return nil, fmt.Errorf("invalid directory entry budget")
 	}
+	// #nosec G304 -- callers intentionally select the directory; this helper
+	// only enumerates it and enforces a strict entry limit.
 	dir, err := os.Open(path)
 	if err != nil {
 		return nil, err

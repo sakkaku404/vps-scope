@@ -29,18 +29,24 @@ func readPasswd() ([]passwdEntry, error) {
 		return nil, err
 	}
 	defer f.Close()
+	return parsePasswd(f)
+}
+
+func parsePasswd(reader io.Reader) ([]passwdEntry, error) {
 	var entries []passwdEntry
-	limited := &io.LimitedReader{R: f, N: (4 << 20) + 1}
+	limited := &io.LimitedReader{R: reader, N: (4 << 20) + 1}
 	scanner := bufio.NewScanner(limited)
+	lineNumber := 0
 	for scanner.Scan() {
+		lineNumber++
 		parts := strings.Split(scanner.Text(), ":")
 		if len(parts) < 7 {
-			continue
+			return nil, fmt.Errorf("/etc/passwd line %d is malformed", lineNumber)
 		}
 		uid, err1 := strconv.Atoi(parts[2])
 		gid, err2 := strconv.Atoi(parts[3])
 		if err1 != nil || err2 != nil {
-			continue
+			return nil, fmt.Errorf("/etc/passwd line %d has an invalid UID or GID", lineNumber)
 		}
 		entries = append(entries, passwdEntry{Name: parts[0], UID: uid, GID: gid, Home: parts[5], Shell: parts[6]})
 	}
@@ -178,6 +184,8 @@ func (s *fileDiscoveryState) walk(current string, segments []string, index int) 
 		return s.walk(next, segments, index+1)
 	}
 
+	// #nosec G304 -- current is derived from fixed in-program glob patterns;
+	// traversal and returned entries are bounded by fileDiscoveryState.
 	dir, err := os.Open(current)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -267,26 +275,29 @@ type Listener struct {
 	Process  string
 }
 
-func parseListeners(output string) []Listener {
+func parseListeners(output string) ([]Listener, error) {
 	var out []Listener
-	for _, line := range lines(output) {
+	for index, line := range lines(output) {
 		fields := strings.Fields(line)
 		if len(fields) < 5 {
-			continue
+			return nil, fmt.Errorf("ss listener row %d is malformed", index+1)
 		}
 		protocol := strings.ToLower(fields[0])
 		local := fields[4]
 		if !strings.HasPrefix(protocol, "tcp") && !strings.HasPrefix(protocol, "udp") {
-			continue
+			return nil, fmt.Errorf("ss listener row %d has unsupported protocol %q", index+1, fields[0])
 		}
 		address, port := splitHostPortLoose(local)
+		if !validPort(port) || classifyAddress(address) == "unknown" {
+			return nil, fmt.Errorf("ss listener row %d has an invalid local endpoint", index+1)
+		}
 		process := ""
 		if len(fields) > 6 {
 			process = strings.Join(fields[6:], " ")
 		}
 		out = append(out, Listener{Protocol: protocol, Address: address, Port: port, Scope: classifyAddress(address), Process: process})
 	}
-	return out
+	return out, nil
 }
 
 func splitHostPortLoose(value string) (string, string) {

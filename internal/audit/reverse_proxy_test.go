@@ -41,6 +41,22 @@ backend panel
 	}
 }
 
+func TestReverseProxySyntaxGapsRejectDynamicTargets(t *testing.T) {
+	tests := []struct {
+		product string
+		data    string
+	}{
+		{"nginx", "server {\nlisten 443;\nproxy_pass http://$dynamic_backend;\n}"},
+		{"caddy", "example.com {\nreverse_proxy localhost:8000 localhost:8001\n}"},
+		{"haproxy", "backend app\nserver-template app 3 app.local:8000"},
+	}
+	for _, test := range tests {
+		if err := reverseProxySyntaxGaps(test.product, test.data); err == nil {
+			t.Fatalf("%s dynamic syntax was treated as complete", test.product)
+		}
+	}
+}
+
 func TestParseHAProxyConditionalBackendAndDualBind(t *testing.T) {
 	routes := parseHAProxyRoutes("fixture", `frontend public
   bind :80,:::80 v4v6

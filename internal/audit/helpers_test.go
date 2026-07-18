@@ -164,7 +164,10 @@ func TestParseListeners(t *testing.T) {
 tcp LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=1,fd=3))
 udp UNCONN 0 0 [::1]:53 [::]:* users:(("dns",pid=2,fd=4))
 udp UNCONN 0 0 [::]:8443 [::]:* users:(("sing-box",pid=3,fd=8))`
-	got := parseListeners(input)
+	got, err := parseListeners(input)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(got) != 4 {
 		t.Fatalf("got %d listeners, want 4", len(got))
 	}
@@ -221,8 +224,18 @@ func TestRuntimeExpectedWireGuardListener(t *testing.T) {
 		scenarioCommandKey("wg", "show", "all", "listen-port"): {Stdout: "hiddifywg\t32247\n"},
 	})
 	ctx := &Context{Options: Options{Commander: cmd}}
-	if !runtimeExpectedPublicListeners(ctx)["32247/udp"] {
+	expected, err := runtimeExpectedPublicListeners(ctx)
+	if err != nil || !expected["32247/udp"] {
 		t.Fatal("active WireGuard listen port was not recognized")
+	}
+}
+
+func TestSocketParsersRejectMalformedRows(t *testing.T) {
+	if _, err := parseListeners("tcp LISTEN 0 128 malformed"); err == nil {
+		t.Fatal("malformed listener endpoint was accepted")
+	}
+	if _, err := parseEstablishedConnections("tcp ESTAB 0 0 malformed also-malformed"); err == nil {
+		t.Fatal("malformed established endpoint was accepted")
 	}
 }
 
@@ -365,7 +378,10 @@ func TestResourceParsers(t *testing.T) {
 
 func TestContextualPasswordPolicyParsers(t *testing.T) {
 	login := map[string]bool{"root": true, "alice": true, "daemon": false}
-	users := parseShadowPasswordUsers("root:!:1:2:3\nalice:$y$hash:1:2:3\ndaemon:$6$hash:1:2:3\n", login)
+	users, err := parseShadowPasswordUsers("root:!:1:2:3\nalice:$y$hash:1:2:3\ndaemon:$6$hash:1:2:3\n", login)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(users) != 1 || users[0] != "alice" {
 		t.Fatalf("unexpected password-bearing users: %#v", users)
 	}
@@ -380,7 +396,10 @@ func TestContextualPasswordPolicyParsers(t *testing.T) {
 func TestParseEstablishedConnections(t *testing.T) {
 	input := `tcp ESTAB 0 0 10.0.0.2:22 203.0.113.5:50123 users:(("sshd",pid=9,fd=3))
 tcp 0 0 127.0.0.1:3001 127.0.0.1:44220 users:(("node",pid=8,fd=4))`
-	connections := parseEstablishedConnections(input)
+	connections, err := parseEstablishedConnections(input)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(connections) != 2 || connections[0].scope != "public" || connections[1].scope != "loopback" {
 		t.Fatalf("unexpected connections: %#v", connections)
 	}
@@ -512,7 +531,10 @@ func TestXrayShadowsocksUsesProtocolNetwork(t *testing.T) {
 
 func TestPanelInboundMetadataParserKeepsOnlyPolicyFacts(t *testing.T) {
 	rows := [][]string{{"1", "::", "443", "vless", "tcp", "reality", "2", "0", "0", "1", "1", "2"}, {"0", "127.0.0.1", "8443", "trojan", "tcp", "tls", "1", "1", "1", "0", "0", "0"}}
-	got := parsePanelInboundRows(rows)
+	got, err := parsePanelInboundRows(rows)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(got) != 2 || !got[0].Enabled || got[0].ClientCount != 2 || !got[1].Expired || !got[1].QuotaExhausted {
 		t.Fatalf("unexpected panel inbound metadata: %+v", got)
 	}
@@ -521,6 +543,50 @@ func TestPanelInboundMetadataParserKeepsOnlyPolicyFacts(t *testing.T) {
 		if strings.Contains(strings.ToLower(serialized), strings.ToLower(secretField)) {
 			t.Fatalf("secret-bearing field retained in panel facts: %s", secretField)
 		}
+	}
+}
+
+func TestPanelInboundMetadataParserRejectsMalformedRows(t *testing.T) {
+	tests := [][][]string{
+		{{"1", "::", "not-a-port", "vless", "tcp", "reality", "2", "0", "0", "1", "1", "2"}},
+		{{"1", "::", "443", "vless", "tcp", "reality", "not-a-count", "0", "0", "1", "1", "2"}},
+		{{"yes", "::", "443", "vless", "tcp", "reality", "2", "0", "0", "1", "1", "2"}},
+		{{"1", "::", "443"}},
+	}
+	for _, rows := range tests {
+		if _, err := parsePanelInboundRows(rows); err == nil {
+			t.Fatalf("accepted malformed rows: %#v", rows)
+		}
+	}
+}
+
+func TestAccountParsersRejectMalformedRecords(t *testing.T) {
+	if _, err := parsePasswd(strings.NewReader("root:x:not-a-uid:0:root:/root:/bin/bash\n")); err == nil {
+		t.Fatal("malformed passwd UID was accepted")
+	}
+	if _, err := parsePasswd(strings.NewReader("broken\n")); err == nil {
+		t.Fatal("malformed passwd row was accepted")
+	}
+	if _, err := parseShadowPasswordUsers("broken\n", map[string]bool{"root": true}); err == nil {
+		t.Fatal("malformed shadow row was accepted")
+	}
+}
+
+func TestCPUUsagePercentRejectsInconsistentAndExtremeDeltas(t *testing.T) {
+	if got, ok := cpuUsagePercent(cpuTicks{total: 100, idle: 40}, cpuTicks{total: 200, idle: 80}); !ok || got != 60 {
+		t.Fatalf("percent=%d ok=%t", got, ok)
+	}
+	if _, ok := cpuUsagePercent(cpuTicks{total: 100, idle: 40}, cpuTicks{total: 110, idle: 80}); ok {
+		t.Fatal("idle delta larger than total delta was accepted")
+	}
+	if got, ok := cpuUsagePercent(cpuTicks{}, cpuTicks{total: ^uint64(0), idle: 0}); !ok || got != 100 {
+		t.Fatalf("extreme percent=%d ok=%t", got, ok)
+	}
+	if got, ok := ratioPercent(^uint64(0)/2, ^uint64(0)); !ok || got != 50 {
+		t.Fatalf("large ratio percent=%d ok=%t", got, ok)
+	}
+	if _, ok := ratioPercent(2, 1); ok {
+		t.Fatal("ratio above 100 percent was accepted")
 	}
 }
 
@@ -653,7 +719,11 @@ func TestApplyPanelSettingsMergesDefaultsAndHonorsSubscriptionDisable(t *testing
 func TestProxyConnectionCountsOnlyConfiguredIngressWithoutPeers(t *testing.T) {
 	input := "tcp ESTAB 0 0 10.0.0.1:443 198.51.100.1:50000 users:((\"sing-box\",pid=1))\n" +
 		"tcp ESTAB 0 0 10.0.0.1:22 198.51.100.2:50001 users:((\"sshd\",pid=2))\n"
-	counts, total := proxyConnectionCounts(parseEstablishedConnections(input), map[string]bool{"443": true})
+	connections, err := parseEstablishedConnections(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts, total := proxyConnectionCounts(connections, map[string]bool{"443": true})
 	if total != 1 || counts["443"] != 1 || counts["22"] != 0 {
 		t.Fatalf("counts=%v total=%d", counts, total)
 	}

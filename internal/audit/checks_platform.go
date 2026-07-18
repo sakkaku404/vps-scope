@@ -205,6 +205,7 @@ func checkDeletedExecutables() model.Finding {
 		return unknown("PROC-002", "processes", "/proc", err.Error())
 	}
 	var deleted []string
+	unavailable := 0
 	for _, entry := range procEntries {
 		if !entry.IsDir() {
 			continue
@@ -214,12 +215,19 @@ func checkDeletedExecutables() model.Finding {
 		}
 		path := filepath.Join("/proc", entry.Name(), "exe")
 		target, err := os.Readlink(path)
-		if err == nil && strings.HasSuffix(target, " (deleted)") {
+		if err != nil {
+			if !errors.Is(err, fs.ErrNotExist) {
+				unavailable++
+			}
+			continue
+		}
+		if strings.HasSuffix(target, " (deleted)") {
 			deleted = append(deleted, "pid="+entry.Name()+" exe="+target)
 		}
 	}
 	sort.Strings(deleted)
 	f.Facts["deleted_executables"] = strconv.Itoa(len(deleted))
+	f.Facts["unavailable_process_executables"] = strconv.Itoa(unavailable)
 	if len(deleted) > 0 {
 		// Deleted executables commonly remain after package upgrades. They are
 		// evidence to investigate or restart, not proof of compromise.
@@ -235,6 +243,9 @@ func checkDeletedExecutables() model.Finding {
 			break
 		}
 		f.Evidence = append(f.Evidence, model.Evidence{Source: "/proc/*/exe", Value: item})
+	}
+	if unavailable > 0 {
+		return withIncompleteEvidence(f, "/proc/*/exe", fmt.Errorf("%d process executable links were unreadable", unavailable))
 	}
 	return f
 }
@@ -469,6 +480,9 @@ func checkFileTLS(ctx *Context) model.Finding {
 	if usesLetsEncrypt && renewal.Schedules == 0 && renewal.SuccessSignals == 0 && f.Status != model.Risk {
 		f.Status, f.Unavailable = model.Unknown, true
 		f.Error = "certificate renewal scheduling or recent execution could not be established"
+	}
+	if usesLetsEncrypt || renewal.Schedules > 0 || len(renewal.Methods) > 0 {
+		discoveryErr = errors.Join(discoveryErr, renewal.JournalError)
 	}
 	if renewal.DiscoveryError != nil {
 		discoveryErr = errors.Join(discoveryErr, renewal.DiscoveryError)

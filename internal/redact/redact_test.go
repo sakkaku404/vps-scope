@@ -49,3 +49,18 @@ func TestReportRedactsBareHostnameAndStableIDEverywhere(t *testing.T) {
 		t.Fatalf("host identity survived redaction: %q", combined)
 	}
 }
+
+func TestReportRedactsStructuredAccountNamesAndModernUUIDs(t *testing.T) {
+	in := model.Report{Findings: []model.Finding{
+		{ID: "ACC-001", Evidence: []model.Evidence{{Key: "uid0_user", Value: "operator"}}},
+		{ID: "ACC-003", Evidence: []model.Evidence{{Key: "password_bearing_login_account", Value: "deploy"}}},
+		{ID: "WORK-003", Evidence: []model.Evidence{{Value: "019f4c1b-3c37-7eb1-9640-8889b25f08f4 owner@example.net"}}},
+	}}
+	out := New().Report(in)
+	combined := out.Findings[0].Evidence[0].Value + " " + out.Findings[1].Evidence[0].Value + " " + out.Findings[2].Evidence[0].Value
+	for _, sensitive := range []string{"operator", "deploy", "019f4c1b-3c37-7eb1-9640-8889b25f08f4", "owner@example.net"} {
+		if strings.Contains(combined, sensitive) {
+			t.Fatalf("sensitive value %q survived redaction: %q", sensitive, combined)
+		}
+	}
+}

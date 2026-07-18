@@ -107,7 +107,10 @@ func (f *FactStore) Listeners() ([]Listener, error) {
 			f.listenersErr = fmt.Errorf("ss -H -lntu[p]: %s", commandError(r))
 			return
 		}
-		f.listeners = parseListeners(r.Stdout)
+		f.listeners, f.listenersErr = parseListeners(r.Stdout)
+		if f.listenersErr != nil {
+			f.listenersErr = fmt.Errorf("ss listener parse: %w", f.listenersErr)
+		}
 	})
 	return append([]Listener(nil), f.listeners...), f.listenersErr
 }
@@ -133,7 +136,10 @@ func (f *FactStore) EstablishedConnections() ([]activeConnection, error) {
 			f.connectionsErr = fmt.Errorf("ss established: %s", commandError(r))
 			return
 		}
-		f.connections = parseEstablishedConnections(r.Stdout)
+		f.connections, f.connectionsErr = parseEstablishedConnections(r.Stdout)
+		if f.connectionsErr != nil {
+			f.connectionsErr = fmt.Errorf("ss established parse: %w", f.connectionsErr)
+		}
 	})
 	return append([]activeConnection(nil), f.connections...), f.connectionsErr
 }
@@ -157,6 +163,13 @@ func (f *FactStore) SSHDSettings() (map[string]string, error) {
 			return
 		}
 		f.sshdSettings = parseSpaceSettings(r.Stdout)
+		for _, required := range []string{"passwordauthentication", "kbdinteractiveauthentication", "permitrootlogin", "pubkeyauthentication"} {
+			if strings.TrimSpace(f.sshdSettings[required]) == "" {
+				f.sshdErr = fmt.Errorf("sshd -T omitted required setting %s", required)
+				f.sshdSettings = nil
+				return
+			}
+		}
 	})
 	return maps.Clone(f.sshdSettings), f.sshdErr
 }
@@ -165,12 +178,15 @@ type activeConnection struct {
 	protocol, local, peer, scope, process string
 }
 
-func parseEstablishedConnections(output string) []activeConnection {
+func parseEstablishedConnections(output string) ([]activeConnection, error) {
 	var out []activeConnection
-	for _, line := range lines(output) {
+	for index, line := range lines(output) {
 		fields := strings.Fields(line)
-		if len(fields) < 5 || !strings.HasPrefix(strings.ToLower(fields[0]), "tcp") {
+		if !strings.HasPrefix(strings.ToLower(fields[0]), "tcp") {
 			continue
+		}
+		if len(fields) < 5 {
+			return nil, fmt.Errorf("ss established row %d is malformed", index+1)
 		}
 		localIndex := 3
 		if len(fields) >= 6 && (strings.EqualFold(fields[1], "ESTAB") || strings.EqualFold(fields[1], "ESTABLISHED")) {
@@ -178,17 +194,21 @@ func parseEstablishedConnections(output string) []activeConnection {
 		}
 		peerIndex := localIndex + 1
 		if peerIndex >= len(fields) {
-			continue
+			return nil, fmt.Errorf("ss established row %d is missing a peer endpoint", index+1)
 		}
 		local, peer := fields[localIndex], fields[peerIndex]
-		peerAddress, _ := splitHostPortLoose(peer)
+		localAddress, localPort := splitHostPortLoose(local)
+		peerAddress, peerPort := splitHostPortLoose(peer)
+		if classifyAddress(localAddress) == "unknown" || classifyAddress(peerAddress) == "unknown" || !validPort(localPort) || !validPort(peerPort) {
+			return nil, fmt.Errorf("ss established row %d has an invalid endpoint", index+1)
+		}
 		process := ""
 		if len(fields) > peerIndex+1 {
 			process = strings.Join(fields[peerIndex+1:], " ")
 		}
 		out = append(out, activeConnection{protocol: strings.ToLower(fields[0]), local: local, peer: peer, scope: classifyAddress(peerAddress), process: process})
 	}
-	return out
+	return out, nil
 }
 
 func (f *FactStore) Processes() ([]ProcessInfo, error) {

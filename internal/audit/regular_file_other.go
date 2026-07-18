@@ -8,6 +8,8 @@ import (
 )
 
 func openRegularReadOnly(path string) (*os.File, error) {
+	// #nosec G304 -- the caller supplies a fixed audit path; the opened
+	// descriptor is validated as a regular file before any bounded read.
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err

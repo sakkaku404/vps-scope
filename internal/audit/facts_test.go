@@ -13,7 +13,7 @@ func TestFactStoreCachesListenerProcessConnectionAndSSHDSnapshots(t *testing.T) 
 		scenarioCommandKey("ss", "-H", "-lntup"):                        {Stdout: `tcp LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=1,fd=3))`},
 		scenarioCommandKey("ss", "-H", "-ntup", "state", "established"): {Stdout: `tcp ESTAB 0 0 10.0.0.2:22 203.0.113.5:50123 users:(("sshd",pid=1,fd=3))`},
 		scenarioCommandKey("ps", "-eo", "pid=,user=,comm=,args="):       {Stdout: "1 root sshd /usr/sbin/sshd -D"},
-		scenarioCommandKey("sshd", "-T"):                                {Stdout: "passwordauthentication no\nkbdinteractiveauthentication no\npubkeyauthentication yes"},
+		scenarioCommandKey("sshd", "-T"):                                {Stdout: "passwordauthentication no\nkbdinteractiveauthentication no\npermitrootlogin prohibit-password\npubkeyauthentication yes"},
 	})
 	facts := NewFactStore(cmd)
 	for i := 0; i < 2; i++ {
@@ -34,6 +34,15 @@ func TestFactStoreCachesListenerProcessConnectionAndSSHDSnapshots(t *testing.T) 
 	}
 	if cmd.calls[scenarioCommandKey("ss", "-H", "-lntup")] != 1 || cmd.calls[scenarioCommandKey("ss", "-H", "-ntup", "state", "established")] != 1 || cmd.calls[scenarioCommandKey("ps", "-eo", "pid=,user=,comm=,args=")] != 1 || cmd.calls[scenarioCommandKey("sshd", "-T")] != 1 {
 		t.Fatalf("snapshot calls = %#v, want one each", cmd.calls)
+	}
+}
+
+func TestSSHDSettingsRejectsIncompleteEffectiveConfiguration(t *testing.T) {
+	cmd := newScenarioCommander([]string{"sshd"}, map[string]CommandResult{
+		scenarioCommandKey("sshd", "-T"): {Stdout: "passwordauthentication no\nkbdinteractiveauthentication no\npubkeyauthentication yes"},
+	})
+	if settings, err := NewFactStore(cmd).SSHDSettings(); err == nil || len(settings) != 0 {
+		t.Fatalf("settings=%v err=%v", settings, err)
 	}
 }
 

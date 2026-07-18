@@ -122,7 +122,11 @@ func collectSUIFacts(cmd Commander) panelSnapshot {
 		s.DatabaseError = err.Error()
 		return s
 	}
-	s.Inbounds = parsePanelInboundRows(inboundRows)
+	s.Inbounds, err = parsePanelInboundRows(inboundRows)
+	if err != nil {
+		s.DatabaseError = err.Error()
+		return s
+	}
 	certRows, err := sqliteTSV(cmd, s.Database, `SELECT DISTINCT COALESCE(json_extract(server,'$.certificate_path'),'') FROM tls WHERE length(COALESCE(json_extract(server,'$.certificate_path'),''))>0;`)
 	if err == nil {
 		s.CertificateFiles = firstColumn(certRows)
@@ -131,9 +135,13 @@ func collectSUIFacts(cmd Commander) panelSnapshot {
 	}
 	clientRows, err := sqliteTSV(cmd, s.Database, `SELECT COALESCE(sum(CASE WHEN enable=1 THEN 1 ELSE 0 END),0), COALESCE(sum(CASE WHEN enable=1 THEN 0 ELSE 1 END),0) FROM clients;`)
 	if err == nil && len(clientRows) == 1 && len(clientRows[0]) == 2 {
-		s.EnabledClients, _ = strconv.Atoi(clientRows[0][0])
-		s.DisabledClients, _ = strconv.Atoi(clientRows[0][1])
-		s.ClientInventoryKnown = true
+		enabled, enabledErr := nonNegativeInt(clientRows[0][0])
+		disabled, disabledErr := nonNegativeInt(clientRows[0][1])
+		if enabledErr == nil && disabledErr == nil {
+			s.EnabledClients, s.DisabledClients, s.ClientInventoryKnown = enabled, disabled, true
+		} else {
+			s.ClientInventoryError = "client inventory query returned malformed counts"
+		}
 	} else if err != nil {
 		s.ClientInventoryError = err.Error()
 	} else {
@@ -181,7 +189,14 @@ func collectXUIFacts(cmd Commander) panelSnapshot {
 			}
 		}
 		listen := cmd.Run(6*time.Second, binary, "setting", "-getListen")
-		if value := parseListenValue(listen.Stdout); value != "" {
+		if listen.Err != nil || listen.Truncated {
+			message := "x-ui setting -getListen: " + commandError(listen)
+			if s.RuntimeCommandError == "" {
+				s.RuntimeCommandError = message
+			} else {
+				s.RuntimeCommandError += "; " + message
+			}
+		} else if value := parseListenValue(listen.Stdout); value != "" {
 			setPanelEndpointListen(&s, "management", value)
 		}
 	}
@@ -215,7 +230,11 @@ func collectXUIFacts(cmd Commander) panelSnapshot {
 		s.DatabaseError = err.Error()
 		return s
 	}
-	s.Inbounds = parsePanelInboundRows(inboundRows)
+	s.Inbounds, err = parsePanelInboundRows(inboundRows)
+	if err != nil {
+		s.DatabaseError = err.Error()
+		return s
+	}
 	certRows, err := sqliteTSV(cmd, s.Database, `SELECT DISTINCT COALESCE(json_extract(stream_settings,'$.tlsSettings.certificates[0].certificateFile'),'') FROM inbounds WHERE length(COALESCE(json_extract(stream_settings,'$.tlsSettings.certificates[0].certificateFile'),''))>0;`)
 	if err == nil {
 		s.CertificateFiles = firstColumn(certRows)
@@ -224,9 +243,13 @@ func collectXUIFacts(cmd Commander) panelSnapshot {
 	}
 	clientRows, err := sqliteTSV(cmd, s.Database, `SELECT COALESCE(sum(CASE WHEN enable=1 THEN 1 ELSE 0 END),0), COALESCE(sum(CASE WHEN enable=1 THEN 0 ELSE 1 END),0) FROM clients;`)
 	if err == nil && len(clientRows) == 1 && len(clientRows[0]) == 2 {
-		s.EnabledClients, _ = strconv.Atoi(clientRows[0][0])
-		s.DisabledClients, _ = strconv.Atoi(clientRows[0][1])
-		s.ClientInventoryKnown = true
+		enabled, enabledErr := nonNegativeInt(clientRows[0][0])
+		disabled, disabledErr := nonNegativeInt(clientRows[0][1])
+		if enabledErr == nil && disabledErr == nil {
+			s.EnabledClients, s.DisabledClients, s.ClientInventoryKnown = enabled, disabled, true
+		} else {
+			s.ClientInventoryError = "client inventory query returned malformed counts"
+		}
 	} else if err != nil {
 		s.ClientInventoryError = err.Error()
 	} else {
@@ -268,26 +291,48 @@ func sqliteTSV(cmd Commander, database, query string) ([][]string, error) {
 	return fallbackRows, nil
 }
 
-func parsePanelInboundRows(rows [][]string) []panelInboundFact {
+func parsePanelInboundRows(rows [][]string) ([]panelInboundFact, error) {
 	var out []panelInboundFact
-	for _, row := range rows {
+	for index, row := range rows {
 		if len(row) != 12 {
-			continue
+			return nil, fmt.Errorf("panel inbound row %d returned %d columns; expected 12", index+1, len(row))
 		}
-		clientCount, _ := strconv.Atoi(row[6])
+		if row[0] != "0" && row[0] != "1" {
+			return nil, fmt.Errorf("panel inbound row %d returned an invalid enabled state", index+1)
+		}
+		if !validPort(row[2]) {
+			return nil, fmt.Errorf("panel inbound row %d returned an invalid port", index+1)
+		}
+		clientCount, err := nonNegativeInt(row[6])
+		if err != nil {
+			return nil, fmt.Errorf("panel inbound row %d returned an invalid client count", index+1)
+		}
+		for _, column := range []int{7, 8, 9} {
+			if row[column] != "0" && row[column] != "1" {
+				return nil, fmt.Errorf("panel inbound row %d returned an invalid boolean value", index+1)
+			}
+		}
+		realityTargets, targetErr := nonNegativeInt(row[10])
+		realityIDs, idErr := nonNegativeInt(row[11])
+		if targetErr != nil || idErr != nil {
+			return nil, fmt.Errorf("panel inbound row %d returned invalid Reality metadata counts", index+1)
+		}
 		out = append(out, panelInboundFact{
 			Enabled: row[0] == "1", Listen: normalizeListen(row[1]), Port: row[2],
 			Protocol: row[3], Network: row[4], Security: row[5], ClientCount: clientCount,
 			Expired: row[7] == "1", QuotaExhausted: row[8] == "1",
-			RealityKeySet: row[9] == "1", RealityTargets: atoi(row[10]), RealityIDs: atoi(row[11]),
+			RealityKeySet: row[9] == "1", RealityTargets: realityTargets, RealityIDs: realityIDs,
 		})
 	}
-	return out
+	return out, nil
 }
 
-func atoi(value string) int {
-	n, _ := strconv.Atoi(value)
-	return n
+func nonNegativeInt(value string) (int, error) {
+	n, err := strconv.Atoi(value)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("invalid non-negative integer")
+	}
+	return n, nil
 }
 
 func firstColumn(rows [][]string) []string {

@@ -22,6 +22,18 @@ type doctorFixtureCommander struct {
 	trusted map[string]error
 }
 
+func TestSubcommandHelpIsSuccessfulAndUsesProvidedWriter(t *testing.T) {
+	for _, args := range [][]string{{"audit", "--help"}, {"diff", "--help"}, {"baseline", "--help"}, {"report", "--help"}, {"verify", "--help"}} {
+		var out bytes.Buffer
+		if err := Run(args, bytes.NewReader(nil), &out, &out, BuildInfo{Version: "test"}); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		if !strings.Contains(strings.ToLower(out.String()), "usage") {
+			t.Fatalf("%v produced no usage text: %q", args, out.String())
+		}
+	}
+}
+
 func (c doctorFixtureCommander) Run(time.Duration, string, ...string) audit.CommandResult {
 	return audit.CommandResult{}
 }

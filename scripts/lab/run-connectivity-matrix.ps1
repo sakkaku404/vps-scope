@@ -6,7 +6,10 @@ param(
 
     [string] $Output = "vps-scope-lab-connectivity.json",
 
-    [ValidateRange(10, 120)]
+    # Start-Job plus a fresh SSH handshake can consume more than ten seconds
+    # on a Windows development host. Keep the advertised lower bound long
+    # enough that every parallel probe starts while the scenario is alive.
+    [ValidateRange(30, 120)]
     [int] $ScenarioSeconds = 30
 )
 

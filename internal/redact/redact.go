@@ -20,8 +20,9 @@ var (
 	ipv4RE        = regexp.MustCompile(`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b`)
 	ipv6RE        = regexp.MustCompile(`(?i)\b[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,7}\b`)
 	domainRE      = regexp.MustCompile(`(?i)\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\b`)
+	emailRE       = regexp.MustCompile("(?i)\\b[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9.-]+\\.[a-z]{2,63}\\b")
 	fingerprintRE = regexp.MustCompile(`SHA256:[A-Za-z0-9+/=]+`)
-	uuidRE        = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b`)
+	uuidRE        = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
 	homeUserRE    = regexp.MustCompile(`/home/([a-z_][a-z0-9_-]*)`)
 	userFieldRE   = regexp.MustCompile(`(?i)\b(user(?:name)?=)([a-z_][a-z0-9_-]*)`)
 )
@@ -61,6 +62,9 @@ func (r *Redactor) Report(in model.Report) model.Report {
 					out.Findings[i].Evidence[j].Value = strings.Join(parts, " ")
 				}
 			}
+			if accountEvidenceKey(finding.ID, evidence.Key) {
+				out.Findings[i].Evidence[j].Value = r.token("USER", strings.TrimSpace(evidence.Value))
+			}
 		}
 	}
 	if out.Metadata == nil {
@@ -73,6 +77,13 @@ func (r *Redactor) Report(in model.Report) model.Report {
 	}
 	out.Metadata["redacted"] = "true"
 	return out
+}
+
+func accountEvidenceKey(id, key string) bool {
+	if id == "ACC-001" && key == "uid0_user" {
+		return true
+	}
+	return id == "ACC-003" && key == "password_bearing_login_account"
 }
 
 func (r *Redactor) text(value string) string {
@@ -98,6 +109,9 @@ func (r *Redactor) text(value string) string {
 			return candidate
 		}
 		return r.token("IP", candidate)
+	})
+	value = emailRE.ReplaceAllStringFunc(value, func(candidate string) string {
+		return r.token("EMAIL", strings.ToLower(candidate))
 	})
 	value = domainRE.ReplaceAllStringFunc(value, func(candidate string) string {
 		lower := strings.ToLower(candidate)

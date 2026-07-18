@@ -41,31 +41,45 @@ func Run(args []string, in io.Reader, out, errOut io.Writer, build BuildInfo) er
 	if len(args) == 0 {
 		return e.interactive()
 	}
+	if len(args) == 2 && (args[1] == "--help" || args[1] == "-h") {
+		switch args[0] {
+		case "baseline":
+			fmt.Fprintln(out, "Usage: vps-scope baseline create REPORT.json BASELINE.json | vps-scope baseline check BASELINE.json REPORT.json")
+			return nil
+		case "report":
+			fmt.Fprintln(out, "Usage: vps-scope report list|show|path")
+			return nil
+		case "verify":
+			fmt.Fprintln(out, "Usage: vps-scope verify REPORT.json|BUNDLE_DIR")
+			return nil
+		}
+	}
+	var err error
 	switch args[0] {
 	case "audit":
-		return e.audit(args[1:])
+		err = e.audit(args[1:])
 	case "doctor":
-		return e.doctor(args[1:])
+		err = e.doctor(args[1:])
 	case "checks":
-		return e.checks(args[1:])
+		err = e.checks(args[1:])
 	case "explain":
-		return e.explain(args[1:])
+		err = e.explain(args[1:])
 	case "diff":
-		return e.diff(args[1:])
+		err = e.diff(args[1:])
 	case "baseline":
-		return e.baseline(args[1:])
+		err = e.baseline(args[1:])
 	case "fleet":
-		return e.fleet(args[1:])
+		err = e.fleet(args[1:])
 	case "render":
-		return e.render(args[1:])
+		err = e.render(args[1:])
 	case "redact":
-		return e.redact(args[1:])
+		err = e.redact(args[1:])
 	case "support":
-		return e.support(args[1:])
+		err = e.support(args[1:])
 	case "report":
-		return e.report(args[1:])
+		err = e.report(args[1:])
 	case "verify":
-		return e.verify(args[1:])
+		err = e.verify(args[1:])
 	case "version", "--version", "-v":
 		fmt.Fprintf(out, "vps-scope %s commit=%s built=%s go=%s\n", build.Version, build.Commit, build.Date, runtime.Version())
 		return nil
@@ -75,6 +89,16 @@ func Run(args []string, in io.Reader, out, errOut io.Writer, build BuildInfo) er
 	default:
 		return fmt.Errorf("unknown command %q; run vps-scope help", args[0])
 	}
+	if errors.Is(err, flag.ErrHelp) {
+		return nil
+	}
+	return err
+}
+
+func (e environment) newFlagSet(name string) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(e.errOut)
+	return fs
 }
 
 func (e environment) usage() {
@@ -154,7 +178,7 @@ func (e environment) interactive() error {
 }
 
 func (e environment) audit(args []string) error {
-	fs := flag.NewFlagSet("audit", flag.ContinueOnError)
+	fs := e.newFlagSet("audit")
 	fs.SetOutput(e.errOut)
 	lang := fs.String("lang", "auto", "zh-CN, en, or auto")
 	profile := fs.String("profile", "auto", "auto, general, proxy, web, docker, mixed")
@@ -493,17 +517,19 @@ func openLimitedLocalFile(path string, maxBytes int64) (*os.File, error) {
 	if before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() || before.Size() < 0 || before.Size() > maxBytes {
 		return nil, fmt.Errorf("local report %q is not a regular file within the %d byte limit", path, maxBytes)
 	}
+	// #nosec G304 -- path is a report selected by the user or bounded report
+	// inventory and is validated before and after opening.
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	after, err := f.Stat()
 	if err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, err
 	}
 	if !after.Mode().IsRegular() || !os.SameFile(before, after) || after.Size() != before.Size() {
-		f.Close()
+		_ = f.Close()
 		return nil, fmt.Errorf("local report %q changed while being opened", path)
 	}
 	return f, nil
@@ -515,7 +541,7 @@ func regularPath(path string) bool {
 }
 
 func (e environment) doctor(args []string) error {
-	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
+	fs := e.newFlagSet("doctor")
 	lang := fs.String("lang", "auto", "language")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -559,7 +585,7 @@ func doctorCommandStatus(cmd audit.Commander, name string) string {
 }
 
 func (e environment) checks(args []string) error {
-	fs := flag.NewFlagSet("checks", flag.ContinueOnError)
+	fs := e.newFlagSet("checks")
 	lang := fs.String("lang", "auto", "language")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -582,7 +608,7 @@ func (e environment) checks(args []string) error {
 }
 
 func (e environment) explain(args []string) error {
-	fs := flag.NewFlagSet("explain", flag.ContinueOnError)
+	fs := e.newFlagSet("explain")
 	lang := fs.String("lang", "auto", "language")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -602,7 +628,7 @@ func (e environment) explain(args []string) error {
 }
 
 func (e environment) render(args []string) error {
-	fs := flag.NewFlagSet("render", flag.ContinueOnError)
+	fs := e.newFlagSet("render")
 	lang := fs.String("lang", "auto", "language")
 	format := fs.String("format", "markdown", "text, markdown, html, json, bundle")
 	output := fs.String("output", "", "output path")
@@ -622,7 +648,7 @@ func (e environment) render(args []string) error {
 }
 
 func (e environment) redact(args []string) error {
-	fs := flag.NewFlagSet("redact", flag.ContinueOnError)
+	fs := e.newFlagSet("redact")
 	lang := fs.String("lang", "auto", "language")
 	format := fs.String("format", "json", "output format")
 	output := fs.String("output", "", "output path")
@@ -643,7 +669,7 @@ func (e environment) redact(args []string) error {
 }
 
 func (e environment) support(args []string) error {
-	fs := flag.NewFlagSet("support", flag.ContinueOnError)
+	fs := e.newFlagSet("support")
 	output := fs.String("output", "", "new output directory")
 	input := ""
 	// Accept both common CLI styles: `support report.json --output dir`

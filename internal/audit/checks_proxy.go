@@ -251,41 +251,55 @@ func checkProxySensitivePermissions(summaries []proxyConfigSummary) model.Findin
 }
 
 func checkProxySensitivePermissionsWithDefaults(summaries []proxyConfigSummary, defaultPaths []string) model.Finding {
-	paths := map[string]fs.FileMode{}
+	type candidate struct {
+		forbidden fs.FileMode
+		required  bool
+	}
+	candidates := map[string]candidate{}
 	for _, summary := range summaries {
-		if regularFile(summary.Path) {
-			paths[summary.Path] = 0o027 // allow controlled group read, never group write or other access
+		if summary.Path != "" {
+			candidates[summary.Path] = candidate{forbidden: 0o027, required: true}
 		}
 		for _, path := range summary.SensitiveFiles {
-			if regularFile(path) {
-				paths[path] = 0o027
+			if path != "" {
+				candidates[path] = candidate{forbidden: 0o027, required: true}
 			}
 		}
 	}
 	for _, path := range defaultPaths {
-		if regularFile(path) {
-			paths[path] = 0o027
+		if path != "" {
+			if _, exists := candidates[path]; !exists {
+				candidates[path] = candidate{forbidden: 0o027}
+			}
 		}
 	}
-	if len(paths) == 0 {
+	if len(candidates) == 0 {
 		return notApplicable("WORK-006", "workloads", "filesystem discovery", "no supported proxy secret-bearing file found")
 	}
-	f := model.Finding{ID: "WORK-006", Category: "workloads", Status: model.Pass, Facts: map[string]string{"files_checked": strconv.Itoa(len(paths))}}
+	f := model.Finding{ID: "WORK-006", Category: "workloads", Status: model.Pass, Facts: map[string]string{}}
 	problems, checked := 0, 0
+	var discoveryErr error
 	var checkedEvidence, problemEvidence []model.Evidence
-	ordered := make([]string, 0, len(paths))
-	for path := range paths {
+	ordered := make([]string, 0, len(candidates))
+	for path := range candidates {
 		ordered = append(ordered, path)
 	}
 	sort.Strings(ordered)
 	for _, path := range ordered {
 		info, err := os.Stat(path)
 		if err != nil {
+			if candidates[path].required || !errors.Is(err, fs.ErrNotExist) {
+				discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s: %w", path, err))
+			}
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s is not a regular file", path))
 			continue
 		}
 		checked++
 		checkedEvidence = append(checkedEvidence, model.Evidence{Source: "stat", Key: "proxy_sensitive_file", Value: fmt.Sprintf("%s mode=%s", path, modeString(info))})
-		if tooOpen(info, paths[path]) {
+		if tooOpen(info, candidates[path].forbidden) {
 			problems++
 			problemEvidence = append(problemEvidence, model.Evidence{Source: "stat", Key: "insecure_mode", Value: fmt.Sprintf("%s mode=%s", path, modeString(info))})
 		}
@@ -304,7 +318,10 @@ func checkProxySensitivePermissionsWithDefaults(summaries []proxyConfigSummary, 
 			f.Facts["evidence_omitted"] = strconv.Itoa(len(checkedEvidence) - 20)
 		}
 	}
-	return f
+	if checked == 0 && discoveryErr == nil {
+		return notApplicable("WORK-006", "workloads", "filesystem discovery", "no supported proxy secret-bearing file found")
+	}
+	return withIncompleteEvidence(f, "proxy sensitive-file metadata", discoveryErr)
 }
 
 func checkProxyServiceIsolation(ctx *Context) model.Finding {

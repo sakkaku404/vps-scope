@@ -594,6 +594,8 @@ func readDirectoryEntriesLimited(dir string, maxEntries int) ([]os.DirEntry, boo
 	if maxEntries < 0 {
 		return nil, false, fmt.Errorf("invalid directory entry limit")
 	}
+	// #nosec G304 -- dir is the explicitly requested bundle directory; only a
+	// bounded directory listing is performed.
 	f, err := os.Open(dir)
 	if err != nil {
 		return nil, false, err
@@ -689,15 +691,15 @@ func atomicWriteLimited(path string, maxBytes int64, write func(io.Writer) error
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName)
 	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := write(&limitedWriter{Writer: tmp, limit: maxBytes, remaining: maxBytes}); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {
@@ -774,17 +776,19 @@ func openRegularLimited(path string, maxBytes int64) (*os.File, int64, error) {
 	if before.Size() < 0 || before.Size() > maxBytes {
 		return nil, 0, fmt.Errorf("file exceeds %d byte safety limit", maxBytes)
 	}
+	// #nosec G304 -- manifest-controlled names are allowlisted before this
+	// call; Lstat, size, regular-file and SameFile checks prevent path swaps.
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, 0, err
 	}
 	after, err := f.Stat()
 	if err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, 0, err
 	}
 	if !after.Mode().IsRegular() || !os.SameFile(before, after) || after.Size() != before.Size() {
-		f.Close()
+		_ = f.Close()
 		return nil, 0, fmt.Errorf("file changed during verification")
 	}
 	return f, after.Size(), nil
