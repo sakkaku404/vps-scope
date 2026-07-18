@@ -36,27 +36,31 @@ type panelInboundFact struct {
 }
 
 type panelSnapshot struct {
-	Product                string
-	Version                string
-	Adapter                string
-	SchemaVersion          string
-	SchemaFingerprint      string
-	SchemaCapabilities     []string
-	SchemaSupported        bool
-	Binary                 string
-	Database               string
-	Endpoints              []panelEndpoint
-	Inbounds               []panelInboundFact
-	DatabaseAvailable      bool
-	DatabaseError          string
-	DiscoveryError         string
-	RuntimeCommandError    string
-	DefaultCredential      bool
-	DefaultCredentialKnown bool
-	EnabledClients         int
-	DisabledClients        int
-	CertificateFiles       []string
-	SensitiveFiles         []string
+	Product                  string
+	Version                  string
+	Adapter                  string
+	SchemaVersion            string
+	SchemaFingerprint        string
+	SchemaCapabilities       []string
+	SchemaSupported          bool
+	Binary                   string
+	Database                 string
+	Endpoints                []panelEndpoint
+	Inbounds                 []panelInboundFact
+	DatabaseAvailable        bool
+	DatabaseError            string
+	DiscoveryError           string
+	RuntimeCommandError      string
+	ManagementMetadataError  string
+	CertificateMetadataError string
+	ClientInventoryError     string
+	DefaultCredential        bool
+	DefaultCredentialKnown   bool
+	EnabledClients           int
+	DisabledClients          int
+	ClientInventoryKnown     bool
+	CertificateFiles         []string
+	SensitiveFiles           []string
 }
 
 func collectPanelSnapshots(cmd Commander) []panelSnapshot {
@@ -80,13 +84,17 @@ func collectSUIFacts(cmd Commander) panelSnapshot {
 		version := cmd.Run(8*time.Second, binary, "-v")
 		s.Version = firstVersion(version.Stdout + "\n" + version.Stderr)
 		settings := cmd.Run(8*time.Second, binary, "setting", "-show")
-		if port, ok := parseNamedPort(settings.Stdout, "Panel port"); ok {
-			path, pathKnown := parseNamedTextKnown(settings.Stdout, "Panel path")
-			s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "management", Listen: "::", Port: port, Source: "sui setting -show", PathKnown: pathKnown, PathIsDefault: panelPathIsDefault(path)})
-		}
-		if port, ok := parseNamedPort(settings.Stdout, "Sub port"); ok {
-			path, pathKnown := parseNamedTextKnown(settings.Stdout, "Sub path")
-			s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "subscription", Listen: "::", Port: port, Source: "sui setting -show", PathKnown: pathKnown, PathIsDefault: subscriptionPathIsDefault(path)})
+		if settings.Err != nil || settings.Truncated {
+			s.RuntimeCommandError = "sui setting -show: " + commandError(settings)
+		} else {
+			if port, ok := parseNamedPort(settings.Stdout, "Panel port"); ok {
+				path, pathKnown := parseNamedTextKnown(settings.Stdout, "Panel path")
+				s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "management", Listen: "::", Port: port, Source: "sui setting -show", PathKnown: pathKnown, PathIsDefault: panelPathIsDefault(path)})
+			}
+			if port, ok := parseNamedPort(settings.Stdout, "Sub port"); ok {
+				path, pathKnown := parseNamedTextKnown(settings.Stdout, "Sub path")
+				s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "subscription", Listen: "::", Port: port, Source: "sui setting -show", PathKnown: pathKnown, PathIsDefault: subscriptionPathIsDefault(path)})
+			}
 		}
 	}
 	if !regularFile(s.Database) {
@@ -118,11 +126,18 @@ func collectSUIFacts(cmd Commander) panelSnapshot {
 	certRows, err := sqliteTSV(cmd, s.Database, `SELECT DISTINCT COALESCE(json_extract(server,'$.certificate_path'),'') FROM tls WHERE length(COALESCE(json_extract(server,'$.certificate_path'),''))>0;`)
 	if err == nil {
 		s.CertificateFiles = firstColumn(certRows)
+	} else {
+		s.CertificateMetadataError = err.Error()
 	}
 	clientRows, err := sqliteTSV(cmd, s.Database, `SELECT COALESCE(sum(CASE WHEN enable=1 THEN 1 ELSE 0 END),0), COALESCE(sum(CASE WHEN enable=1 THEN 0 ELSE 1 END),0) FROM clients;`)
 	if err == nil && len(clientRows) == 1 && len(clientRows[0]) == 2 {
 		s.EnabledClients, _ = strconv.Atoi(clientRows[0][0])
 		s.DisabledClients, _ = strconv.Atoi(clientRows[0][1])
+		s.ClientInventoryKnown = true
+	} else if err != nil {
+		s.ClientInventoryError = err.Error()
+	} else {
+		s.ClientInventoryError = "client inventory query returned an unexpected shape"
 	}
 	return s
 }
@@ -147,18 +162,22 @@ func collectXUIFacts(cmd Commander) panelSnapshot {
 		if settings.Err != nil {
 			settings = cmd.Run(8*time.Second, binary, "setting", "-show")
 		}
-		if port, ok := parsePanelPort(s.Product, settings.Stdout); ok {
-			path, pathKnown := parseNamedTextKnown(settings.Stdout, "webBasePath")
-			s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "management", Listen: "::", Port: port, Source: "x-ui setting -show", PathKnown: pathKnown, PathIsDefault: panelPathIsDefault(path)})
-		}
-		if match := regexp.MustCompile(`(?mi)^\s*hasDefaultCredential\s*:\s*(true|false)\s*$`).FindStringSubmatch(settings.Stdout); len(match) == 2 {
-			s.DefaultCredentialKnown = true
-			s.DefaultCredential = strings.EqualFold(match[1], "true")
-		}
-		for i := range s.Endpoints {
-			if s.Endpoints[i].Role == "management" {
-				s.Endpoints[i].TLSKnown = true
-				s.Endpoints[i].TLS = !regexp.MustCompile(`(?mi)panel is not secure with SSL`).MatchString(settings.Stdout)
+		if settings.Err != nil || settings.Truncated {
+			s.RuntimeCommandError = "x-ui setting -show: " + commandError(settings)
+		} else {
+			if port, ok := parsePanelPort(s.Product, settings.Stdout); ok {
+				path, pathKnown := parseNamedTextKnown(settings.Stdout, "webBasePath")
+				s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "management", Listen: "::", Port: port, Source: "x-ui setting -show", PathKnown: pathKnown, PathIsDefault: panelPathIsDefault(path)})
+			}
+			if match := regexp.MustCompile(`(?mi)^\s*hasDefaultCredential\s*:\s*(true|false)\s*$`).FindStringSubmatch(settings.Stdout); len(match) == 2 {
+				s.DefaultCredentialKnown = true
+				s.DefaultCredential = strings.EqualFold(match[1], "true")
+			}
+			for i := range s.Endpoints {
+				if s.Endpoints[i].Role == "management" {
+					s.Endpoints[i].TLSKnown = true
+					s.Endpoints[i].TLS = !regexp.MustCompile(`(?mi)panel is not secure with SSL`).MatchString(settings.Stdout)
+				}
 			}
 		}
 		listen := cmd.Run(6*time.Second, binary, "setting", "-getListen")
@@ -186,6 +205,8 @@ func collectXUIFacts(cmd Commander) panelSnapshot {
 	settingRows, err := sqliteTSV(cmd, s.Database, `SELECT key, value FROM settings WHERE key IN ('webListen','webPort','webBasePath','webCertFile','webCertKey','subEnable','subListen','subPort','subPath','subCertFile','subKeyFile');`)
 	if err == nil {
 		applyPanelSettings(&s, settingRows, "x-ui database")
+	} else {
+		s.ManagementMetadataError = err.Error()
 	}
 	nowMillis := time.Now().UnixMilli()
 	query := fmt.Sprintf(`SELECT enable, COALESCE(listen,''), port, protocol, CASE WHEN protocol='shadowsocks' THEN COALESCE(json_extract(settings,'$.network'),'') ELSE COALESCE(json_extract(stream_settings,'$.network'),'') END, COALESCE(json_extract(stream_settings,'$.security'),''), COALESCE(json_array_length(json_extract(settings,'$.clients')),0), CASE WHEN expiry_time>0 AND expiry_time<%d THEN 1 ELSE 0 END, CASE WHEN total>0 AND up+down>=total THEN 1 ELSE 0 END, CASE WHEN length(COALESCE(json_extract(stream_settings,'$.realitySettings.privateKey'),''))>0 THEN 1 ELSE 0 END, CASE WHEN length(COALESCE(json_extract(stream_settings,'$.realitySettings.target'),json_extract(stream_settings,'$.realitySettings.dest'),''))>0 THEN 1 ELSE 0 END, COALESCE(json_array_length(json_extract(stream_settings,'$.realitySettings.serverNames')),0)+COALESCE(json_array_length(json_extract(stream_settings,'$.realitySettings.shortIds')),0) FROM inbounds;`, nowMillis)
@@ -198,11 +219,18 @@ func collectXUIFacts(cmd Commander) panelSnapshot {
 	certRows, err := sqliteTSV(cmd, s.Database, `SELECT DISTINCT COALESCE(json_extract(stream_settings,'$.tlsSettings.certificates[0].certificateFile'),'') FROM inbounds WHERE length(COALESCE(json_extract(stream_settings,'$.tlsSettings.certificates[0].certificateFile'),''))>0;`)
 	if err == nil {
 		s.CertificateFiles = firstColumn(certRows)
+	} else {
+		s.CertificateMetadataError = err.Error()
 	}
 	clientRows, err := sqliteTSV(cmd, s.Database, `SELECT COALESCE(sum(CASE WHEN enable=1 THEN 1 ELSE 0 END),0), COALESCE(sum(CASE WHEN enable=1 THEN 0 ELSE 1 END),0) FROM clients;`)
 	if err == nil && len(clientRows) == 1 && len(clientRows[0]) == 2 {
 		s.EnabledClients, _ = strconv.Atoi(clientRows[0][0])
 		s.DisabledClients, _ = strconv.Atoi(clientRows[0][1])
+		s.ClientInventoryKnown = true
+	} else if err != nil {
+		s.ClientInventoryError = err.Error()
+	} else {
+		s.ClientInventoryError = "client inventory query returned an unexpected shape"
 	}
 	return s
 }
@@ -380,11 +408,6 @@ func parseNamedPort(output, name string) (string, bool) {
 	}
 	port, err := strconv.Atoi(match[1])
 	return match[1], err == nil && port > 0 && port <= 65535
-}
-
-func parseNamedText(output, name string) string {
-	value, _ := parseNamedTextKnown(output, name)
-	return value
 }
 
 func parseNamedTextKnown(output, name string) (string, bool) {

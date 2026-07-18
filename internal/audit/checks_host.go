@@ -76,6 +76,10 @@ func checkPanelManagement(ctx *Context) model.Finding {
 			unknowns++
 			f.Evidence = append(f.Evidence, model.Evidence{Source: panel.Binary, Key: "runtime_command", Value: panel.RuntimeCommandError})
 		}
+		if panel.ManagementMetadataError != "" {
+			unknowns++
+			f.Evidence = append(f.Evidence, model.Evidence{Source: panel.Database, Key: "management_metadata", Value: "unavailable: " + truncate(panel.ManagementMetadataError, 240)})
+		}
 		if panel.DefaultCredentialKnown {
 			f.Evidence = append(f.Evidence, model.Evidence{Source: panel.Product + " settings", Key: "default_credential", Value: strconv.FormatBool(panel.DefaultCredential)})
 			if panel.DefaultCredential {
@@ -236,7 +240,7 @@ func discoverContainerPanels(ctx *Context) ([]containerPanelInstall, error) {
 	}
 	containers, err := ctx.Facts.DockerContainers()
 	if err != nil {
-		return nil, fmt.Errorf("Docker container panel discovery: %w", err)
+		return nil, fmt.Errorf("docker container panel discovery: %w", err)
 	}
 	var out []containerPanelInstall
 	for _, container := range containers {
@@ -595,15 +599,3 @@ func checkReliability(ctx *Context) []model.Finding {
 	)
 	return []model.Finding{withIncompleteEvidence(f, "reliability log discovery", discoveryErr), checkLogAndInodePressure(ctx)}
 }
-
-// Keep deterministic order when future file scans add map-backed evidence.
-func sortEvidence(values []model.Evidence) {
-	sort.Slice(values, func(i, j int) bool {
-		if values[i].Source == values[j].Source {
-			return values[i].Value < values[j].Value
-		}
-		return values[i].Source < values[j].Source
-	})
-}
-
-var _ = filepath.Separator

@@ -210,6 +210,56 @@ func TestScenarioPartialAuthenticationAndUpdateEvidenceIsUnknown(t *testing.T) {
 	requireStatus(t, checkUpdates(ctx), "UPD-002", model.Unknown)
 }
 
+func TestScenarioIntrusionPreventionCommandFailureIsUnknown(t *testing.T) {
+	results := map[string]CommandResult{
+		scenarioCommandKey("systemctl", "is-active", "fail2ban"): {
+			Err: fmt.Errorf("systemd unavailable"), Code: 1,
+		},
+	}
+	ctx := scenarioContext(newScenarioCommander([]string{"fail2ban-client", "systemctl"}, results))
+	f := checkIntrusionPrevention(ctx)
+	if f.Status != model.Unknown || !f.Unavailable || f.Facts["evidence_discovery_incomplete"] != "true" {
+		t.Fatalf("failed intrusion-prevention discovery became %s: %+v", f.Status, f)
+	}
+}
+
+func TestScenarioKnownInactiveIntrusionPreventionIsRisk(t *testing.T) {
+	results := map[string]CommandResult{
+		scenarioCommandKey("systemctl", "is-active", "fail2ban"): {
+			Stdout: "inactive", Err: fmt.Errorf("exit status 3"), Code: 3,
+		},
+	}
+	ctx := scenarioContext(newScenarioCommander([]string{"fail2ban-client", "systemctl"}, results))
+	f := checkIntrusionPrevention(ctx)
+	if f.Status != model.Risk || f.Severity != model.Medium || f.Unavailable {
+		t.Fatalf("known inactive intrusion prevention became %s: %+v", f.Status, f)
+	}
+}
+
+func TestPackageOwnershipSeparatesAbsentFromUnavailable(t *testing.T) {
+	tests := []struct {
+		name    string
+		result  CommandResult
+		owned   bool
+		wantErr bool
+	}{
+		{name: "owned", result: CommandResult{Stdout: "package: /opt/tool"}, owned: true},
+		{name: "unowned", result: CommandResult{Stderr: "dpkg-query: no path found matching pattern /opt/tool", Err: fmt.Errorf("exit status 1"), Code: 1}},
+		{name: "unavailable", result: CommandResult{Stderr: "dpkg database unavailable", Err: fmt.Errorf("exit status 2"), Code: 2}, wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cmd := newScenarioCommander([]string{"dpkg-query"}, map[string]CommandResult{
+				scenarioCommandKey("dpkg-query", "-S", "/opt/tool"): test.result,
+			})
+			owned, err := packageOwns(cmd, "/opt/tool")
+			if owned != test.owned || (err != nil) != test.wantErr {
+				t.Fatalf("owned=%t err=%v, want owned=%t error=%t", owned, err, test.owned, test.wantErr)
+			}
+		})
+	}
+}
+
 func TestScenarioPartialProcessAndPrivilegeEvidenceIsUnknown(t *testing.T) {
 	results := map[string]CommandResult{
 		scenarioCommandKey("systemctl", "--failed", "--no-legend", "--plain"):                         {Stdout: "bad.service loaded failed failed", Err: fmt.Errorf("systemd disconnected")},
@@ -485,6 +535,76 @@ func TestScenarioIncompleteProxyLogsAreUnknown(t *testing.T) {
 	f := checkProxyLogSignals(scenarioContext(newScenarioCommander([]string{"systemctl", "journalctl"}, results)))
 	if f.Status != model.Unknown || !f.Unavailable {
 		t.Fatalf("finding=%+v", f)
+	}
+}
+
+func TestScenarioProxyServiceDiscoveryFailureIsUnknown(t *testing.T) {
+	results := map[string]CommandResult{
+		scenarioCommandKey("systemctl", "list-units", "--type=service", "--all", "--no-legend", "--plain"): {
+			Stdout: "s-ui.service loaded active running S-UI", Err: fmt.Errorf("systemd inventory interrupted"),
+		},
+	}
+	ctx := scenarioContext(newScenarioCommander([]string{"systemctl", "journalctl"}, results))
+	for _, finding := range []model.Finding{checkProxyServiceIsolation(ctx), checkProxyLogSignals(ctx)} {
+		if finding.Status != model.Unknown || !finding.Unavailable {
+			t.Fatalf("partial systemd service inventory became %s: %+v", finding.Status, finding)
+		}
+	}
+}
+
+func TestScenarioWireGuardPartialRuntimeIsUnknown(t *testing.T) {
+	results := map[string]CommandResult{
+		scenarioCommandKey("wg", "show", "interfaces"):               {Stdout: "wg0"},
+		scenarioCommandKey("wg", "show", "wg0", "listen-port"):       {Stdout: "51820"},
+		scenarioCommandKey("wg", "show", "wg0", "peers"):             {Stdout: "withheld-public-key", Err: fmt.Errorf("peer inventory interrupted")},
+		scenarioCommandKey("wg", "show", "wg0", "latest-handshakes"): {Stdout: "withheld-public-key 1783900800"},
+	}
+	ctx := scenarioContext(newScenarioCommander([]string{"wg"}, results))
+	ctx.Facts.listenersOnce.Do(func() {
+		ctx.Facts.listeners = []Listener{{Protocol: "udp", Address: "0.0.0.0", Port: "51820", Scope: "public-wildcard", Process: "wireguard"}}
+	})
+	ctx.Facts.ufwOnce.Do(func() {
+		ctx.Facts.ufw = panelUFW{available: true, active: true, defaultDeny: true, defaultDenyByFamily: map[string]bool{"ipv4": true}, backend: "fixture"}
+	})
+	f := checkWireGuardRuntime(ctx)
+	if f.Status != model.Unknown || !f.Unavailable || f.Facts["evidence_discovery_incomplete"] != "true" {
+		t.Fatalf("partial WireGuard runtime became %s: %+v", f.Status, f)
+	}
+	for _, evidence := range f.Evidence {
+		if strings.Contains(evidence.Value, "withheld-public-key") {
+			t.Fatalf("WireGuard public key leaked into evidence: %+v", evidence)
+		}
+	}
+}
+
+func TestScenarioPanelCapabilityFailuresDoNotBecomePass(t *testing.T) {
+	ctx := scenarioContext(newScenarioCommander(nil, nil))
+	ctx.Facts.listenersOnce.Do(func() {
+		ctx.Facts.listeners = []Listener{{Protocol: "tcp", Address: "127.0.0.1", Port: "2053", Scope: "loopback", Process: "x-ui"}}
+	})
+	ctx.Facts.ufwOnce.Do(func() {
+		ctx.Facts.ufw = panelUFW{available: true, active: true, defaultDeny: true, backend: "fixture"}
+	})
+	panel := panelSnapshot{
+		Product: "3x-ui", Database: "/etc/x-ui/x-ui.db", DatabaseAvailable: true, SchemaSupported: true,
+		SchemaCapabilities:      []string{"management-endpoint", "client-state"},
+		Endpoints:               []panelEndpoint{{Role: "management", Listen: "127.0.0.1", Port: "2053", TLSKnown: true, TLS: true, PathKnown: true}},
+		ManagementMetadataError: "settings query interrupted",
+		ClientInventoryError:    "client query interrupted",
+	}
+	ctx.Facts.panelsOnce.Do(func() { ctx.Facts.panels = []panelSnapshot{panel} })
+	management := checkPanelManagement(ctx)
+	if management.Status != model.Unknown || !management.Unavailable {
+		t.Fatalf("partial panel management metadata became %s: %+v", management.Status, management)
+	}
+	runtime := checkPanelRuntimeConsistency(ctx, nil)
+	if runtime.Status != model.Unknown || !runtime.Unavailable || runtime.Facts["client_inventories_unavailable"] != "1" {
+		t.Fatalf("partial panel runtime metadata became %s: %+v", runtime.Status, runtime)
+	}
+	for _, evidence := range runtime.Evidence {
+		if evidence.Key == "panel_client_summary" && strings.Contains(evidence.Value, "enabled_clients=0") {
+			t.Fatalf("unavailable client inventory was reported as zero: %+v", evidence)
+		}
 	}
 }
 

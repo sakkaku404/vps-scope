@@ -440,9 +440,14 @@ func checkPrivileges(ctx *Context) []model.Finding {
 				privileged.Evidence = append(privileged.Evidence, model.Evidence{Source: "find -perm /6000", Value: item})
 			}
 			for _, item := range items {
-				if (strings.HasPrefix(item, "/opt/") || strings.HasPrefix(item, "/usr/local/")) && !packageOwns(ctx.Commander, item) {
-					privileged.Status, privileged.Severity = model.Risk, model.Medium
-					privileged.Evidence = append(privileged.Evidence, model.Evidence{Source: "dpkg-query -S", Key: "unowned_privileged_file", Value: item})
+				if strings.HasPrefix(item, "/opt/") || strings.HasPrefix(item, "/usr/local/") {
+					owned, ownershipErr := packageOwns(ctx.Commander, item)
+					if ownershipErr != nil {
+						privilegeDiscoveryErr = errors.Join(privilegeDiscoveryErr, fmt.Errorf("package ownership for %s: %w", item, ownershipErr))
+					} else if !owned {
+						privileged.Status, privileged.Severity = model.Risk, model.Medium
+						privileged.Evidence = append(privileged.Evidence, model.Evidence{Source: "dpkg-query -S", Key: "unowned_privileged_file", Value: item})
+					}
 				}
 			}
 		}
@@ -463,9 +468,14 @@ func checkPrivileges(ctx *Context) []model.Finding {
 			}
 			privileged.Evidence = append(privileged.Evidence, model.Evidence{Source: "getcap -r", Value: item})
 			path := strings.Fields(item)
-			if len(path) > 0 && containsAny(item, "cap_sys_admin", "cap_setuid", "cap_dac_override") && !packageOwns(ctx.Commander, path[0]) {
-				privileged.Status, privileged.Severity = model.Risk, model.High
-				privileged.Evidence = append(privileged.Evidence, model.Evidence{Source: "dpkg-query -S", Key: "unowned_dangerous_capability", Value: item})
+			if len(path) > 0 && containsAny(item, "cap_sys_admin", "cap_setuid", "cap_dac_override") {
+				owned, ownershipErr := packageOwns(ctx.Commander, path[0])
+				if ownershipErr != nil {
+					privilegeDiscoveryErr = errors.Join(privilegeDiscoveryErr, fmt.Errorf("package ownership for %s: %w", path[0], ownershipErr))
+				} else if !owned {
+					privileged.Status, privileged.Severity = model.Risk, model.High
+					privileged.Evidence = append(privileged.Evidence, model.Evidence{Source: "dpkg-query -S", Key: "unowned_dangerous_capability", Value: item})
+				}
 			}
 		}
 	}
@@ -485,10 +495,22 @@ func sudoNOPASSWDEvidence(line string) string {
 	return fmt.Sprintf("subject=%s runas=%s tag=NOPASSWD command_details=withheld", subject, runAs)
 }
 
-func packageOwns(cmd Commander, path string) bool {
+func packageOwns(cmd Commander, path string) (bool, error) {
 	if !cmd.Exists("dpkg-query") {
-		return false
+		return false, fmt.Errorf("dpkg-query command not found")
 	}
 	r := cmd.Run(5*time.Second, "dpkg-query", "-S", path)
-	return r.Err == nil && strings.Contains(r.Stdout, ":")
+	if r.Truncated {
+		return false, fmt.Errorf("dpkg-query output exceeded the capture limit")
+	}
+	if r.Err == nil {
+		if strings.Contains(r.Stdout, ":") {
+			return true, nil
+		}
+		return false, fmt.Errorf("dpkg-query returned an unrecognized successful response")
+	}
+	if r.Code == 1 && strings.Contains(strings.ToLower(r.Stderr), "no path found matching pattern") {
+		return false, nil
+	}
+	return false, fmt.Errorf("dpkg-query -S: %s", commandError(r))
 }

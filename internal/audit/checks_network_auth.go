@@ -572,46 +572,64 @@ func checkIntrusionPrevention(ctx *Context) model.Finding {
 	}
 
 	protected := false
+	knownUnprotected := false
+	var discoveryErr error
 	if fail2banInstalled {
 		active := ctx.Commander.Run(8*time.Second, "systemctl", "is-active", "fail2ban")
-		isActive := strings.TrimSpace(active.Stdout) == "active"
-		f.Facts["fail2ban_active"] = strconv.FormatBool(isActive)
-		f.Evidence = append(f.Evidence, model.Evidence{Source: "systemctl is-active", Key: "fail2ban", Value: strings.TrimSpace(active.Stdout + " " + active.Stderr)})
-		if isActive {
+		if active.Truncated || (active.Err != nil && active.Code != 3) {
+			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("systemctl is-active fail2ban: %s", commandError(active)))
+			f.Evidence = append(f.Evidence, model.Evidence{Source: "systemctl is-active", Key: "fail2ban_unavailable", Value: commandError(active)})
+		} else if isActive := strings.TrimSpace(active.Stdout) == "active"; isActive {
+			f.Facts["fail2ban_active"] = "true"
+			f.Evidence = append(f.Evidence, model.Evidence{Source: "systemctl is-active", Key: "fail2ban", Value: "active"})
 			status := ctx.Commander.Run(12*time.Second, "fail2ban-client", "status")
-			if status.Err == nil {
+			if status.Err == nil && !status.Truncated {
 				hasSSHD := regexp.MustCompile(`(?i)jail list:.*\bsshd\b`).MatchString(status.Stdout)
 				f.Facts["fail2ban_sshd_jail"] = strconv.FormatBool(hasSSHD)
 				f.Evidence = append(f.Evidence, model.Evidence{Source: "fail2ban-client status", Value: truncate(status.Stdout, 600)})
 				protected = protected || hasSSHD
+				knownUnprotected = knownUnprotected || !hasSSHD
 			} else {
+				discoveryErr = errors.Join(discoveryErr, fmt.Errorf("fail2ban-client status: %s", commandError(status)))
 				f.Evidence = append(f.Evidence, model.Evidence{Source: "fail2ban-client status", Key: "unavailable", Value: commandError(status)})
 			}
+		} else {
+			f.Facts["fail2ban_active"] = "false"
+			f.Evidence = append(f.Evidence, model.Evidence{Source: "systemctl is-active", Key: "fail2ban", Value: valueOr(strings.TrimSpace(active.Stdout), "inactive")})
+			knownUnprotected = true
 		}
 	}
 	if crowdSecInstalled {
 		active := ctx.Commander.Run(8*time.Second, "systemctl", "is-active", "crowdsec")
-		isActive := strings.TrimSpace(active.Stdout) == "active"
-		f.Facts["crowdsec_active"] = strconv.FormatBool(isActive)
-		f.Evidence = append(f.Evidence, model.Evidence{Source: "systemctl is-active", Key: "crowdsec", Value: strings.TrimSpace(active.Stdout + " " + active.Stderr)})
-		if isActive {
+		if active.Truncated || (active.Err != nil && active.Code != 3) {
+			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("systemctl is-active crowdsec: %s", commandError(active)))
+			f.Evidence = append(f.Evidence, model.Evidence{Source: "systemctl is-active", Key: "crowdsec_unavailable", Value: commandError(active)})
+		} else if isActive := strings.TrimSpace(active.Stdout) == "active"; isActive {
+			f.Facts["crowdsec_active"] = "true"
+			f.Evidence = append(f.Evidence, model.Evidence{Source: "systemctl is-active", Key: "crowdsec", Value: "active"})
 			bouncers := ctx.Commander.Run(12*time.Second, "cscli", "bouncers", "list", "-o", "json")
-			hasBouncer := bouncers.Err == nil && crowdSecHasBouncer(bouncers.Stdout)
-			f.Facts["crowdsec_bouncer_configured"] = strconv.FormatBool(hasBouncer)
-			if bouncers.Err == nil {
+			if bouncers.Err == nil && !bouncers.Truncated {
+				hasBouncer := crowdSecHasBouncer(bouncers.Stdout)
+				f.Facts["crowdsec_bouncer_configured"] = strconv.FormatBool(hasBouncer)
 				f.Evidence = append(f.Evidence, model.Evidence{Source: "cscli bouncers list", Key: "configured", Value: strconv.FormatBool(hasBouncer)})
+				protected = protected || hasBouncer
+				knownUnprotected = knownUnprotected || !hasBouncer
 			} else {
+				discoveryErr = errors.Join(discoveryErr, fmt.Errorf("cscli bouncers list: %s", commandError(bouncers)))
 				f.Evidence = append(f.Evidence, model.Evidence{Source: "cscli bouncers list", Key: "unavailable", Value: commandError(bouncers)})
 			}
-			protected = protected || hasBouncer
+		} else {
+			f.Facts["crowdsec_active"] = "false"
+			f.Evidence = append(f.Evidence, model.Evidence{Source: "systemctl is-active", Key: "crowdsec", Value: valueOr(strings.TrimSpace(active.Stdout), "inactive")})
+			knownUnprotected = true
 		}
 	}
 	if protected {
 		f.Status = model.Pass
-	} else {
+	} else if knownUnprotected {
 		f.Status, f.Severity = model.Risk, model.Medium
 	}
-	return f
+	return withIncompleteEvidence(f, "intrusion-prevention discovery", discoveryErr)
 }
 
 func crowdSecHasBouncer(output string) bool {

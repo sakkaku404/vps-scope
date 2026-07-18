@@ -39,11 +39,6 @@ func panelAdapters() []panelAdapter {
 	}
 }
 
-func detectPanelSchema(cmd Commander, database, product string) (string, error) {
-	inspection, err := inspectPanelSchema(cmd, database, product)
-	return inspection.Version, err
-}
-
 type panelSchemaInspection struct {
 	Version      string
 	Fingerprint  string
@@ -65,11 +60,6 @@ func inspectPanelSchema(cmd Commander, database, product string) (panelSchemaIns
 		lastErr = err
 	}
 	return last, lastErr
-}
-
-func detectPanelSchemaOnce(cmd Commander, database, product string) (string, error) {
-	inspection, err := inspectPanelSchemaOnce(cmd, database, product)
-	return inspection.Version, err
 }
 
 func inspectPanelSchemaOnce(cmd Commander, database, product string) (panelSchemaInspection, error) {

@@ -70,6 +70,11 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Static analysis
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
+          staticcheck ./...
+
       - name: Test with race detector
         run: go test -race -count=1 ./...
 

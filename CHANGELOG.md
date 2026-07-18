@@ -6,6 +6,26 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 1.4.4 - 2026-07-18
+
+### Fixed
+
+- WireGuard runtime checks now reject failed, truncated, malformed, or option-like interface metadata. Listener, listen-port, peer-count, and handshake evidence must all be complete before `WORK-011` can become `PASS`; peer keys and endpoints remain excluded.
+- Proxy systemd service enumeration and per-unit property collection no longer turn partial output into “not applicable” or normal isolation/log findings.
+- Fail2ban and CrowdSec now distinguish an explicitly inactive or unprotected service from an unavailable status command, reducing false `RISK` results while preserving proven protection.
+- Deep package-ownership checks distinguish a confirmed unowned privileged file from an unavailable `dpkg-query`, preventing package-database failures from creating unowned-file risks.
+- Panel adapters now propagate management, certificate, and client-inventory failures according to their declared schema capabilities. Unsupported capabilities are omitted instead of being reported as zero-valued observations.
+
+### Changed
+
+- Removed unused compatibility wrappers and evidence helpers found during a full static-analysis pass.
+- CI now pins and runs Staticcheck in addition to `go vet`, race tests, fuzzing, coverage ratchets, CodeQL, and reachable-vulnerability analysis.
+
+### Testing
+
+- Added adverse scenarios for partial WireGuard, systemd service, intrusion-prevention, package-ownership, and panel-capability evidence.
+- Standard and deep read-only candidate audits completed on Debian 12, Ubuntu 22.04, Ubuntu 26.04, and the Japan S-UI host. Deep runs completed in about 33 to 58 seconds, all four 51-finding reports passed the semantic verifier, and every remote temporary file was removed.
+
 ## 1.4.3 - 2026-07-16
 
 ### Fixed

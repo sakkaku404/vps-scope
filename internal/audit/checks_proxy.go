@@ -20,9 +20,13 @@ func proxyChecks(ctx *Context) []model.Finding {
 	summaries, discoveryErr := discoverProxyConfigs(ctx)
 	panels, panelDiscoveryErr := ctx.Facts.Panels()
 	discoveryErr = errors.Join(discoveryErr, panelDiscoveryErr)
+	var panelConfigErr error
 	for _, panel := range panels {
 		if panel.DiscoveryError != "" {
 			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s: %s", panel.Product, panel.DiscoveryError))
+		}
+		if panel.DatabaseError != "" {
+			panelConfigErr = errors.Join(panelConfigErr, fmt.Errorf("%s configuration metadata: %s", panel.Product, panel.DatabaseError))
 		}
 	}
 	findings := []model.Finding{
@@ -47,6 +51,17 @@ func proxyChecks(ctx *Context) []model.Finding {
 		for i := range findings {
 			if dependsOnConfigDiscovery[findings[i].ID] {
 				findings[i] = withIncompleteEvidence(findings[i], "proxy configuration discovery", discoveryErr)
+			}
+		}
+	}
+	if panelConfigErr != nil {
+		dependsOnPanelConfiguration := map[string]bool{
+			"WORK-003": true, "WORK-004": true, "WORK-005": true,
+			"WORK-008": true, "WORK-009": true, "WORK-012": true,
+		}
+		for i := range findings {
+			if dependsOnPanelConfiguration[findings[i].ID] {
+				findings[i] = withIncompleteEvidence(findings[i], "panel configuration metadata", panelConfigErr)
 			}
 		}
 	}
@@ -293,16 +308,21 @@ func checkProxySensitivePermissionsWithDefaults(summaries []proxyConfigSummary, 
 }
 
 func checkProxyServiceIsolation(ctx *Context) model.Finding {
-	units := proxyServiceUnits(ctx)
+	units, unitErr := proxyServiceUnits(ctx)
+	if unitErr != nil {
+		return unknown("WORK-007", "workloads", "systemd service discovery", unitErr.Error())
+	}
 	if len(units) == 0 {
 		return notApplicable("WORK-007", "workloads", "systemd", "no supported proxy systemd service found")
 	}
 	f := model.Finding{ID: "WORK-007", Category: "workloads", Status: model.Info, Facts: map[string]string{"services": strconv.Itoa(len(units))}}
 	rootServices, dangerousCapabilities := 0, 0
+	var discoveryErr error
 	for _, unit := range units {
 		r := ctx.Commander.Run(10*time.Second, "systemctl", "show", unit,
 			"--property=ActiveState,SubState,User,Group,NoNewPrivileges,ProtectSystem,ProtectHome,PrivateTmp,CapabilityBoundingSet,AmbientCapabilities,LimitNOFILE,NRestarts,FragmentPath")
-		if r.Err != nil {
+		if r.Err != nil || r.Truncated {
+			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("systemctl show %s: %s", unit, commandError(r)))
 			f.Evidence = append(f.Evidence, model.Evidence{Source: "systemctl show " + unit, Key: "unavailable", Value: commandError(r)})
 			continue
 		}
@@ -339,7 +359,7 @@ func checkProxyServiceIsolation(ctx *Context) model.Finding {
 	}
 	f.Facts["root_services"] = strconv.Itoa(rootServices)
 	f.Facts["dangerous_capability_services"] = strconv.Itoa(dangerousCapabilities)
-	return f
+	return withIncompleteEvidence(f, "proxy systemd service properties", discoveryErr)
 }
 
 func checkProxyTransportContext(ctx *Context, summaries []proxyConfigSummary) model.Finding {
@@ -469,7 +489,7 @@ func checkWireGuardRuntime(ctx *Context) model.Finding {
 		return notApplicable("WORK-011", "workloads", "wg", "WireGuard tools are not installed")
 	}
 	interfacesResult := ctx.Commander.Run(8*time.Second, "wg", "show", "interfaces")
-	if interfacesResult.Err != nil {
+	if interfacesResult.Err != nil || interfacesResult.Truncated {
 		return unknown("WORK-011", "workloads", "wg show interfaces", commandError(interfacesResult))
 	}
 	interfaces := strings.Fields(interfacesResult.Stdout)
@@ -481,9 +501,24 @@ func checkWireGuardRuntime(ctx *Context) model.Finding {
 	ufw := readPanelUFW(ctx)
 	peers, recentPeers := 0, 0
 	now := ctx.Now().Unix()
+	var discoveryErr error
+	discoveryErr = errors.Join(discoveryErr, listenerErr)
 	for _, iface := range interfaces {
+		if !validNetworkInterfaceName(iface) {
+			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("wg returned an invalid interface name"))
+			continue
+		}
 		portResult := ctx.Commander.Run(6*time.Second, "wg", "show", iface, "listen-port")
+		if portResult.Err != nil || portResult.Truncated {
+			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("wg show %s listen-port: %s", iface, commandError(portResult)))
+			f.Evidence = append(f.Evidence, model.Evidence{Source: "wg show", Key: "interface_unavailable", Value: fmt.Sprintf("interface=%s field=listen-port error=%s", iface, commandError(portResult))})
+			continue
+		}
 		port := strings.TrimSpace(portResult.Stdout)
+		if port != "0" && !validPort(port) {
+			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("wg show %s listen-port returned an invalid port", iface))
+			continue
+		}
 		live, scope, process := false, "none", "none"
 		for _, listener := range listeners {
 			if listener.Port == port && strings.HasPrefix(listener.Protocol, "udp") {
@@ -492,30 +527,52 @@ func checkWireGuardRuntime(ctx *Context) model.Finding {
 		}
 		firewall := endpointFirewallDisposition(ufw, port, "udp")
 		f.Evidence = append(f.Evidence, model.Evidence{Source: "wg + ss + ufw", Key: "wireguard_interface", Value: fmt.Sprintf("interface=%s port=%s/udp live=%t process=%s scope=%s firewall=%s", iface, port, live, truncate(process, 100), scope, firewall)})
-		if listenerErr != nil {
-			f.Status, f.Unavailable = model.Unknown, true
-			f.Error = listenerErr.Error()
-		} else if port != "" && port != "0" && !live {
+		if listenerErr == nil && port != "" && port != "0" && !live {
 			f.Status, f.Severity = model.Risk, model.Medium
 		}
 		peerResult := ctx.Commander.Run(6*time.Second, "wg", "show", iface, "peers")
-		peers += len(strings.Fields(peerResult.Stdout))
+		if peerResult.Err != nil || peerResult.Truncated {
+			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("wg show %s peers: %s", iface, commandError(peerResult)))
+		} else {
+			peers += len(strings.Fields(peerResult.Stdout))
+		}
 		handshakes := ctx.Commander.Run(6*time.Second, "wg", "show", iface, "latest-handshakes")
-		for _, line := range lines(handshakes.Stdout) {
-			fields := strings.Fields(line)
-			if len(fields) != 2 {
-				continue
-			}
-			when, _ := strconv.ParseInt(fields[1], 10, 64)
-			if when > 0 && now-when <= int64(ctx.LogSince.Seconds()) {
-				recentPeers++
+		if handshakes.Err != nil || handshakes.Truncated {
+			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("wg show %s latest-handshakes: %s", iface, commandError(handshakes)))
+		} else {
+			for _, line := range lines(handshakes.Stdout) {
+				fields := strings.Fields(line)
+				if len(fields) != 2 {
+					continue
+				}
+				when, parseErr := strconv.ParseInt(fields[1], 10, 64)
+				if parseErr != nil {
+					discoveryErr = errors.Join(discoveryErr, fmt.Errorf("wg show %s latest-handshakes returned malformed metadata", iface))
+					continue
+				}
+				if when > 0 && now-when <= int64(ctx.LogSince.Seconds()) {
+					recentPeers++
+				}
 			}
 		}
 	}
 	f.Facts["peers"] = strconv.Itoa(peers)
 	f.Facts["peers_with_recent_handshake"] = strconv.Itoa(recentPeers)
 	f.Evidence = append(f.Evidence, model.Evidence{Source: "wg show", Key: "peer_summary", Value: fmt.Sprintf("peers=%d recent_handshakes=%d; public keys and endpoints withheld", peers, recentPeers)})
+	f = withIncompleteEvidence(f, "WireGuard runtime discovery", discoveryErr)
 	return withIncompleteEvidence(f, "host firewall discovery", ufw.collectionErr)
+}
+
+func validNetworkInterfaceName(value string) bool {
+	if value == "" || len(value) > 15 || strings.HasPrefix(value, "-") {
+		return false
+	}
+	for _, r := range value {
+		if r <= ' ' || strings.ContainsRune(`/\`, r) {
+			return false
+		}
+	}
+	return true
 }
 
 func discoverProxyConfigs(ctx *Context) ([]proxyConfigSummary, error) {
@@ -598,11 +655,14 @@ func panelProxySummary(panel panelSnapshot) (proxyConfigSummary, bool) {
 	return s, true
 }
 
-func proxyServiceUnits(ctx *Context) []string {
+func proxyServiceUnits(ctx *Context) ([]string, error) {
 	if !ctx.Commander.Exists("systemctl") {
-		return nil
+		return nil, fmt.Errorf("systemctl command not found")
 	}
 	r := ctx.Commander.Run(12*time.Second, "systemctl", "list-units", "--type=service", "--all", "--no-legend", "--plain")
+	if r.Err != nil || r.Truncated {
+		return nil, fmt.Errorf("systemctl list-units: %s", commandError(r))
+	}
 	seen := map[string]bool{}
 	for _, line := range lines(r.Stdout) {
 		fields := strings.Fields(line)
@@ -618,7 +678,7 @@ func proxyServiceUnits(ctx *Context) []string {
 		units = append(units, unit)
 	}
 	sort.Strings(units)
-	return units
+	return units, nil
 }
 
 func activeProxyProducts(ctx *Context) map[string]bool {
