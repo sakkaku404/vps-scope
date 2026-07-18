@@ -68,7 +68,7 @@ func (f *FactStore) Panels() ([]panelSnapshot, error) {
 		}
 		containers, err := f.DockerContainers()
 		if err != nil {
-			f.panelsErr = fmt.Errorf("Docker-backed panel discovery: %w", err)
+			f.panelsErr = fmt.Errorf("docker-backed panel discovery: %w", err)
 			return
 		}
 		f.panels = append(f.panels, collectContainerPanelSnapshots(containers)...)

@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -23,7 +24,18 @@ func checkPanelRuntimeConsistency(ctx *Context, summaries []proxyConfigSummary) 
 	publicSubscriptions, publicPlaintextSubscriptions := 0, 0
 	disabledStillListening := 0
 	expired, exhausted := 0, 0
+	clientInventoryUnavailable := 0
+	var metadataErr error
 	for _, panel := range panels {
+		if panel.RuntimeCommandError != "" {
+			metadataErr = errors.Join(metadataErr, fmt.Errorf("%s runtime metadata: %s", panel.Product, panel.RuntimeCommandError))
+		}
+		if panel.ManagementMetadataError != "" {
+			metadataErr = errors.Join(metadataErr, fmt.Errorf("%s management metadata: %s", panel.Product, panel.ManagementMetadataError))
+		}
+		if panel.DatabaseError != "" {
+			metadataErr = errors.Join(metadataErr, fmt.Errorf("%s configuration metadata: %s", panel.Product, panel.DatabaseError))
+		}
 		if panel.Database != "" && !panel.SchemaSupported && panel.SchemaFingerprint != "" {
 			unsupportedSchemas++
 		}
@@ -128,7 +140,17 @@ func checkPanelRuntimeConsistency(ctx *Context, summaries []proxyConfigSummary) 
 				}
 			}
 		}
-		f.Evidence = append(f.Evidence, model.Evidence{Source: panel.Database, Key: "panel_client_summary", Value: fmt.Sprintf("product=%s enabled_clients=%d disabled_clients=%d", panel.Product, panel.EnabledClients, panel.DisabledClients)})
+		if panelHasCapability(panel, "client-state") && panel.ClientInventoryKnown {
+			f.Evidence = append(f.Evidence, model.Evidence{Source: panel.Database, Key: "panel_client_summary", Value: fmt.Sprintf("product=%s enabled_clients=%d disabled_clients=%d", panel.Product, panel.EnabledClients, panel.DisabledClients)})
+		} else if panelHasCapability(panel, "client-state") {
+			clientInventoryUnavailable++
+			value := "client inventory unavailable"
+			if panel.ClientInventoryError != "" {
+				value += ": " + truncate(panel.ClientInventoryError, 180)
+			}
+			f.Evidence = append(f.Evidence, model.Evidence{Source: panel.Database, Key: "panel_client_summary", Value: "product=" + panel.Product + " " + value})
+			metadataErr = errors.Join(metadataErr, fmt.Errorf("%s client inventory: %s", panel.Product, value))
+		}
 	}
 	f.Facts["database_unavailable"] = strconv.Itoa(databaseUnavailable)
 	f.Facts["unsupported_panel_schemas"] = strconv.Itoa(unsupportedSchemas)
@@ -142,6 +164,7 @@ func checkPanelRuntimeConsistency(ctx *Context, summaries []proxyConfigSummary) 
 	f.Facts["disabled_inbounds_still_listening"] = strconv.Itoa(disabledStillListening)
 	f.Facts["expired_inbounds"] = strconv.Itoa(expired)
 	f.Facts["quota_exhausted_inbounds"] = strconv.Itoa(exhausted)
+	f.Facts["client_inventories_unavailable"] = strconv.Itoa(clientInventoryUnavailable)
 	if unsupportedSchemas > 0 {
 		f.Error = "one or more panel database schemas are not supported; runtime conclusions are incomplete"
 		if f.Status != model.Risk {
@@ -151,7 +174,17 @@ func checkPanelRuntimeConsistency(ctx *Context, summaries []proxyConfigSummary) 
 		f.Status = model.Info
 	}
 	f = withIncompleteEvidence(f, "host firewall discovery", ufw.collectionErr)
+	f = withIncompleteEvidence(f, "panel management metadata", metadataErr)
 	return withIncompleteEvidence(f, "panel and container discovery", panelDiscoveryErr)
+}
+
+func panelHasCapability(panel panelSnapshot, capability string) bool {
+	for _, available := range panel.SchemaCapabilities {
+		if available == capability {
+			return true
+		}
+	}
+	return false
 }
 
 func panelOwnsProcess(product, process string) bool {

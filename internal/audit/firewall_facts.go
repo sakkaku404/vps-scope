@@ -230,11 +230,9 @@ type nftInputChain struct {
 	lines               []string
 }
 
-// parseNFTInputRules follows only base chains with hook input and chains they
-// jump or go to. Parsing every accept statement in a ruleset would mistake
-// OUTPUT, FORWARD, Docker NAT, and unrelated tables for host ingress policy.
-func parseNFTInputRules(input []string) []firewallRule { return parseNFTHookRules(input, "input") }
-
+// parseNFTHookRules follows only base chains for the selected hook and chains
+// they jump or go to. Parsing every accept statement in a ruleset would mix
+// unrelated paths such as OUTPUT, FORWARD, and Docker NAT into one policy.
 func parseNFTHookRules(input []string, hook string) []firewallRule {
 	tableRE := regexp.MustCompile(`(?i)^table\s+(ip|ip6|inet)\s+([^\s{]+)\s*\{`)
 	chainRE := regexp.MustCompile(`(?i)^chain\s+([^\s{]+)\s*\{`)

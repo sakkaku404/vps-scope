@@ -248,24 +248,6 @@ func lines(s string) []string {
 	return out
 }
 
-func limitedEvidence(source string, values []string, limit int) []modelEvidence {
-	if limit <= 0 {
-		limit = 20
-	}
-	var out []modelEvidence
-	for i, value := range values {
-		if i >= limit {
-			out = append(out, modelEvidence{Source: source, Value: fmt.Sprintf("... %d more", len(values)-limit)})
-			break
-		}
-		out = append(out, modelEvidence{Source: source, Value: truncate(value, 500)})
-	}
-	return out
-}
-
-// modelEvidence is kept local so helpers do not expose report-model construction.
-type modelEvidence struct{ Source, Key, Value string }
-
 func sinceArg(d time.Duration) string {
 	seconds := int64(d.Seconds())
 	if seconds%86400 == 0 {

@@ -12,7 +12,10 @@ import (
 // classifies operational activity and deliberately never treats a count as a
 // vulnerability on its own.
 func checkProxyLogSignals(ctx *Context) model.Finding {
-	units := proxyServiceUnits(ctx)
+	units, unitErr := proxyServiceUnits(ctx)
+	if unitErr != nil {
+		return unknown("WORK-010", "workloads", "systemd service discovery", unitErr.Error())
+	}
 	if len(units) == 0 {
 		return notApplicable("WORK-010", "workloads", "systemd", "no supported proxy systemd service found")
 	}

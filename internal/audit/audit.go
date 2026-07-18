@@ -3,7 +3,6 @@ package audit
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -329,5 +328,3 @@ func withIncompleteEvidence(f model.Finding, source string, err error) model.Fin
 	}
 	return f
 }
-
-var errNoEvidence = errors.New("no usable evidence")

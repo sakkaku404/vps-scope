@@ -79,7 +79,7 @@ func (e environment) fleet(args []string) error {
 	}
 	_ = lang
 	if fs.NArg() < 1 {
-		return errors.New("usage: vps-scope fleet REPORT.json...")
+		return errors.New("usage: vps-scope fleet REPORT.json [REPORT.json ...]")
 	}
 	fmt.Fprintf(e.out, "%-24s %5s %5s %5s %8s %10s\n", "HOST", "RISK", "PASS", "INFO", "UNKNOWN", "PROFILE")
 	for _, path := range fs.Args() {

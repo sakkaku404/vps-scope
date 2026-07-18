@@ -528,6 +528,9 @@ func discoverCertificatePaths(ctx *Context) ([]string, error) {
 	panels, panelDiscoveryErr := ctx.Facts.Panels()
 	discoveryErr = errors.Join(discoveryErr, panelDiscoveryErr)
 	for _, panel := range panels {
+		if panel.CertificateMetadataError != "" {
+			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s certificate metadata: %s", panel.Product, panel.CertificateMetadataError))
+		}
 		for _, endpoint := range panel.Endpoints {
 			add(endpoint.CertFile)
 		}

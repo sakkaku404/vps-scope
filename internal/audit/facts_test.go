@@ -145,7 +145,7 @@ func TestDockerPanelDiscoveryFailureIsNotReportedAsNoPanel(t *testing.T) {
 	})
 	ctx := scenarioContext(cmd)
 	panels, err := ctx.Facts.Panels()
-	if err == nil || !strings.Contains(err.Error(), "Docker-backed panel discovery") {
+	if err == nil || !strings.Contains(err.Error(), "docker-backed panel discovery") {
 		t.Fatalf("Panels error = %v, want Docker-backed discovery error", err)
 	}
 	if len(panels) != 0 {
