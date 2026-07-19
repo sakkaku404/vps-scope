@@ -66,7 +66,4 @@ else
 fi
 chmod 0755 "$asset"
 
-if (($# == 0)); then
-  set -- audit --lang zh-CN --profile auto
-fi
 "./$asset" "$@"

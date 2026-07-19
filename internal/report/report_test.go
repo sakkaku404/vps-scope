@@ -219,7 +219,7 @@ func TestHTMLIsSelfContainedAndUsable(t *testing.T) {
 		t.Fatal(err)
 	}
 	html := out.String()
-	for _, required := range []string{`data-filter="RISK"`, `class="search"`, `data-status="UNKNOWN"`, "Action summary", "风险解释", "证据", "报告保存在本地"} {
+	for _, required := range []string{`data-filter="RISK"`, `class="search"`, `data-status="UNKNOWN"`, "处理摘要", "风险解释", "证据", "报告保存在本地"} {
 		if !strings.Contains(html, required) {
 			t.Errorf("HTML missing %q", required)
 		}
@@ -270,6 +270,9 @@ func TestMarkdownCompressesLongEvidence(t *testing.T) {
 	if !strings.Contains(out.String(), "<details><summary>All evidence (3)</summary>") {
 		t.Fatalf("long evidence was not collapsed:\n%s", out.String())
 	}
+	if !strings.Contains(out.String(), "`ufw`: one=1") {
+		t.Fatalf("evidence key and value are not separated:\n%s", out.String())
+	}
 }
 
 func TestProxyOverviewShowsPanelsAndIngressWithoutVerbose(t *testing.T) {
@@ -285,7 +288,7 @@ func TestProxyOverviewShowsPanelsAndIngressWithoutVerbose(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := out.String()
-	for _, expected := range []string{"代理工作负载概览", "S-UI 1.5.3 [RISK/HIGH]", "S-UI, sing-box", "443/tcp  sing-box/vless (reality)", "公网通配", "符合入口预期"} {
+	for _, expected := range []string{"代理 VPS 结论", "节点入口", "管理面", "代理部署明细", "S-UI 1.5.3 [RISK/HIGH]", "S-UI, sing-box", "443/tcp  sing-box/vless (reality)", "公网通配", "符合入口预期", "检查结果索引", "完整证据请打开"} {
 		if !strings.Contains(text, expected) {
 			t.Errorf("text missing %q:\n%s", expected, text)
 		}
@@ -315,10 +318,49 @@ func TestProxyOverviewIsPresentInMarkdownAndHTML(t *testing.T) {
 			if err := render.fn(&out, r, Options{Locale: "en"}); err != nil {
 				t.Fatal(err)
 			}
-			for _, expected := range []string{"Proxy workload overview", "S-UI, sing-box", "Management panels", "443/tcp  sing-box/vless (reality)"} {
+			for _, expected := range []string{"Proxy VPS assessment", "Proxy deployment details", "S-UI, sing-box", "Management panels", "443/tcp  sing-box/vless (reality)"} {
 				if !strings.Contains(out.String(), expected) {
 					t.Errorf("output missing %q:\n%s", expected, out.String())
 				}
+			}
+		})
+	}
+}
+
+func TestRussianAndPersianReportsAreLocalized(t *testing.T) {
+	r := sampleReport()
+	r.Findings = append(r.Findings,
+		model.Finding{ID: "WORK-002", Category: "workloads", Status: model.Risk, Severity: model.High, Evidence: []model.Evidence{{Key: "management_posture", Value: "product=S-UI port=2095/tcp scope=public-wildcard firewall=allow-anywhere tls=true path_default=false judgment=public-management-exposed"}}},
+		model.Finding{ID: "WORK-003", Category: "workloads", Status: model.Info, Facts: map[string]string{"products": "S-UI,sing-box"}},
+		model.Finding{ID: "WORK-009", Category: "workloads", Status: model.Pass, Evidence: []model.Evidence{{Key: "endpoint_relation", Value: "port=443/tcp process=sing-box purpose=sing-box/vless security=reality scope=public-wildcard firewall=allow-anywhere judgment=expected-proxy-ingress"}}},
+	)
+	r.Recount()
+	for _, test := range []struct {
+		locale        string
+		assessment    string
+		category      string
+		htmlDirection string
+	}{
+		{"ru-RU", "Оценка прокси VPS", "SSH", `dir="ltr"`},
+		{"fa-IR", "ارزیابی VPS پروکسی", "SSH", `dir="rtl"`},
+	} {
+		t.Run(test.locale, func(t *testing.T) {
+			var text bytes.Buffer
+			if err := Text(&text, r, Options{Locale: test.locale}); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(text.String(), test.assessment) || !strings.Contains(text.String(), test.category) {
+				t.Fatalf("localized text is incomplete:\n%s", text.String())
+			}
+			var html bytes.Buffer
+			if err := HTML(&html, r, Options{Locale: test.locale}); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(html.String(), test.htmlDirection) {
+				t.Fatalf("%s HTML direction is wrong", test.locale)
+			}
+			if test.locale == "fa-IR" && !strings.Contains(html.String(), "direction:ltr;text-align:left") {
+				t.Fatal("Persian technical evidence does not retain LTR direction")
 			}
 		})
 	}

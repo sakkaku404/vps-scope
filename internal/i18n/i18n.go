@@ -16,6 +16,12 @@ type Rule struct {
 	Recommendation Text
 }
 
+type RuleTranslation struct {
+	Title          string
+	Why            string
+	Recommendation string
+}
+
 func newRule(titleZH, titleEN, whyZH, whyEN, recommendationZH, recommendationEN string) Rule {
 	return Rule{
 		Title:          Text{ZH: titleZH, EN: titleEN},
@@ -25,15 +31,25 @@ func newRule(titleZH, titleEN, whyZH, whyEN, recommendationZH, recommendationEN 
 }
 
 func Locale(requested string) string {
-	switch strings.ToLower(requested) {
+	switch strings.ReplaceAll(strings.ToLower(requested), "_", "-") {
 	case "zh", "zh-cn", "cn":
 		return "zh-CN"
 	case "en", "en-us", "en-gb":
 		return "en"
+	case "ru", "ru-ru":
+		return "ru-RU"
+	case "fa", "fa-ir", "persian", "farsi":
+		return "fa-IR"
 	}
 	for _, key := range []string{"LC_ALL", "LC_MESSAGES", "LANG"} {
-		if strings.HasPrefix(strings.ToLower(os.Getenv(key)), "zh") {
+		value := strings.ToLower(os.Getenv(key))
+		switch {
+		case strings.HasPrefix(value, "zh"):
 			return "zh-CN"
+		case strings.HasPrefix(value, "ru"):
+			return "ru-RU"
+		case strings.HasPrefix(value, "fa"):
+			return "fa-IR"
 		}
 	}
 	return "en"
@@ -44,6 +60,155 @@ func Pick(t Text, locale string) string {
 		return t.ZH
 	}
 	return t.EN
+}
+
+func UI(locale, chinese, english string) string {
+	if locale == "zh-CN" {
+		return chinese
+	}
+	if translations, ok := ExtraUI[locale]; ok {
+		if translated := translations[english]; translated != "" {
+			return translated
+		}
+	}
+	return english
+}
+
+func Category(category, locale string) string {
+	if locale == "zh-CN" {
+		return Categories[category].ZH
+	}
+	if translations, ok := ExtraCategories[locale]; ok {
+		if translated := translations[category]; translated != "" {
+			return translated
+		}
+	}
+	return Categories[category].EN
+}
+
+func RuleForLocale(id, locale string) Rule {
+	r := RuleFor(id)
+	if locale == "zh-CN" || locale == "en" {
+		return r
+	}
+	if translations, ok := ExtraRules[locale]; ok {
+		if translated, ok := translations[id]; ok {
+			r.Title.EN = translated.Title
+			r.Why.EN = translated.Why
+			r.Recommendation.EN = translated.Recommendation
+		}
+	}
+	return r
+}
+
+func Supported(locale string) bool {
+	switch locale {
+	case "zh-CN", "en", "ru-RU", "fa-IR":
+		return true
+	default:
+		return false
+	}
+}
+
+func RTL(locale string) bool {
+	return locale == "fa-IR"
+}
+
+// These catalogs are committed with the binary. Runtime report generation
+// never contacts a translation service.
+var ExtraUI = map[string]map[string]string{}
+var ExtraCategories = map[string]map[string]string{}
+var ExtraRules = map[string]map[string]RuleTranslation{}
+
+func normalizeExtraCatalogs() {
+	replacements := map[string][][2]string{
+		"ru-RU": {
+			{"НЕИЗВЕСТНЫМ", "UNKNOWN"},
+			{"НЕИЗВЕСТНО", "UNKNOWN"},
+			{"ДОКЕР", "DOCKER"},
+			{"Докер", "Docker"},
+			{"докера", "Docker"},
+			{"докером", "Docker"},
+		},
+		"fa-IR": {
+			{"داکر", "Docker"},
+		},
+	}
+	normalize := func(locale, value string) string {
+		for _, pair := range replacements[locale] {
+			value = strings.ReplaceAll(value, pair[0], pair[1])
+		}
+		return value
+	}
+	for locale, catalog := range ExtraUI {
+		for key, value := range catalog {
+			catalog[key] = normalize(locale, value)
+		}
+	}
+	for locale, catalog := range ExtraCategories {
+		for key, value := range catalog {
+			catalog[key] = normalize(locale, value)
+		}
+	}
+	for locale, catalog := range ExtraRules {
+		for id, value := range catalog {
+			value.Title = normalize(locale, value.Title)
+			value.Why = normalize(locale, value.Why)
+			value.Recommendation = normalize(locale, value.Recommendation)
+			catalog[id] = value
+		}
+	}
+	ExtraUI["ru-RU"]["Arch"] = "Архитектура"
+	ExtraUI["fa-IR"]["Arch"] = "معماری"
+	for key, value := range map[string]string{
+		"Proxy VPS security and runtime audit": "Аудит безопасности и состояния прокси-VPS",
+		"Host":                                 "Сервер",
+		"Completed":                            "Выполнено",
+		"Not applicable":                       "Не применимо",
+		"Log window":                           "Период журналов",
+		"Management plane":                     "Панель управления",
+		"A management-plane exposure needs immediate review.": "Публичная доступность панели управления требует немедленной проверки.",
+		"Service availability":                                "Доступность сервисов",
+		"Suggestion":                                          "Рекомендация",
+		"Markdown format":                                     "Формат Markdown",
+		"public wildcard":                                     "публичный адрес",
+		"firewall allows":                                     "разрешено брандмауэром",
+		"public management exposure":                          "панель доступна из Интернета",
+		"expected proxy ingress":                              "ожидаемый вход прокси",
+		"No failed/restarting service, certificate-expiry, OOM, or core-dump risk was found.": "Не обнаружены сбои или циклические перезапуски сервисов, истекающие сертификаты, OOM либо core dump.",
+	} {
+		ExtraUI["ru-RU"][key] = value
+	}
+	for key, value := range map[string]string{
+		"Proxy VPS security and runtime audit": "ممیزی امنیت و وضعیت VPS پروکسی",
+		"Log window":                           "بازه گزارش\u200cها",
+		"Management plane":                     "صفحه مدیریت",
+		"A management-plane exposure needs immediate review.": "دسترسی عمومی به صفحه مدیریت نیاز به بررسی فوری دارد.",
+		"Service availability":                                "دسترس\u200cپذیری سرویس",
+		"Suggestion":                                          "پیشنهاد",
+		"public wildcard":                                     "گوش\u200cدادن عمومی",
+		"firewall allows":                                     "مجاز در فایروال",
+		"public management exposure":                          "صفحه مدیریت در اینترنت در دسترس است",
+		"expected proxy ingress":                              "ورودی مورد انتظار پروکسی",
+		"No failed/restarting service, certificate-expiry, OOM, or core-dump risk was found.": "هیچ سرویس ناموفق یا در حال راه\u200cاندازی مجدد، گواهی رو به انقضا، OOM یا core dump مشاهده نشد.",
+	} {
+		ExtraUI["fa-IR"][key] = value
+	}
+	ExtraUI["ru-RU"]["%d checks could not reach a reliable conclusion; review UNKNOWN first."] = "%d проверок не позволили сделать надёжный вывод; сначала просмотрите результаты UNKNOWN."
+	ExtraUI["fa-IR"]["%d checks could not reach a reliable conclusion; review UNKNOWN first."] = "%d بررسی به نتیجه قابل\u200cاعتماد نرسید؛ ابتدا موارد UNKNOWN را بررسی کنید."
+	ExtraUI["fa-IR"]["SSH, account, firewall, update, and persistence checks triggered no risk; INFO items are inventory only."] = "بررسی\u200cهای SSH، حساب\u200cها، فایروال، به\u200cروزرسانی و ماندگاری هیچ خطری نشان ندادند؛ موارد INFO فقط فهرست وضعیت هستند."
+	ruTLS := ExtraRules["ru-RU"]["TLS-002"]
+	ruTLS.Recommendation = "Проверьте срок действия сертификата через безопасный интерфейс приложения, который не экспортирует закрытые ключи; до этого оставьте результат UNKNOWN."
+	ExtraRules["ru-RU"]["TLS-002"] = ruTLS
+	faTLS := ExtraRules["fa-IR"]["TLS-002"]
+	faTLS.Recommendation = "اعتبار گواهی را از طریق رابط امن برنامه\u200cای که کلیدهای خصوصی را صادر نمی\u200cکند بررسی کنید؛ تا آن زمان نتیجه را UNKNOWN نگه دارید."
+	ExtraRules["fa-IR"]["TLS-002"] = faTLS
+	ruPanel := ExtraRules["ru-RU"]["WORK-002"]
+	ruPanel.Title = "Публичная доступность панели управления прокси"
+	ExtraRules["ru-RU"]["WORK-002"] = ruPanel
+	faPanel := ExtraRules["fa-IR"]["WORK-002"]
+	faPanel.Title = "دسترسی عمومی به صفحه مدیریت پروکسی"
+	ExtraRules["fa-IR"]["WORK-002"] = faPanel
 }
 
 var Categories = map[string]Text{

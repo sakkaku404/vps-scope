@@ -60,11 +60,11 @@ func (e environment) diff(args []string) error {
 		n, okNew := newMap[id]
 		switch {
 		case !okOld:
-			fmt.Fprintf(e.out, "NEW      %-12s %-8s %s\n", id, n.Status, i18n.Pick(i18n.RuleFor(id).Title, locale))
+			fmt.Fprintf(e.out, "NEW      %-12s %-8s %s\n", id, n.Status, i18n.Pick(i18n.RuleForLocale(id, locale).Title, locale))
 		case !okNew:
-			fmt.Fprintf(e.out, "REMOVED  %-12s %-8s %s\n", id, o.Status, i18n.Pick(i18n.RuleFor(id).Title, locale))
+			fmt.Fprintf(e.out, "REMOVED  %-12s %-8s %s\n", id, o.Status, i18n.Pick(i18n.RuleForLocale(id, locale).Title, locale))
 		case o.Status != n.Status || (*all && evidenceFingerprint(o) != evidenceFingerprint(n)):
-			fmt.Fprintf(e.out, "CHANGED  %-12s %s -> %s  %s\n", id, o.Status, n.Status, i18n.Pick(i18n.RuleFor(id).Title, locale))
+			fmt.Fprintf(e.out, "CHANGED  %-12s %s -> %s  %s\n", id, o.Status, n.Status, i18n.Pick(i18n.RuleForLocale(id, locale).Title, locale))
 		}
 	}
 	return nil

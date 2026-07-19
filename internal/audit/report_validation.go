@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sakkaku404/vps-scope/internal/i18n"
 	"github.com/sakkaku404/vps-scope/internal/model"
 )
 
@@ -23,7 +24,7 @@ func ValidateReport(r model.Report, verifierVersion ...string) []string {
 	if r.ToolVersion == "" {
 		failures = append(failures, "tool_version is empty")
 	}
-	if r.Locale != "en" && r.Locale != "zh-CN" {
+	if !i18n.Supported(r.Locale) {
 		failures = append(failures, fmt.Sprintf("unsupported or empty report locale %q", r.Locale))
 	}
 	if r.StartedAt.IsZero() || r.FinishedAt.IsZero() || r.FinishedAt.Before(r.StartedAt) {

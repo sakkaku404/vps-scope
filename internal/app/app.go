@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -125,25 +126,21 @@ Audit never changes system configuration, services, accounts, firewall, or packa
 
 func (e environment) interactive() error {
 	reader := bufio.NewReader(e.in)
-	fmt.Fprintln(e.out, "VPS Scope — Evidence-driven server security audit")
-	fmt.Fprintln(e.out, "\n请选择语言 / Choose language:\n  1. 简体中文\n  2. English")
+	fmt.Fprintln(e.out, "VPS Scope — Proxy VPS security and runtime audit")
+	fmt.Fprintln(e.out, "\n请选择语言 / Choose language:\n  1. 简体中文\n  2. English\n  3. Русский\n  4. فارسی")
 	fmt.Fprint(e.out, "选择 / Select [1]: ")
 	choice, _ := reader.ReadString('\n')
-	locale := "zh-CN"
-	if strings.TrimSpace(choice) == "2" {
-		locale = "en"
+	locale := map[string]string{"1": "zh-CN", "2": "en", "3": "ru-RU", "4": "fa-IR"}[strings.TrimSpace(choice)]
+	if locale == "" {
+		locale = "zh-CN"
 	}
-	zh := locale == "zh-CN"
 	fmt.Fprintln(e.out)
-	if zh {
-		fmt.Fprintln(e.out, "本工具永不修改系统配置。它只读取证据，并在你明确选择的位置写入报告。")
-	} else {
-		fmt.Fprintln(e.out, "This tool never changes system configuration. It reads evidence and writes only to a report path you choose.")
-	}
-	fmt.Fprintln(e.out, choose(zh,
+	fmt.Fprintln(e.out, choose(locale, "本工具永不修改系统配置。它只读取证据，并在你明确选择的位置写入报告。", "This tool never changes system configuration. It reads evidence and writes only to a report path you choose."))
+	fmt.Fprintln(e.out)
+	fmt.Fprintln(e.out, strings.TrimPrefix(choose(locale,
 		"\n服务器用途（不确定就选 1）:\n  1. 自动识别（推荐）\n  2. 通用 VPS\n  3. 代理服务器\n  4. Web 服务器\n  5. Docker 主机\n  6. 混合用途\n  7. 自定义公网端口",
-		"\nServer role (choose 1 if unsure):\n  1. auto detect (recommended)\n  2. general VPS\n  3. proxy server\n  4. web server\n  5. Docker host\n  6. mixed workloads\n  7. custom public listeners"))
-	fmt.Fprint(e.out, choose(zh, "选择 [1]: ", "Select [1]: "))
+		"\nServer role (choose 1 if unsure):\n  1. auto detect (recommended)\n  2. general VPS\n  3. proxy server\n  4. web server\n  5. Docker host\n  6. mixed workloads\n  7. custom public listeners"), "\n"))
+	fmt.Fprint(e.out, choose(locale, "选择 [1]: ", "Select [1]: "))
 	profileChoice, _ := reader.ReadString('\n')
 	profiles := map[string]string{"1": "auto", "2": "general", "3": "proxy", "4": "web", "5": "docker", "6": "mixed"}
 	profiles["7"] = "custom"
@@ -153,12 +150,13 @@ func (e environment) interactive() error {
 	}
 	expected := ""
 	if profile == "custom" {
-		fmt.Fprint(e.out, choose(zh, "预期公网端口（如 22/tcp,443/tcp）: ", "Expected public listeners (for example 22/tcp,443/tcp): "))
+		fmt.Fprint(e.out, choose(locale, "预期公网端口（如 22/tcp,443/tcp）: ", "Expected public listeners (for example 22/tcp,443/tcp): "))
 		expected, _ = reader.ReadString('\n')
 		expected = strings.TrimSpace(expected)
 	}
-	fmt.Fprintln(e.out, choose(zh, "\n输出方式:\n  1. 只在终端查看\n  2. 在终端查看，并保存完整报告（推荐）\n  3. 只保存完整报告", "\nOutput:\n  1. terminal only\n  2. terminal and full report bundle (recommended)\n  3. full report bundle only"))
-	fmt.Fprint(e.out, choose(zh, "选择 [2]: ", "Select [2]: "))
+	fmt.Fprintln(e.out)
+	fmt.Fprintln(e.out, strings.TrimPrefix(choose(locale, "\n输出方式:\n  1. 只在终端查看\n  2. 在终端查看，并保存完整报告（推荐）\n  3. 只保存完整报告", "\nOutput:\n  1. terminal only\n  2. terminal and full report bundle (recommended)\n  3. full report bundle only"), "\n"))
+	fmt.Fprint(e.out, choose(locale, "选择 [2]: ", "Select [2]: "))
 	outputChoice, _ := reader.ReadString('\n')
 	format, alsoTerminal := "bundle", true
 	switch strings.TrimSpace(outputChoice) {
@@ -180,7 +178,7 @@ func (e environment) interactive() error {
 func (e environment) audit(args []string) error {
 	fs := e.newFlagSet("audit")
 	fs.SetOutput(e.errOut)
-	lang := fs.String("lang", "auto", "zh-CN, en, or auto")
+	lang := fs.String("lang", "auto", "zh-CN, en, ru-RU, fa-IR, or auto")
 	profile := fs.String("profile", "auto", "auto, general, proxy, web, docker, mixed")
 	format := fs.String("format", "terminal", "terminal, text, json, markdown, html, or bundle")
 	output := fs.String("output", "", "output file or bundle directory")
@@ -208,7 +206,7 @@ func (e environment) audit(args []string) error {
 	progress := audit.ProgressFunc(nil)
 	if !*quiet && (*format == "terminal" || *format == "text" || *format == "bundle") {
 		progress = func(index, total int, category string) {
-			fmt.Fprintf(e.out, "[%02d/%02d] %s\n", index, total, i18n.Pick(i18n.Categories[category], locale))
+			fmt.Fprintf(e.out, "[%02d/%02d] %s\n", index, total, i18n.Category(category, locale))
 		}
 	}
 	expected, err := parseExpectedPublic(*expectPublic)
@@ -283,7 +281,7 @@ func (e environment) writeReport(format, output string, r model.Report, opts rep
 	if err := atomicWriteNew(output, 64<<20, write); err != nil {
 		return err
 	}
-	fmt.Fprintf(e.out, "%s: %s\n", choose(opts.Locale == "zh-CN", "报告", "Report"), output)
+	fmt.Fprintf(e.out, "%s: %s\n", choose(opts.Locale, "报告", "Report"), output)
 	return nil
 }
 
@@ -378,24 +376,38 @@ func updateLatest(root, bundle string) error {
 }
 
 func (e environment) printBundleHelp(dir, locale string, reportFiles int) {
-	zh := locale == "zh-CN"
 	ext := map[string]string{
-		"html": "Open in a browser", "text": "Read in a terminal", "markdown": "Markdown", "json": "Comparison and re-rendering", "manifest": "Integrity verification",
-	}
-	if zh {
-		ext = map[string]string{"html": "用浏览器查看", "text": "在终端查看", "markdown": "Markdown 格式", "json": "用于对比和重新生成", "manifest": "文件完整性校验"}
+		"html":     choose(locale, "用浏览器查看", "Open in a browser"),
+		"text":     choose(locale, "在终端查看", "Read in a terminal"),
+		"markdown": choose(locale, "Markdown 格式", "Markdown format"),
+		"json":     choose(locale, "用于对比和重新生成", "Comparison and re-rendering"),
+		"manifest": choose(locale, "文件完整性校验", "Integrity verification"),
 	}
 	localeName := locale
-	fmt.Fprintf(e.out, "\n%s\n\n%s:\n  %s\n\n%s:\n", choose(zh, "报告已经保存", "Report saved"), choose(zh, "目录", "Directory"), dir, choose(zh, fmt.Sprintf("包含 %d 个报告文件，另有完整性清单", reportFiles), fmt.Sprintf("Contents: %d report files plus an integrity manifest", reportFiles)))
-	fmt.Fprintf(e.out, "  report.%s.html   %s\n", localeName, ext["html"])
-	fmt.Fprintf(e.out, "  report.%s.txt    %s\n", localeName, ext["text"])
-	fmt.Fprintf(e.out, "  report.%s.md     %s\n", localeName, ext["markdown"])
-	fmt.Fprintf(e.out, "  report.json         %s\n", ext["json"])
-	fmt.Fprintf(e.out, "  manifest.json       %s\n", ext["manifest"])
-	fmt.Fprintf(e.out, "\n%s:\n  sudo vps-scope report show\n", choose(zh, "再次在终端查看最近报告", "Show the latest report in the terminal"))
+	fileSummary := fmt.Sprintf(choose(locale, "本次只执行了 1 次审计，生成 %d 种报告格式和 1 份校验清单，共 %d 个文件。", "One audit produced %d report formats and one integrity manifest: %d files total."), reportFiles, reportFiles+1)
+	fmt.Fprintf(e.out, "\n%s\n%s\n\n%s:\n  %s\n\n", choose(locale, "完整报告已经保存", "Full report saved"), fileSummary, choose(locale, "报告目录", "Report directory"), dir)
+	fmt.Fprintf(e.out, "  [1] %s   %s\n", filepath.Join(dir, "report."+localeName+".html"), choose(locale, "推荐：下载后用浏览器打开", "Recommended: download and open in a browser"))
+	fmt.Fprintf(e.out, "  [2] %s    %s\n", filepath.Join(dir, "report."+localeName+".txt"), ext["text"])
+	fmt.Fprintf(e.out, "  [3] %s     %s\n", filepath.Join(dir, "report."+localeName+".md"), ext["markdown"])
+	fmt.Fprintf(e.out, "  [4] %s         %s\n", filepath.Join(dir, "report.json"), ext["json"])
+	fmt.Fprintf(e.out, "  [5] %s       %s\n", filepath.Join(dir, "manifest.json"), ext["manifest"])
+	fmt.Fprintf(e.out, "\n%s:\n  sudo vps-scope report show\n", choose(locale, "再次在终端查看最近报告", "Show the latest report in the terminal"))
 	htmlPath := filepath.Join(dir, "report."+localeName+".html")
-	fmt.Fprintf(e.out, "\n%s:\n  %s\n", choose(zh, "下载 HTML 到电脑（请在你自己的电脑上运行）", "Download HTML (run this on your own computer)"), downloadCommand(htmlPath))
-	fmt.Fprintf(e.out, "\n%s:\n  sudo vps-scope verify %s\n", choose(zh, "需要时校验完整性", "Verify integrity when needed"), shellQuote(dir))
+	if runtime.GOOS == "windows" {
+		fmt.Fprintf(e.out, "\n%s:\n  %s\n", choose(locale, "HTML 已保存在这台电脑，可点击下面的本地链接或双击文件查看", "The HTML report is on this computer; open the local link or double-click the file"), localFileURL(htmlPath))
+	} else {
+		fmt.Fprintf(e.out, "\n%s\n", choose(locale, "HTML 保存在远程 VPS 上，SSH 终端不能直接把它当网页打开；请在自己的电脑执行下面的命令，下载后双击查看：", "The HTML file is on the remote VPS and cannot open as a web page inside an SSH terminal. Run this on your own computer, then open the downloaded file:"))
+		fmt.Fprintf(e.out, "\n%s:\n  %s\n", choose(locale, "下载 HTML 到电脑（请在你自己的电脑上运行）", "Download HTML (run this on your own computer)"), downloadCommand(htmlPath))
+	}
+	fmt.Fprintf(e.out, "\n%s:\n  sudo vps-scope verify %s\n", choose(locale, "需要时校验完整性", "Verify integrity when needed"), shellQuote(dir))
+}
+
+func localFileURL(path string) string {
+	path = filepath.ToSlash(path)
+	if len(path) >= 2 && path[1] == ':' {
+		path = "/" + path
+	}
+	return (&url.URL{Scheme: "file", Path: path}).String()
 }
 
 func downloadCommand(path string) string {
@@ -547,11 +559,10 @@ func (e environment) doctor(args []string) error {
 		return err
 	}
 	locale := i18n.Locale(*lang)
-	zh := locale == "zh-CN"
 	fmt.Fprintf(e.out, "VPS Scope doctor\nOS=%s ARCH=%s GO=%s\n", runtime.GOOS, runtime.GOARCH, runtime.Version())
-	fmt.Fprintf(e.out, "%s=%t\n", choose(zh, "支持完整审计", "full_audit_supported"), runtime.GOOS == "linux")
+	fmt.Fprintf(e.out, "%s=%t\n", choose(locale, "支持完整审计", "full_audit_supported"), runtime.GOOS == "linux")
 	if runtime.GOOS == "linux" {
-		fmt.Fprintln(e.out, choose(zh, "命令状态: TRUSTED=可安全执行  UNTRUSTED=存在但权限链不可信  MISSING=未找到", "command status: TRUSTED=safe to execute  UNTRUSTED=unsafe ownership or writable path  MISSING=not found"))
+		fmt.Fprintln(e.out, choose(locale, "命令状态: TRUSTED=可安全执行  UNTRUSTED=存在但权限链不可信  MISSING=未找到", "command status: TRUSTED=safe to execute  UNTRUSTED=unsafe ownership or writable path  MISSING=not found"))
 	}
 	commander := audit.OSCommander{}
 	for _, name := range []string{"sshd", "ss", "journalctl", "ufw", "firewall-cmd", "nft", "iptables", "fail2ban-client", "cscli", "apt-get", "dpkg", "systemctl", "docker", "coredumpctl", "getcap"} {
@@ -592,7 +603,7 @@ func (e environment) checks(args []string) error {
 	}
 	locale := i18n.Locale(*lang)
 	for index, category := range audit.CategoryOrder {
-		fmt.Fprintf(e.out, "%02d. %s\n", index+1, i18n.Pick(i18n.Categories[category], locale))
+		fmt.Fprintf(e.out, "%02d. %s\n", index+1, i18n.Category(category, locale))
 		var ids []string
 		for id := range i18n.Rules {
 			if categoryForID(id) == category {
@@ -601,7 +612,7 @@ func (e environment) checks(args []string) error {
 		}
 		sort.Strings(ids)
 		for _, id := range ids {
-			fmt.Fprintf(e.out, "    %-12s %s\n", id, i18n.Pick(i18n.RuleFor(id).Title, locale))
+			fmt.Fprintf(e.out, "    %-12s %s\n", id, i18n.Pick(i18n.RuleForLocale(id, locale).Title, locale))
 		}
 	}
 	return nil
@@ -617,13 +628,12 @@ func (e environment) explain(args []string) error {
 		return errors.New("usage: vps-scope explain CHECK-ID")
 	}
 	id := strings.ToUpper(fs.Arg(0))
-	rule, ok := i18n.Rules[id]
-	if !ok {
+	if _, ok := i18n.Rules[id]; !ok {
 		return fmt.Errorf("unknown check ID %q", id)
 	}
 	locale := i18n.Locale(*lang)
-	zh := locale == "zh-CN"
-	fmt.Fprintf(e.out, "%s — %s\n\n%s: %s\n\n%s: %s\n", id, i18n.Pick(rule.Title, locale), choose(zh, "风险解释", "Why it matters"), i18n.Pick(rule.Why, locale), choose(zh, "建议", "Suggestion"), i18n.Pick(rule.Recommendation, locale))
+	rule := i18n.RuleForLocale(id, locale)
+	fmt.Fprintf(e.out, "%s — %s\n\n%s: %s\n\n%s: %s\n", id, i18n.Pick(rule.Title, locale), choose(locale, "风险解释", "Why it matters"), i18n.Pick(rule.Why, locale), choose(locale, "建议", "Suggestion"), i18n.Pick(rule.Recommendation, locale))
 	return nil
 }
 
@@ -832,11 +842,8 @@ func safeName(value string) string {
 	}, value)
 	return strings.Trim(value, "-")
 }
-func choose(zh bool, chinese, english string) string {
-	if zh {
-		return chinese
-	}
-	return english
+func choose(locale, chinese, english string) string {
+	return i18n.UI(locale, chinese, english)
 }
 func truncateDisplay(value string, n int) string {
 	if len(value) <= n {

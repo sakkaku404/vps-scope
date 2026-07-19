@@ -90,6 +90,11 @@ func TestInteractiveProfilePromptUsesConfiguredWriter(t *testing.T) {
 	if !strings.Contains(out.String(), "选择 [1]: ") {
 		t.Fatalf("interactive output is missing the profile prompt: %q", out.String())
 	}
+	for _, language := range []string{"简体中文", "English", "Русский", "فارسی"} {
+		if !strings.Contains(out.String(), language) {
+			t.Fatalf("interactive output is missing %s: %q", language, out.String())
+		}
+	}
 }
 
 func TestDownloadCommandFromSSHConnection(t *testing.T) {
@@ -99,6 +104,35 @@ func TestDownloadCommandFromSSHConnection(t *testing.T) {
 	want := "scp -P 2222 root@203.0.113.20:'/root/vps-scope-reports/latest/report.zh-CN.html' ."
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestBundleHelpExplainsOneAuditAndFiveFiles(t *testing.T) {
+	var out bytes.Buffer
+	e := environment{out: &out}
+	dir := filepath.Join(string(filepath.Separator), "root", "vps-scope-reports", "latest")
+	e.printBundleHelp(dir, "zh-CN", 4)
+	text := out.String()
+	for _, expected := range []string{
+		"本次只执行了 1 次审计",
+		"4 种报告格式和 1 份校验清单，共 5 个文件",
+		"[1] " + filepath.Join(dir, "report.zh-CN.html"),
+		"[5] " + filepath.Join(dir, "manifest.json"),
+	} {
+		if !strings.Contains(text, expected) {
+			t.Errorf("bundle help missing %q:\n%s", expected, text)
+		}
+	}
+	if runtime.GOOS == "windows" {
+		if !strings.Contains(text, "可点击下面的本地链接") || !strings.Contains(text, "file:///") {
+			t.Fatalf("Windows bundle help is missing a local HTML link:\n%s", text)
+		}
+	} else {
+		for _, expected := range []string{"SSH 终端不能直接把它当网页打开", "scp <SSH_HOST>:" + shellQuote(filepath.Join(dir, "report.zh-CN.html")) + " ."} {
+			if !strings.Contains(text, expected) {
+				t.Errorf("Linux bundle help missing %q:\n%s", expected, text)
+			}
+		}
 	}
 }
 
@@ -312,8 +346,8 @@ func writeJSONReport(t *testing.T, path string, r model.Report) {
 	}
 }
 
-func TestChecksBilingual(t *testing.T) {
-	for _, lang := range []string{"zh-CN", "en"} {
+func TestChecksAllSupportedLanguages(t *testing.T) {
+	for _, lang := range []string{"zh-CN", "en", "ru-RU", "fa-IR"} {
 		var out bytes.Buffer
 		if err := Run([]string{"checks", "--lang", lang}, bytes.NewBuffer(nil), &out, &out, BuildInfo{Version: "test"}); err != nil {
 			t.Fatal(err)
