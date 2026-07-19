@@ -29,6 +29,16 @@ func TestValidateReportAcceptsCompleteContract(t *testing.T) {
 	}
 }
 
+func TestValidateReportAcceptsEverySupportedLocale(t *testing.T) {
+	for _, locale := range []string{"zh-CN", "en", "ru-RU", "fa-IR"} {
+		r := validContractReport()
+		r.Locale = locale
+		if failures := ValidateReport(r); len(failures) != 0 {
+			t.Fatalf("%s: failures=%v", locale, failures)
+		}
+	}
+}
+
 func TestValidateReportFindsSemanticCorruption(t *testing.T) {
 	r := validContractReport()
 	r.Findings[0].ReasonCode = "wrong.reason"

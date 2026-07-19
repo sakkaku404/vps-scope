@@ -7,7 +7,9 @@ VPS Scope is a security and runtime auditor for Ubuntu and Debian VPS hosts used
 [![Release](https://img.shields.io/github/v/release/sakkaku404/vps-scope)](https://github.com/sakkaku404/vps-scope/releases)
 [![License](https://img.shields.io/github/license/sakkaku404/vps-scope)](../LICENSE)
 
-[中文](../README.md) · [Proxy compatibility](PROXY-COMPATIBILITY.md) · [Compatibility matrix](COMPATIBILITY-MATRIX.md) · [Privacy](PRIVACY.md) · [Checks](CHECKS.md) · [Design notes](DESIGN.md) · [Testing](TESTING.md)
+[简体中文](../README.md) · **English** · [Русский](README.ru.md) · [فارسی](README.fa.md)
+
+[Proxy compatibility](PROXY-COMPATIBILITY.md) · [Compatibility matrix](COMPATIBILITY-MATRIX.md) · [Privacy](PRIVACY.md) · [Checks](CHECKS.md) · [Design notes](DESIGN.md) · [Testing](TESTING.md)
 
 ## Why VPS Scope exists
 
@@ -62,6 +64,8 @@ Run one audit without installing anything:
 curl -fsSL https://sakkaku404.github.io/vps-scope/run.sh | sudo bash
 ```
 
+The prompt supports Simplified Chinese, English, Russian, and Persian. For non-interactive use, pass `--lang zh-CN`, `--lang en`, `--lang ru-RU`, or `--lang fa-IR`.
+
 That one command downloads the current release, verifies its SHA-256, runs the audit, and removes the temporary binary. There is no second command.
 
 To install `vps-scope` for repeated use:
@@ -97,11 +101,13 @@ go build -trimpath -o vps-scope ./cmd/vps-scope
 sudo ./vps-scope
 ```
 
-Running it without arguments opens a short setup prompt with Chinese and English output. It can also run non-interactively:
+Running it without arguments opens a short setup prompt with Chinese, English, Russian, and Persian output. It can also run non-interactively:
 
 ```bash
 sudo ./vps-scope audit --lang en --profile general
 sudo ./vps-scope audit --lang en --profile proxy
+sudo ./vps-scope audit --lang ru-RU --profile proxy
+sudo ./vps-scope audit --lang fa-IR --profile proxy
 sudo ./vps-scope audit --profile custom --expect-public 22/tcp,443/tcp
 sudo ./vps-scope audit --profile proxy --external-domain panel.example.com --expect-cdn
 ```
@@ -181,7 +187,7 @@ vps-scope baseline create report.json baseline.json
 vps-scope baseline check baseline.json report-new.json
 ```
 
-Checks keep the same IDs in Chinese and English, so reports remain comparable regardless of display language.
+Checks keep the same IDs in every language, so reports remain comparable regardless of display language.
 
 ## Other commands
 

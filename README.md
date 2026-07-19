@@ -2,260 +2,251 @@
 
 > 面向自建代理、隧道和隐私网络 VPS 的安全与运行状态审计工具。
 
-VPS Scope 运行在 Ubuntu 或 Debian VPS 上。它把代理配置、实际监听、进程归属、Docker 网络、反向代理和主机防火墙放在一起看，尽量回答一个比“这个端口开着吗”更有用的问题：
+VPS Scope 是一款运行在 Ubuntu 和 Debian 上的 VPS 审计工具。它会先完成一套完整的主机检查：账户与 SSH、sudo、防火墙、入侵防护、系统更新、软件包、systemd 服务、Docker、TLS 证书、日志、资源可靠性和可疑持久化。即使服务器没有运行代理服务，这些结果也可以用来了解它当前的安全与运行状态。
 
-**这个端口是谁开的、用来做什么、是否按预期工作，以及是否把不该公开的管理面暴露到了公网。**
+在这套通用审计之上，VPS Scope 进一步面向自建代理、隧道和隐私网络服务器。通用 VPS 审计主要关心谁能登录、哪些服务正在运行、端口是否开放，以及系统有没有明显的配置风险；这些检查仍然是必要的基础。但在代理服务器上，还需要知道一个公网端口究竟是正常的节点入口，还是不该暴露给整个互联网的管理面板、订阅端点或内部 API。
+
+因此，VPS Scope 会把 Linux 主机状态与代理工作负载放在同一份证据链中：面板数据库和代理配置说明“本来应该怎样”，systemd、Docker、进程与实际监听说明“现在正在怎样运行”，主机防火墙和反向代理则说明“外部可能怎样访问它”。报告最后尽量给出几个直接的答案：
+
+- SSH、账户、防火墙、更新和系统服务是否存在明确风险；
+- Reality、Hysteria2、Shadowsocks 等节点入口是否实际监听，并被防火墙正确处理；
+- S-UI、3x-ui 等管理面板是否意外向整个公网开放；
+- 配置、面板数据库、运行进程和监听关系是否一致；
+- 核心服务、TLS 证书、日志和系统资源是否存在影响持续运行的问题。
+
+它不是只识别代理软件名称，也不是把通用 Linux 审计简单附在端口扫描后面。对于普通 VPS，报告会保留完整的主机安全基线；对于代理 VPS，则会额外解释节点入口、管理面、订阅、控制 API、Docker 和反向代理之间的用途关系。
 
 ```bash
 curl -fsSL https://sakkaku404.github.io/vps-scope/run.sh | sudo bash
 ```
 
-上面这条命令会下载当前 Release、核对 SHA-256、运行审计并删除临时程序。VPS Scope 没有修复功能，只负责把情况和证据讲清楚。
+运行后可以选择简体中文、English、Русский 或 فارسی。非交互运行可使用 `--lang zh-CN`、`--lang en`、`--lang ru-RU` 或 `--lang fa-IR`。
+
+默认会在终端显示结论，并在 VPS 上保存完整报告。VPS Scope 没有修复功能，不会更改 SSH、防火墙、服务、账户或软件包。
 
 [![CI](https://github.com/sakkaku404/vps-scope/actions/workflows/ci.yml/badge.svg)](https://github.com/sakkaku404/vps-scope/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/sakkaku404/vps-scope/actions/workflows/codeql.yml/badge.svg)](https://github.com/sakkaku404/vps-scope/actions/workflows/codeql.yml)
 [![Release](https://img.shields.io/github/v/release/sakkaku404/vps-scope)](https://github.com/sakkaku404/vps-scope/releases)
 [![License](https://img.shields.io/github/license/sakkaku404/vps-scope)](LICENSE)
 
-[English](docs/README.en.md) · [代理兼容性](docs/PROXY-COMPATIBILITY.md) · [兼容矩阵](docs/COMPATIBILITY-MATRIX.md) · [检查项目](docs/CHECKS.md) · [隐私说明](docs/PRIVACY.md) · [设计说明](docs/DESIGN.md) · [测试说明](docs/TESTING.md)
+[简体中文](README.md) · [English](docs/README.en.md) · [Русский](docs/README.ru.md) · [فارسی](docs/README.fa.md)
 
-## 它和普通端口扫描有什么不同
+[代理兼容性](docs/PROXY-COMPATIBILITY.md) · [检查项目](docs/CHECKS.md) · [隐私说明](docs/PRIVACY.md)
 
-普通检查可能只会告诉你：
+## 一个真实例子
 
-```text
-2095/tcp 正在公网监听
-```
-
-VPS Scope 会尽量把它还原成能行动的判断：
+下面来自一台运行 S-UI 1.5.3 和 sing-box 的测试 VPS，地址和无关信息已经省略：
 
 ```text
-2095/tcp  公网监听
-进程：x-ui
-用途：管理面板
-防火墙：允许任意来源
-判断：代理入口可以公开；管理面不应默认向整个互联网开放
-状态：RISK/HIGH
+代理 VPS 结论
+────────────────────────────────────────────────────────────────────
+识别到: S-UI, sing-box
+节点入口       PASS
+  已确认 4 个代理入口；配置、实际监听和主机防火墙关系一致。
+管理面         RISK/HIGH
+  S-UI 56709/tcp · 公网通配 · 防火墙允许 · TLS启用 · 非默认路径
+  判断：管理面仍可由整个公网访问
+配置与运行     PASS
+  配置自检和面板运行态关系未发现异常。
+
+代理入口:
+  443/tcp    sing-box/vless (reality)       公网通配 · 防火墙允许 · PASS
+  443/udp    sing-box/hysteria2             公网通配 · 防火墙允许 · PASS
+  32003/tcp  sing-box/shadowsocks           公网通配 · 防火墙允许 · PASS
+  32003/udp  sing-box/shadowsocks           公网通配 · 防火墙允许 · PASS
 ```
 
-反过来，公网监听不必然是风险：
+同一个面板和核心进程可以打开多个公网端口。普通 VPS 体检容易把它们全部当作“开放端口”，或者全部当作“代理服务”。VPS Scope 会结合面板数据库、代理配置、实际监听进程和防火墙，只挑出真正不该向整个公网开放的管理面。
+
+这就是它与通用 VPS 审计的主要区别：保留必要的 SSH、账户、更新和持久化检查，同时进一步理解代理服务器上每个入口的用途。
+
+## 检查完会得到什么
+
+一次审计只产生一组结果，但会保存成四种格式：
 
 ```text
-443/tcp   公网监听
-进程：sing-box
-用途：Reality 入站
-防火墙：允许任意来源
-判断：符合 proxy 配置档案，属于预期代理入口
-状态：PASS
+report.zh-CN.html   推荐，下载到电脑后用浏览器打开
+report.zh-CN.txt    终端文字版
+report.zh-CN.md     完整 Markdown 报告
+report.json         完整机器可读数据，用于对比和基线
+manifest.json       上面四份报告的 SHA-256 校验清单
 ```
 
-这也是 VPS Scope 的核心：不靠端口或服务数量的阈值给服务器打分，而是尽量将**配置、运行状态和网络暴露关系**对应起来。
+也就是说，目录里共有 **4 份相同检测结果的不同格式，加 1 份校验清单**，不是进行了四次检测。
 
-## 它实际解决哪些代理服务器问题
+运行结束时，程序会显示五个文件的完整路径，并给出一条 `scp` 下载命令。HTML 文件保存在远程 VPS 上，无法在普通 SSH 终端里像网页链接一样直接打开；请把它下载到自己的电脑，再双击查看：
 
-VPS Scope 不只是列出“检测到 S-UI、sing-box、Reality”。这些名称只有在能解释运行关系时才有价值。当前检查会继续追问：
+```bash
+scp root@你的VPS地址:'/root/vps-scope-reports/latest/report.zh-CN.html' .
+```
 
-- S-UI 或 3x-ui 管理面是直接监听公网，还是只监听回环后经 Nginx、Caddy、HAProxy 暴露；根/默认路径和未启用 TLS 会写进判断，但随机路径不会被当作安全边界
-- 面板管理、订阅和代理入站是否错误共用端口；面板里已经禁用的入口是否仍在监听；是否出现面板或核心拥有、却无法由数据库和生成配置解释的公网端口
-- Reality、Hysteria2、TUIC、Trojan、Shadowsocks 等配置入口，是否由正确进程按 TCP/UDP 实际监听，并被 IPv4/IPv6 主机防火墙正确放行或阻断
-- Clash/V2Ray API、面板 API 和订阅相关异常是否暴露；日志只输出分类计数，不复制地址、Token 或原始请求
-- Docker Compose 中哪个服务承载面板或核心，是否使用 privileged、host namespace、危险 capabilities 或 Docker socket；官方 host-network 部署会保留上下文，不会掩盖同机的危险容器
-- 当前每个 TCP 代理入口有多少已建立连接，供多次报告和基线比较；不会因为某个通用数量阈值就武断判定攻击
+如果已经安装 VPS Scope，也可以随时查询：
 
-因此，“识别协议”不是最终功能。真正的结果是把面板数据库或配置、systemd/Docker、实际监听、反向代理和主机防火墙连接成一条可以复核的证据链。证据不足时仍然是 `UNKNOWN`，不会因为识别到产品名就显示 `PASS`。
+```bash
+sudo vps-scope report show  # 在终端重新显示最近结果
+sudo vps-scope report path  # 显示最近报告目录
+sudo vps-scope report list  # 列出历史报告
+```
 
-## 为什么做 VPS Scope
+HTML 报告会先回答“节点入口、管理面、配置与运行、服务可用性、Linux 安全底座”五个问题，然后才展示处理建议和技术明细。页面支持搜索、按状态筛选和展开全部证据，不加载外部脚本或字体。
 
-VPS Scope 起于我对 [vernu/vps-audit](https://github.com/vernu/vps-audit) 的一次实际复核。它让我意识到，VPS 自查应该尽量依据真正生效的状态，而不是只读取某一份配置文件，或根据端口和服务数量判断风险。
+## VPS Scope 重点检查什么
 
-但代理服务器有自己的问题。一个公网端口可能是预期的 Reality、Hysteria2 或 Shadowsocks 入口；也可能是暴露给整个互联网的面板、订阅接口或内部 API。只统计端口，无法区分这两种情况。
+### 节点入口和管理面
 
-所以 VPS Scope 选择了另一个重点：面向自建代理、隧道和隐私网络 VPS，尝试把配置、实际监听、进程、反向代理、容器网络和主机防火墙关联起来，再给出可复核的判断。
+- 区分代理入口、面板、订阅端点和控制 API
+- 将协议配置、TCP/UDP 监听、进程归属和 IPv4/IPv6 防火墙关联起来
+- 找出已配置但未监听、被防火墙阻断、进程不匹配或禁用后仍在监听的入口
+- 判断面板是直接监听公网、只监听回环，还是通过 Nginx、Caddy、HAProxy 暴露
+- 检查根/默认路径和 TLS 状态，但不会把随机路径当成访问控制
 
-VPS Scope 不是 vps-audit 的分支，代码与检测实现均为独立实现。检查失败显示 `UNKNOWN`，不会冒充 `PASS`；公网、私网、回环和 Docker 发布端口也会分开解释。
+### 配置和运行状态
 
-感谢 OpenAI Codex 编写了绝大多数 Go——它目前写过的 Go 比维护者本人多得多，维护者目前正在努力看懂它。
+- 执行 sing-box、Xray 的原生只读配置校验
+- 对照 S-UI、3x-ui/x-ui 数据库、生成配置与实际监听
+- 检查 Reality、Hysteria2、TUIC、Trojan、Shadowsocks、WireGuard 和 OpenVPN 的关键运行关系
+- 分类统计认证、握手、DNS、TLS、路由和面板登录错误，不复制原始日志和用户数据
+- 检查证书有效期、续期计划、近期执行结果和 reload 链路
 
-## 它重点审计什么
+### Docker 和系统底座
 
-### 代理入口与管理面
+- 检查 privileged、host network、危险 capabilities、Docker socket 和发布端口
+- 关联 INPUT、FORWARD、DOCKER-USER 与容器实际暴露
+- 检查 SSH、账户、sudo、Fail2ban/CrowdSec、更新和 systemd 服务
+- 检查 OOM、core dump、磁盘、inode、日志持久性和可疑启动项
+- 查找额外 UID 0、异常 SSH key、临时目录程序和已删除但仍在运行的程序
 
-- sing-box、Xray、Hysteria2、TUIC、Trojan、Shadowsocks、WireGuard、OpenVPN 的配置、进程和入口
-- S-UI、3x-ui/x-ui、Hiddify、Marzban、Outline 的面板、订阅、控制 API 与代理入口关系
-- Clash API、V2Ray API 等控制接口是否监听公网、是否受到主机防火墙限制
-- Nginx、Caddy、HAProxy 的公网前端到面板或代理核心的反向代理链
-- 公开反代管理路由、监听过宽的后端，以及面板停止后遗留的开放端口
+## 支持程度
 
-### 配置、运行态与防火墙
+“能识别”不等于“所有版本和部署方式都完全支持”。当前适配分为三层：
 
-- 将配置入口、TCP/UDP 传输、实际监听进程、监听地址和防火墙规则关联起来
-- 区分公网、私网、回环、IPv4、IPv6 和 Docker 发布端口
-- 合并 UFW 与实际 nftables INPUT 路径，避免只看 UFW 状态造成误判
-- 检查面板数据库、生成配置和实际监听之间是否一致；动态入站不会重复计数
-- 对 Reality 仅检查关键语义是否齐全，不导出私钥、SNI、target 或 short ID
+### 验证最充分
 
-### 权限、隔离与敏感材料
+- S-UI
+- 3x-ui / x-ui
+- sing-box
+- Xray-core
 
-- 面板数据库、代理配置、WireGuard/Reality 等敏感材料相关文件的权限
-- 代理 systemd 服务的运行用户、capabilities、隔离选项和文件描述符限制
-- Docker 的 privileged、host network、Docker socket 挂载和端口发布情况，并关联 INPUT、FORWARD 与 DOCKER-USER 实际链路
-- 已删除但仍在运行的代理核心或临时目录程序
+这些组件已经用真实 VPS、面板数据库、配置、监听、防火墙和协议入口做过组合测试。
 
-### 可用性、异常与系统底座
+### 已有专项适配
 
-- sing-box 与 Xray 的原生只读配置自检
-- TLS 证书有效期，以及续期计划、近期成功/失败和部署后 reload 是否形成闭环；另检查 OOM、core dump、磁盘、inode 与日志持久性
-- Hysteria2、TUIC 等 UDP 场景的缓冲区和错误计数上下文
-- SSH、账户、sudo、Fail2ban/CrowdSec、更新、服务失败与可疑持久化线索
-- 认证、握手、DNS、TLS、路由和致命错误的日志分类计数；不导出原始日志内容
+- Hiddify
+- Marzban
+- Outline
+- WireGuard
+- OpenVPN
+- Hysteria2、TUIC、Trojan、Shadowsocks
 
-“识别到了软件”和“可以可靠判断它的管理面”是两回事。遇到未知面板结构、容器网络或无法验证的反代链时，VPS Scope 会保留 `UNKNOWN`。已在真实环境验证过的范围见[代理兼容性](docs/PROXY-COMPATIBILITY.md)。
+### 部署关系识别
+
+- Docker 与 Docker Compose
+- Nginx
+- Caddy
+- HAProxy
+
+具体版本、部署方式和已经验证的语义见[代理兼容性](docs/PROXY-COMPATIBILITY.md)和[兼容矩阵](docs/COMPATIBILITY-MATRIX.md)。遇到未知数据库结构、动态反代目标或无法完整读取的证据时，结果会显示 `UNKNOWN`，不会假装已经确认安全。
 
 ## 如何理解结果
 
-报告没有安全分数，只有四种结果：
+报告不提供一个看似精确但无法解释的安全分数，只使用四种状态：
 
-- `PASS`：检查完成，当前证据符合预期
-- `RISK`：当前证据表明这项需要处理或复核
-- `INFO`：有用的状态或清单，本身不代表问题
-- `UNKNOWN`：缺少权限、命令或可靠证据，暂时无法判断
+- `PASS`：证据支持当前判断，不代表服务器永远安全
+- `RISK`：已经发现需要处理或人工复核的问题
+- `INFO`：状态、清单或上下文，通常不需要单独处理
+- `UNKNOWN`：证据不足或读取失败，不能当作 `PASS`
 
-终端、Markdown 和 HTML 报告会先给出行动摘要，按“优先处理、可能影响可用性、例行维护、证据不足”整理；这只是阅读辅助，不会改变原始检查结论。JSON 始终保留完整、机器可读的证据。
+阅读时先看：
 
-VPS Scope 可以帮助你更快地审计服务器，但不能证明服务器一定没有被入侵，也不能从 VPS 内部读取云厂商安全组，更不能替代从外部网络进行的连通性测试。
+1. **代理 VPS 结论**：节点入口和管理面是否正常
+2. **现在优先处理**：最值得马上处理的问题
+3. **可能影响可用性**：入口、防火墙、证书或服务恢复问题
+4. **证据不足**：工具无法可靠判断的部分
 
-## 快速开始
+最后的“检查结果索引”只是 51 项检查的状态目录。完整证据在 HTML、Markdown 和 JSON 中。
 
-### 临时运行
+## 安装和常用命令
 
-只检查一次，不安装任何东西：
-
-```bash
-curl -fsSL https://sakkaku404.github.io/vps-scope/run.sh | sudo bash
-```
-
-### 安装后重复使用
+如果需要定期检查，可以安装：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sakkaku404/vps-scope/main/install.sh | sudo bash
 sudo vps-scope
 ```
 
-安装脚本会识别 amd64 或 arm64，并在安装前核对 Release 文件的 SHA-256。若系统已有 `cosign`，还会自动验证 GitHub Actions 的无密钥签名；显式指定版本时，签名身份会精确绑定到该标签。可设置 `VPS_SCOPE_REQUIRE_SIGNATURE=1` 强制要求签名验证。Release 同时提供项目许可证和由实际二进制依赖生成的第三方许可证清单。完整原理、手动验证命令与边界见[发布产物校验](docs/SUPPLY-CHAIN.md)。
-
-如果不想使用 `curl | bash`，可以先下载脚本阅读，或使用下面的手动方式。
-
-### 手动下载
-
-从 [Releases](https://github.com/sakkaku404/vps-scope/releases) 下载对应架构的二进制。amd64 示例：
-
-```bash
-curl -LO https://github.com/sakkaku404/vps-scope/releases/latest/download/vps-scope_linux_amd64
-curl -LO https://github.com/sakkaku404/vps-scope/releases/latest/download/SHA256SUMS
-grep 'vps-scope_linux_amd64$' SHA256SUMS | sha256sum -c -
-chmod +x vps-scope_linux_amd64
-sudo ./vps-scope_linux_amd64
-```
-
-arm64 服务器把文件名改成 `vps-scope_linux_arm64`。
-
-## 常用用法
-
-不带参数会进入简短引导，可选择中文或英文；也可以直接运行：
+不带参数会进入中文/英文引导。也可以直接指定：
 
 ```bash
 sudo vps-scope audit --lang zh-CN --profile proxy
 sudo vps-scope audit --profile custom --expect-public 22/tcp,443/tcp
-sudo vps-scope audit --profile proxy --external-domain panel.example.com --expect-cdn
 sudo vps-scope audit --deep
 ```
 
-内置 profile 包括 `general`、`web`、`proxy`、`docker` 和 `mixed`。`--expect-public` 用于声明你明确需要公开的端口；它只影响暴露是否符合用途预期，不会跳过其他检查。
-
-外部 DNS/TLS 观察默认关闭。只有显式传入 `--external-domain` 时才会访问网络；`--expect-cdn` 用于声明这些域名预期位于 CDN 后。它能比较 DNS 地址、本机全局地址和 443 TLS，但历史 DNS、云防火墙和真实异地可达性仍需要另一台主机复核。
-
-默认检查适合日常运行，不会递归扫描整块磁盘。`--deep` 会额外核对 SUID/SGID、文件 capabilities 和系统包完整性；未运行的深度项目会明确显示为未执行，而不是 `PASS`。
-
-## 报告、比较与基线
-
-交互模式会在终端显示结果，并保存完整报告到：
-
-```text
-~/vps-scope-reports/主机名/时间/
-```
-
-`~/vps-scope-reports/latest` 始终指向最近一次报告。每次运行使用独立目录，不会覆盖已有报告。
+交互模式和网页上的临时运行命令默认都会显示终端摘要并保存完整报告。手动指定位置：
 
 ```bash
-sudo vps-scope report show  # 再次显示最近一次报告
-sudo vps-scope report list  # 列出历史报告
-sudo vps-scope report path  # 显示最近报告目录
+sudo vps-scope audit --lang zh-CN --profile proxy \
+  --format bundle --also-terminal --output ./reports/my-vps
 ```
 
-也可以写到明确位置：
+已有 JSON 可以离线重新生成报告，不需要再次连接服务器：
 
 ```bash
-sudo vps-scope audit --format bundle --output ./reports/sgp
-```
-
-完整报告包包含 JSON、文本、Markdown、HTML 和 SHA-256 清单。HTML 是不加载外部脚本或字体的离线单文件页面，支持筛选和搜索。已有 JSON 不必重新连接服务器，也可以重新渲染为其他语言或格式：
-
-```bash
-vps-scope render --lang zh-CN --format html --output report.zh-CN.html report.json
-vps-scope render --lang en --format markdown --output report.en.md report.json
-```
-
-报告可以单独校验，完整报告包还会同时检查清单、文件数量、未声明文件和 SHA-256。对于当前版本的报告，校验器也会确认 51 个稳定检查 ID、状态、严重度、摘要和 `reason_code` 彼此一致：
-
-```bash
+vps-scope render --lang zh-CN --format html --output report.html report.json
 vps-scope verify report.json
-vps-scope verify ./reports/sgp
+vps-scope verify ./reports/my-vps
 ```
 
-哈希一致只能说明文件与清单一致；语义校验可以进一步发现“报告没有被篡改，但生成时已经缺项或内部矛盾”的情况。
+对比同一台服务器的两次结果：
 
-准备公开报告前，可以生成脱敏版：
+```bash
+vps-scope diff old.json new.json
+vps-scope baseline create report.json baseline.json
+vps-scope baseline check baseline.json report-new.json
+```
+
+公开报告前先生成脱敏版：
 
 ```bash
 vps-scope redact --format markdown --output public.md report.json
 ```
 
-如果要提交面板兼容性问题，建议生成更严格的支持包：
+报告仍可能包含敏感的部署关系，分享前请自行检查。完整规则见[隐私说明](docs/PRIVACY.md)。
 
-```bash
-vps-scope support report.json
-```
+## 支持范围和限制
 
-它只包含已脱敏报告、系统与面板 schema/能力摘要、隐私说明和 SHA-256 清单，不会读取或打包原始数据库、配置、私钥、令牌或 UUID。分享前仍应检查目录内的每个文件。
+当前支持：
 
-同一地址或用户名会保留同一个代号，方便看懂关系。密码、token、私钥、订阅路径、SSH key 注释和完整进程参数不会写进报告；可能同时装有证书和私钥的应用数据也不会为了检查而导出。完整边界见[隐私说明](docs/PRIVACY.md)。
+- Ubuntu、Debian
+- Linux `amd64`、`arm64`
+- 使用 systemd 的常见原生或 Docker 部署
 
-对比同一服务器的两次检查，或集中查看多台服务器：
+VPS Scope 能检查 VPS 内部看到的配置和运行状态，但不能：
 
-```bash
-vps-scope diff old.json new.json  # 优先显示安全回归与改善，而非原始 JSON 噪声
-vps-scope diff --all old.json new.json  # 需要时再显示同状态下的原始证据变化
-vps-scope fleet west.json sgp.json tw.json japan.json
-```
+- 证明服务器一定没有被入侵
+- 从 VPS 内部读取云厂商安全组
+- 代替真实客户端连接和异地网络测试
+- 保证尚未适配的新面板 schema 一定能被正确理解
 
-长期运行的服务器可以建立基线，观察新增或消失的公网监听、SSH key、防火墙规则、面板/代理入口、容器和代理服务：
+默认检查适合日常运行。`--deep` 会额外检查 SUID/SGID、文件 capabilities 和系统包完整性，耗时更长。未运行的深度项目会显示为未执行，不会显示 `PASS`。
 
-```bash
-vps-scope baseline create report.json baseline.json
-vps-scope baseline check baseline.json report-new.json
-```
+## 下载与安全验证
 
-## 支持范围与边界
+临时运行和安装脚本都会下载 GitHub Release 并核对 SHA-256。如果系统已有 `cosign`，还会验证 GitHub Actions 的无密钥签名。
 
-当前支持 Ubuntu、Debian，以及 Linux `amd64`、`arm64`。部分检查会使用 `ss`、`journalctl`、`ufw`、`firewall-cmd`、`nft`、`iptables`、`fail2ban-client`、`cscli`、`dpkg`、`docker` 或 `coredumpctl`；缺少某个命令只会影响对应检查，并会明确显示出来。
+不想使用 `curl | bash` 时，可以从 [Releases](https://github.com/sakkaku404/vps-scope/releases) 手动下载二进制和 `SHA256SUMS`。签名、provenance 和第三方许可证说明见[供应链文档](docs/SUPPLY-CHAIN.md)。
 
-工具优先读取实际生效状态。例如 SSH 使用 `sshd -T`，不会只搜索一遍配置文件；`127.0.0.1:3001` 这类回环服务也不会被算成公网端口。
+## 为什么做 VPS Scope
 
-1.x 对 JSON schema、检查 ID、原因码、公开命令和旧报告的承诺见[稳定性与兼容策略](docs/STABILITY.md)。人类可读报告可以继续改进排版，自动化应使用规范 JSON。
+VPS Scope 起于我对 [vernu/vps-audit](https://github.com/vernu/vps-audit) 的一次实际复核。那份脚本让 VPS 自查变得很容易，也让我意识到：只读取某一份配置文件、按端口或服务数量设阈值，或者把取证失败当成安全，都会产生误报和漏报。
 
-## 开发与参与
+后来项目的重点逐渐转向代理服务器。一个公网端口可能是正常的 Reality 或 Hysteria2 入口，也可能是暴露给整个互联网的面板、订阅接口或内部 API。通用 Linux 基线仍然必要，但它不足以解释这些用途关系。
 
-从源码构建只需要 Go 工具链；Go module 依赖会按 `go.mod` / `go.sum` 下载，发布二进制不需要目标 VPS 另装运行库：
+VPS Scope 不是 vps-audit 的分支，代码与检测实现均为独立实现。
+
+感谢 OpenAI Codex 编写了绝大多数 Go——它目前写过的 Go 比维护者本人多得多，维护者目前正在努力看懂它。
+
+## 开发和参与
 
 ```bash
 go build -trimpath -o vps-scope ./cmd/vps-scope
@@ -263,7 +254,7 @@ go test ./...
 go vet ./...
 ```
 
-欢迎提交问题、代码和可复现的 Ubuntu/Debian 测试样本。公开 issue 不要附上未经脱敏的服务器报告；如果发现 VPS Scope 本身的安全问题，请使用 GitHub 私密漏洞报告，具体方式见 [SECURITY.md](SECURITY.md)。
+欢迎提交可复现的 Ubuntu、Debian 和代理部署样本。公开 issue 不要附上未经脱敏的服务器报告；安全问题请使用 GitHub 私密漏洞报告，详见 [SECURITY.md](SECURITY.md)。
 
 ## 许可证
 

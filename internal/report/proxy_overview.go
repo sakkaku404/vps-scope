@@ -26,7 +26,7 @@ func (o proxyOverview) HasContent() bool {
 // collectProxyOverview promotes non-secret relationship evidence already
 // collected by the proxy checks. It is intentionally an inventory: findings
 // remain the source of truth for status and severity in every renderer.
-func collectProxyOverview(r model.Report, zh bool) proxyOverview {
+func collectProxyOverview(r model.Report, locale string) proxyOverview {
 	panels, panelOK := findingByID(r, "WORK-002")
 	inventory, inventoryOK := findingByID(r, "WORK-003")
 	relations, relationsOK := findingByID(r, "WORK-009")
@@ -40,22 +40,22 @@ func collectProxyOverview(r model.Report, zh bool) proxyOverview {
 	}
 
 	components := setFromCSV(inventory.Facts["products"])
-	panelLines := panelOverviewLines(panels, zh)
-	endpointLines := endpointOverviewLines(relations, zh)
-	controlLines := controlOverviewLines(controls, zh)
-	runtimeLines := runtimeOverviewLines(runtime, zh)
-	activityLines := activityOverviewLines(activity, zh)
-	deploymentLines := deploymentOverviewLines(reverseProxy, docker, zh)
+	panelLines := panelOverviewLines(panels, locale)
+	endpointLines := endpointOverviewLines(relations, locale)
+	controlLines := controlOverviewLines(controls, locale)
+	runtimeLines := runtimeOverviewLines(runtime, locale)
+	activityLines := activityOverviewLines(activity, locale)
+	deploymentLines := deploymentOverviewLines(reverseProxy, docker, locale)
 	if len(components) == 0 && len(panelLines) == 0 && len(endpointLines) == 0 && len(controlLines) == 0 && len(runtimeLines) == 0 && len(activityLines) == 0 && len(deploymentLines) == 0 {
 		return proxyOverview{}
 	}
 	groups := []proxyOverviewGroup{
-		{Title: choose(zh, "管理面板", "Management panels"), Lines: panelLines},
-		{Title: choose(zh, "代理入口", "Proxy ingress"), Lines: endpointLines},
-		{Title: choose(zh, "控制接口", "Control APIs"), Lines: controlLines},
-		{Title: choose(zh, "运行态异常", "Runtime mismatches"), Lines: runtimeLines},
-		{Title: choose(zh, "运行与攻击日志信号", "Operational and attack log signals"), Lines: activityLines},
-		{Title: choose(zh, "部署关系", "Deployment relationships"), Lines: deploymentLines},
+		{Title: choose(locale, "管理面板", "Management panels"), Lines: panelLines},
+		{Title: choose(locale, "代理入口", "Proxy ingress"), Lines: endpointLines},
+		{Title: choose(locale, "控制接口", "Control APIs"), Lines: controlLines},
+		{Title: choose(locale, "运行态异常", "Runtime mismatches"), Lines: runtimeLines},
+		{Title: choose(locale, "运行与攻击日志信号", "Operational and attack log signals"), Lines: activityLines},
+		{Title: choose(locale, "部署关系", "Deployment relationships"), Lines: deploymentLines},
 	}
 	filtered := make([]proxyOverviewGroup, 0, len(groups))
 	for _, group := range groups {
@@ -68,16 +68,16 @@ func collectProxyOverview(r model.Report, zh bool) proxyOverview {
 
 // writeProxyOverviewText renders the relationship inventory before the full
 // check list, so a terminal user can understand the proxy layout at a glance.
-func writeProxyOverviewText(w io.Writer, r model.Report, zh bool, line string) {
-	overview := collectProxyOverview(r, zh)
+func writeProxyOverviewText(w io.Writer, r model.Report, locale string, line string) {
+	overview := collectProxyOverview(r, locale)
 	if !overview.HasContent() {
 		return
 	}
 
-	fmt.Fprintln(w, choose(zh, "代理工作负载概览", "Proxy workload overview"))
+	fmt.Fprintln(w, choose(locale, "代理部署明细", "Proxy deployment details"))
 	fmt.Fprintln(w, line)
 	if len(overview.Components) > 0 {
-		fmt.Fprintf(w, "%s: %s\n", choose(zh, "已识别组件", "Detected components"), strings.Join(overview.Components, ", "))
+		fmt.Fprintf(w, "%s: %s\n", choose(locale, "已识别组件", "Detected components"), strings.Join(overview.Components, ", "))
 	}
 	for _, group := range overview.Groups {
 		writeOverviewGroup(w, group.Title, group.Lines)
@@ -85,14 +85,14 @@ func writeProxyOverviewText(w io.Writer, r model.Report, zh bool, line string) {
 	fmt.Fprintln(w)
 }
 
-func writeProxyOverviewMarkdown(w io.Writer, r model.Report, zh bool) {
-	overview := collectProxyOverview(r, zh)
+func writeProxyOverviewMarkdown(w io.Writer, r model.Report, locale string) {
+	overview := collectProxyOverview(r, locale)
 	if !overview.HasContent() {
 		return
 	}
-	fmt.Fprintf(w, "## %s\n\n", choose(zh, "代理工作负载概览", "Proxy workload overview"))
+	fmt.Fprintf(w, "## %s\n\n", choose(locale, "代理部署明细", "Proxy deployment details"))
 	if len(overview.Components) > 0 {
-		fmt.Fprintf(w, "- **%s:** %s\n", choose(zh, "已识别组件", "Detected components"), escapeMD(strings.Join(overview.Components, ", ")))
+		fmt.Fprintf(w, "- **%s:** %s\n", choose(locale, "已识别组件", "Detected components"), escapeMD(strings.Join(overview.Components, ", ")))
 	}
 	for _, group := range overview.Groups {
 		fmt.Fprintf(w, "\n### %s\n\n", escapeMD(group.Title))
@@ -103,7 +103,7 @@ func writeProxyOverviewMarkdown(w io.Writer, r model.Report, zh bool) {
 	fmt.Fprintln(w)
 }
 
-func runtimeOverviewLines(f model.Finding, zh bool) []string {
+func runtimeOverviewLines(f model.Finding, locale string) []string {
 	if f.ID == "" || f.NotApplicable {
 		return nil
 	}
@@ -111,17 +111,17 @@ func runtimeOverviewLines(f model.Finding, zh bool) []string {
 	for _, item := range f.Evidence {
 		switch item.Key {
 		case "disabled_inbound_still_listening":
-			out = append(out, choose(zh, "面板已禁用但仍在监听：", "Disabled in panel but still listening: ")+item.Value+" "+findingLabel(f))
+			out = append(out, choose(locale, "面板已禁用但仍在监听：", "Disabled in panel but still listening: ")+item.Value+" "+findingLabel(f))
 		case "unclassified_panel_listener":
 			if strings.Contains(item.Value, "scope=public") {
-				out = append(out, choose(zh, "无法解释的面板/核心公网监听：", "Unexplained public panel/core listener: ")+item.Value+" "+findingLabel(f))
+				out = append(out, choose(locale, "无法解释的面板/核心公网监听：", "Unexplained public panel/core listener: ")+item.Value+" "+findingLabel(f))
 			}
 		}
 	}
-	return limitOverviewLines(out, 6, zh)
+	return limitOverviewLines(out, 6, locale)
 }
 
-func activityOverviewLines(f model.Finding, zh bool) []string {
+func activityOverviewLines(f model.Finding, locale string) []string {
 	if f.ID == "" || f.NotApplicable {
 		return nil
 	}
@@ -141,16 +141,16 @@ func activityOverviewLines(f model.Finding, zh bool) []string {
 	var parts []string
 	for _, label := range labels {
 		if value := f.Facts[label.key]; value != "" && value != "0" {
-			parts = append(parts, fmt.Sprintf("%s=%s", choose(zh, label.zh, label.en), value))
+			parts = append(parts, fmt.Sprintf("%s=%s", choose(locale, label.zh, label.en), value))
 		}
 	}
 	if len(parts) == 0 {
 		return nil
 	}
-	return []string{strings.Join(parts, choose(zh, "；", "; ")) + choose(zh, "（分类可能重叠；不导出原始日志）", " (categories may overlap; raw logs are not exported)")}
+	return []string{strings.Join(parts, choose(locale, "；", "; ")) + choose(locale, "（分类可能重叠；不导出原始日志）", " (categories may overlap; raw logs are not exported)")}
 }
 
-func deploymentOverviewLines(reverseProxy, docker model.Finding, zh bool) []string {
+func deploymentOverviewLines(reverseProxy, docker model.Finding, locale string) []string {
 	var out []string
 	for _, item := range reverseProxy.Evidence {
 		if item.Key == "reverse_proxy_route" {
@@ -175,7 +175,7 @@ func deploymentOverviewLines(reverseProxy, docker model.Finding, zh bool) []stri
 			if index := strings.Index(item.Value, " backend="); index >= 0 {
 				backendScope = relationValue(item.Value[index+1:], "scope", "judgment")
 			}
-			line := fmt.Sprintf("%s %s → %s · %s · %s · %s · %s · %s %s", frontend, proxy, backend, scopeLabel(frontScope, zh), firewallLabel(firewall, zh), scopeLabel(backendScope, zh), reverseProxyAccessLabel(access, zh), reverseProxyJudgmentLabel(judgment, zh), label)
+			line := fmt.Sprintf("%s %s → %s · %s · %s · %s · %s · %s %s", frontend, proxy, backend, scopeLabel(frontScope, locale), firewallLabel(firewall, locale), scopeLabel(backendScope, locale), reverseProxyAccessLabel(access, locale), reverseProxyJudgmentLabel(judgment, locale), label)
 			out = append(out, line)
 		}
 	}
@@ -185,9 +185,9 @@ func deploymentOverviewLines(reverseProxy, docker model.Finding, zh bool) []stri
 		}
 	}
 	if problems := docker.Facts["isolation_problems"]; problems != "" && problems != "0" {
-		out = append(out, fmt.Sprintf(choose(zh, "Docker 隔离异常=%s；详见 DOCKER-001 ", "Docker isolation problems=%s; see DOCKER-001 "), problems)+findingLabel(docker))
+		out = append(out, fmt.Sprintf(choose(locale, "Docker 隔离异常=%s；详见 DOCKER-001 ", "Docker isolation problems=%s; see DOCKER-001 "), problems)+findingLabel(docker))
 	}
-	return limitOverviewLines(out, 8, zh)
+	return limitOverviewLines(out, 8, locale)
 }
 
 func prettyEndpoint(value string) string {
@@ -197,7 +197,7 @@ func prettyEndpoint(value string) string {
 	return value
 }
 
-func reverseProxyAccessLabel(value string, zh bool) string {
+func reverseProxyAccessLabel(value string, locale string) string {
 	labels := map[string][2]string{
 		"unconditional": {"无条件路由", "unconditional route"},
 		"conditional":   {"条件路由", "conditional route"},
@@ -205,12 +205,12 @@ func reverseProxyAccessLabel(value string, zh bool) string {
 		"unknown":       {"路由条件未知", "route condition unknown"},
 	}
 	if label, ok := labels[value]; ok {
-		return choose(zh, label[0], label[1])
+		return choose(locale, label[0], label[1])
 	}
 	return value
 }
 
-func reverseProxyJudgmentLabel(value string, zh bool) string {
+func reverseProxyJudgmentLabel(value string, locale string) string {
 	labels := map[string][2]string{
 		"reverse-proxy-chain-consistent":                             {"链路一致", "chain consistent"},
 		"configured-frontend-not-listening":                          {"前端未监听", "frontend not listening"},
@@ -227,7 +227,7 @@ func reverseProxyJudgmentLabel(value string, zh bool) string {
 		"public-reverse-proxy-exposes-x-ui-management":               {"公网反代暴露 x-ui 管理面", "public reverse proxy exposes x-ui management"},
 	}
 	if label, ok := labels[value]; ok {
-		return choose(zh, label[0], label[1])
+		return choose(locale, label[0], label[1])
 	}
 	return value
 }
@@ -242,7 +242,7 @@ func writeOverviewGroup(w io.Writer, title string, lines []string) {
 	}
 }
 
-func panelOverviewLines(f model.Finding, zh bool) []string {
+func panelOverviewLines(f model.Finding, locale string) []string {
 	if f.ID == "" || f.NotApplicable {
 		return nil
 	}
@@ -281,7 +281,7 @@ func panelOverviewLines(f model.Finding, zh bool) []string {
 		if product == "" || port == "" {
 			continue
 		}
-		line := fmt.Sprintf("%s %s · %s · %s · %s · %s · %s", product, port, scopeLabel(scope, zh), firewallLabel(firewall, zh), booleanPostureLabel("tls", tls, zh), booleanPostureLabel("path", pathDefault, zh), judgmentLabel(judgment, zh))
+		line := fmt.Sprintf("%s %s · %s · %s · %s · %s · %s", product, port, scopeLabel(scope, locale), firewallLabel(firewall, locale), booleanPostureLabel("tls", tls, locale), booleanPostureLabel("path", pathDefault, locale), judgmentLabel(judgment, locale))
 		if !seen[line] {
 			seen[line] = true
 			out = append(out, line)
@@ -296,7 +296,7 @@ func panelOverviewLines(f model.Finding, zh bool) []string {
 	return out
 }
 
-func endpointOverviewLines(f model.Finding, zh bool) []string {
+func endpointOverviewLines(f model.Finding, locale string) []string {
 	if f.ID == "" || f.NotApplicable {
 		return nil
 	}
@@ -320,7 +320,7 @@ func endpointOverviewLines(f model.Finding, zh bool) []string {
 		if security != "" && security != "none-or-protocol-native" {
 			line += " (" + security + ")"
 		}
-		line += fmt.Sprintf(" · %s · %s · %s", scopeLabel(scope, zh), firewallLabel(firewall, zh), judgmentLabel(judgment, zh))
+		line += fmt.Sprintf(" · %s · %s · %s", scopeLabel(scope, locale), firewallLabel(firewall, locale), judgmentLabel(judgment, locale))
 		if !seen[line] {
 			seen[line] = true
 			out = append(out, line)
@@ -336,17 +336,17 @@ func endpointOverviewLines(f model.Finding, zh bool) []string {
 			count = strings.TrimSpace(count[:semicolon])
 		}
 		if port != "" && count != "" {
-			line := fmt.Sprintf(choose(zh, "%s 当前已建立 TCP 连接=%s（仅快照，不按数量武断判风险）", "%s current established TCP connections=%s (snapshot only; no arbitrary risk threshold)"), port, count)
+			line := fmt.Sprintf(choose(locale, "%s 当前已建立 TCP 连接=%s（仅快照，不按数量武断判风险）", "%s current established TCP connections=%s (snapshot only; no arbitrary risk threshold)"), port, count)
 			connectionLines = append(connectionLines, line)
 		}
 	}
 	sort.Strings(out)
 	sort.Strings(connectionLines)
-	out = limitOverviewLines(out, 10, zh)
-	return append(out, limitOverviewLines(connectionLines, 6, zh)...)
+	out = limitOverviewLines(out, 10, locale)
+	return append(out, limitOverviewLines(connectionLines, 6, locale)...)
 }
 
-func controlOverviewLines(f model.Finding, zh bool) []string {
+func controlOverviewLines(f model.Finding, locale string) []string {
 	if f.ID == "" || f.NotApplicable {
 		return nil
 	}
@@ -360,11 +360,11 @@ func controlOverviewLines(f model.Finding, zh bool) []string {
 		port := relationValue(evidence.Value, "port", "scope", "live")
 		scope := relationValue(evidence.Value, "scope", "live")
 		if product != "" && kind != "" && port != "" {
-			out = append(out, fmt.Sprintf("%s %s %s/tcp · %s · %s", product, kind, port, scopeLabel(scope, zh), findingLabel(f)))
+			out = append(out, fmt.Sprintf("%s %s %s/tcp · %s · %s", product, kind, port, scopeLabel(scope, locale), findingLabel(f)))
 		}
 	}
 	sort.Strings(out)
-	return limitOverviewLines(out, 6, zh)
+	return limitOverviewLines(out, 6, locale)
 }
 
 func relationValue(value, key string, following ...string) string {
@@ -399,11 +399,11 @@ func setFromCSV(value string) []string {
 	return out
 }
 
-func limitOverviewLines(lines []string, limit int, zh bool) []string {
+func limitOverviewLines(lines []string, limit int, locale string) []string {
 	if len(lines) <= limit {
 		return lines
 	}
-	return append(lines[:limit], fmt.Sprintf(choose(zh, "… 另有 %d 项，详见 WORK 证据", "… %d more; see WORK evidence"), len(lines)-limit))
+	return append(lines[:limit], fmt.Sprintf(choose(locale, "… 另有 %d 项，详见 WORK 证据", "… %d more; see WORK evidence"), len(lines)-limit))
 }
 
 func findingLabel(f model.Finding) string {
@@ -413,7 +413,7 @@ func findingLabel(f model.Finding) string {
 	return "[" + string(f.Status) + "/" + strings.ToUpper(string(f.Severity)) + "]"
 }
 
-func scopeLabel(value string, zh bool) string {
+func scopeLabel(value string, locale string) string {
 	labels := map[string][2]string{
 		"public":          {"公网", "public"},
 		"public-wildcard": {"公网通配", "public wildcard"},
@@ -423,12 +423,12 @@ func scopeLabel(value string, zh bool) string {
 		"not-live":        {"未监听", "not listening"},
 	}
 	if label, ok := labels[value]; ok {
-		return choose(zh, label[0], label[1])
+		return choose(locale, label[0], label[1])
 	}
 	return value
 }
 
-func firewallLabel(value string, zh bool) string {
+func firewallLabel(value string, locale string) string {
 	labels := map[string][2]string{
 		"allow-anywhere":          {"防火墙允许", "firewall allows"},
 		"blocked-by-default":      {"防火墙默认阻断", "firewall default-blocked"},
@@ -438,12 +438,12 @@ func firewallLabel(value string, zh bool) string {
 		"restricted":              {"防火墙受限允许", "firewall restricted"},
 	}
 	if label, ok := labels[value]; ok {
-		return choose(zh, label[0], label[1])
+		return choose(locale, label[0], label[1])
 	}
 	return value
 }
 
-func judgmentLabel(value string, zh bool) string {
+func judgmentLabel(value string, locale string) string {
 	labels := map[string][2]string{
 		"expected-proxy-ingress":                                             {"符合入口预期", "expected proxy ingress"},
 		"configured-public-ingress-blocked-by-host-firewall":                 {"被主机防火墙阻断", "blocked by host firewall"},
@@ -459,23 +459,23 @@ func judgmentLabel(value string, zh bool) string {
 		"public-path-gated-reverse-proxy-management-exposed":                 {"管理面经公网路径路由暴露；路径不是访问控制", "management exposed through a public path route; a path is not access control"},
 	}
 	if label, ok := labels[value]; ok {
-		return choose(zh, label[0], label[1])
+		return choose(locale, label[0], label[1])
 	}
 	return value
 }
 
-func booleanPostureLabel(kind, value string, zh bool) string {
+func booleanPostureLabel(kind, value string, locale string) string {
 	if value == "unknown" || value == "" {
-		return choose(zh, map[string]string{"tls": "TLS未知", "path": "路径未知"}[kind], map[string]string{"tls": "TLS unknown", "path": "path unknown"}[kind])
+		return choose(locale, map[string]string{"tls": "TLS未知", "path": "路径未知"}[kind], map[string]string{"tls": "TLS unknown", "path": "path unknown"}[kind])
 	}
 	if kind == "tls" {
 		if value == "true" {
-			return choose(zh, "TLS启用", "TLS enabled")
+			return choose(locale, "TLS启用", "TLS enabled")
 		}
-		return choose(zh, "TLS未启用", "TLS disabled")
+		return choose(locale, "TLS未启用", "TLS disabled")
 	}
 	if value == "true" {
-		return choose(zh, "根/默认路径", "root/default path")
+		return choose(locale, "根/默认路径", "root/default path")
 	}
-	return choose(zh, "非默认路径", "non-default path")
+	return choose(locale, "非默认路径", "non-default path")
 }
