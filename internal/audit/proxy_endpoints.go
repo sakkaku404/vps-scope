@@ -68,6 +68,6 @@ func endpointRelationValue(in proxyInbound, transport, process, scope, firewall,
 	return fmt.Sprintf("port=%s/%s process=%s purpose=%s/%s security=%s scope=%s firewall=%s judgment=%s", in.Port, transport, truncate(process, 120), in.Product, in.Protocol, security, scope, firewall, judgment)
 }
 
-func endpointFirewallDisposition(ufw panelUFW, port, protocol string) string {
+func endpointFirewallDisposition(ufw hostFirewallSnapshot, port, protocol string) string {
 	return firewallDisposition(ufw, port, protocol)
 }

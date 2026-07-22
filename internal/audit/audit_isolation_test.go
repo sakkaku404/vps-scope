@@ -71,7 +71,7 @@ func TestRecoveredCategoryStillProducesSemanticallyValidFullReport(t *testing.T)
 	if failures := ValidateReport(r, "1.1.1"); len(failures) != 0 {
 		t.Fatalf("recovered report is not valid:\n%s", strings.Join(failures, "\n"))
 	}
-	if got := r.Summary.Unknown; got != 14 {
-		t.Fatalf("unknown=%d, want all 14 workload checks unavailable", got)
+	if got := r.Summary.Unknown; got != 17 {
+		t.Fatalf("unknown=%d, want all 17 workload checks unavailable", got)
 	}
 }

@@ -16,7 +16,7 @@ import (
 func checkNetwork(ctx *Context) []model.Finding {
 	listeners, err := ctx.Facts.Listeners()
 	if err != nil {
-		return []model.Finding{unknown("NET-001", "network", "ss -H -lntu[p]", err.Error()), unknown("NET-002", "network", "ss -H -lntu[p]", err.Error())}
+		return []model.Finding{unknown("NET-001", "network", "ss -H -lntu[p]", err.Error()), unknown("NET-002", "network", "ss -H -lntu[p]", err.Error()), checkExternalObservation()}
 	}
 	f := model.Finding{ID: "NET-001", Category: "network", Status: model.Info, Facts: map[string]string{}}
 	counts := map[string]int{}
@@ -34,7 +34,15 @@ func checkNetwork(ctx *Context) []model.Finding {
 		f.Facts[key] = strconv.Itoa(count)
 	}
 	f.Facts["total"] = strconv.Itoa(len(listeners))
-	return []model.Finding{f, checkUnexpectedListeners(ctx, listeners), checkActiveConnections(ctx)}
+	return []model.Finding{f, checkUnexpectedListeners(ctx, listeners), checkActiveConnections(ctx), checkExternalObservation()}
+}
+
+func checkExternalObservation() model.Finding {
+	return model.Finding{
+		ID: "NET-004", Category: "network", Status: model.Info, NotApplicable: true,
+		Facts:    map[string]string{"observation": "not imported"},
+		Evidence: []model.Evidence{{Source: "external probe", Value: "no operator-supplied second-vantage observation is attached"}},
+	}
 }
 
 func checkUnexpectedListeners(ctx *Context, listeners []Listener) model.Finding {
@@ -109,6 +117,9 @@ func expectedListener(ctx *Context, listener Listener, key string) bool {
 	if ctx.ExpectedPublic[key] {
 		return true
 	}
+	if ctx.Policy != nil && ctx.Policy.ExpectedPublicListeners()[key] {
+		return true
+	}
 	process := strings.ToLower(listener.Process)
 	port, _ := strconv.Atoi(listener.Port)
 	if (port == 68 || port == 546) && containsAny(process, "dhcp", "dhclient", "dhcpcd", "systemd-network") {
@@ -141,7 +152,7 @@ func checkFirewall(ctx *Context) []model.Finding {
 }
 
 func checkFirewallBase(ctx *Context) []model.Finding {
-	normalized := ctx.Facts.UFW()
+	normalized := ctx.Facts.HostFirewall()
 	if !normalized.available {
 		if normalized.collectionErr != nil {
 			return []model.Finding{unknown("FW-001", "firewall", "host firewall discovery", normalized.collectionErr.Error())}
@@ -181,7 +192,7 @@ func checkFirewallBase(ctx *Context) []model.Finding {
 }
 
 func checkFirewallExposure(ctx *Context) model.Finding {
-	normalized := ctx.Facts.UFW()
+	normalized := ctx.Facts.HostFirewall()
 	if !normalized.available {
 		return withIncompleteEvidence(notApplicable("FW-002", "firewall", "backend", "no readable active host-firewall backend"), "host firewall discovery", normalized.collectionErr)
 	}

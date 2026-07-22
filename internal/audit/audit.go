@@ -7,6 +7,8 @@ import (
 	"os"
 	"regexp"
 	"runtime"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,6 +38,7 @@ type Options struct {
 	ExternalDomains []string
 	ExpectCDN       bool
 	ExternalProber  ExternalProber
+	Policy          *Policy
 	Commander       Commander
 	Build           Build
 	Progress        ProgressFunc
@@ -116,10 +119,12 @@ func Run(opts Options) (model.Report, error) {
 		Host:          host,
 		Profile:       profile,
 		Findings:      findings,
+		Endpoints:     reportEndpoints(ctx),
 		Metadata: map[string]string{
 			"mutation_policy": "never-modify-system",
 			"network_checks":  map[bool]string{true: "explicitly-enabled", false: "disabled-by-default"}[len(opts.ExternalDomains) > 0],
 			"audit_depth":     map[bool]string{true: "deep", false: "standard"}[opts.Deep],
+			"policy_schema":   map[bool]string{true: PolicySchemaVersion, false: "none"}[opts.Policy != nil],
 		},
 	}
 	report.Recount()
@@ -127,6 +132,47 @@ func Run(opts Options) (model.Report, error) {
 		return model.Report{}, fmt.Errorf("internal report contract validation failed: %s", strings.Join(failures, "; "))
 	}
 	return report, nil
+}
+
+func reportEndpoints(ctx *Context) []model.Endpoint {
+	listeners, err := ctx.Facts.Listeners()
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	endpoints := make([]model.Endpoint, 0, len(listeners))
+	for _, listener := range listeners {
+		port, err := strconv.Atoi(listener.Port)
+		if err != nil {
+			continue
+		}
+		protocol := strings.TrimSuffix(strings.TrimSuffix(listener.Protocol, "4"), "6")
+		family := "ipv4"
+		if strings.Contains(listener.Address, ":") || strings.HasSuffix(listener.Protocol, "6") {
+			family = "ipv6"
+		}
+		key := fmt.Sprintf("%s/%d/%s/%s", protocol, port, family, listener.Scope)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		endpoint := model.Endpoint{Protocol: protocol, Port: port, Family: family, Scope: listener.Scope, Process: truncate(listener.Process, 120)}
+		if expected, ok := ctx.Policy.Endpoint(port, protocol, family); ok {
+			endpoint.Role = expected.Role
+			endpoint.ExpectedExposure = expected.Exposure
+		}
+		endpoints = append(endpoints, endpoint)
+	}
+	sort.Slice(endpoints, func(i, j int) bool {
+		if endpoints[i].Port != endpoints[j].Port {
+			return endpoints[i].Port < endpoints[j].Port
+		}
+		if endpoints[i].Protocol != endpoints[j].Protocol {
+			return endpoints[i].Protocol < endpoints[j].Protocol
+		}
+		return endpoints[i].Family < endpoints[j].Family
+	})
+	return endpoints
 }
 
 func safeCheck(fn CheckFunc, ctx *Context, category string) (out []model.Finding) {

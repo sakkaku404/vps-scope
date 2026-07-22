@@ -103,7 +103,7 @@ func TestReverseProxyPolicyMatrix(t *testing.T) {
 		name      string
 		routes    []reverseProxyRoute
 		listeners []Listener
-		firewall  panelUFW
+		firewall  hostFirewallSnapshot
 		panels    []panelSnapshot
 		status    model.Status
 		severity  model.Severity

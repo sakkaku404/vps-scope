@@ -23,7 +23,7 @@ type doctorFixtureCommander struct {
 }
 
 func TestSubcommandHelpIsSuccessfulAndUsesProvidedWriter(t *testing.T) {
-	for _, args := range [][]string{{"audit", "--help"}, {"diff", "--help"}, {"baseline", "--help"}, {"report", "--help"}, {"verify", "--help"}} {
+	for _, args := range [][]string{{"audit", "--help"}, {"diff", "--help"}, {"baseline", "--help"}, {"policy", "--help"}, {"probe", "--help"}, {"report", "--help"}, {"verify", "--help"}} {
 		var out bytes.Buffer
 		if err := Run(args, bytes.NewReader(nil), &out, &out, BuildInfo{Version: "test"}); err != nil {
 			t.Fatalf("%v: %v", args, err)

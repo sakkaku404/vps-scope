@@ -30,7 +30,7 @@ Proxy-specific fixtures also verify that configuration summaries never retain UU
 
 The scenarios assert outcomes, not implementation details. They currently cover effective SSH policy, firewall and update evidence, journald-based SSH and sudo auditing, public panel exposure and default paths, expected public proxy ingress, public control APIs, panel/runtime and role collisions, disabled or unexplained listeners, privacy-safe abuse counts, Compose/effective mounts, ambient capabilities, unsafe Docker isolation, and truncated command output. The important safety contract is that incomplete evidence produces `UNKNOWN`, never `PASS`.
 
-Runtime fault injection deliberately panics a category evaluator with a secret-shaped value. The test requires all stable IDs for that category to survive as unavailable `UNKNOWN` findings, requires the panic value to be absent from errors and evidence, and validates the resulting complete 51-ID report with the production semantic verifier.
+Runtime fault injection deliberately panics a category evaluator with a secret-shaped value. The test requires all stable IDs for that category to survive as unavailable `UNKNOWN` findings, requires the panic value to be absent from errors and evidence, and validates the resulting complete 55-ID report with the production semantic verifier.
 
 Linux-only command-runner tests execute real root-owned system utilities. They prove that a caller-controlled `PATH` and locale are replaced; Docker, package-manager, dynamic-loader, and secret-shaped environment variables are not inherited; writable temporary executables are refused; non-zero exits retain bounded diagnostics; noisy output is truncated; and a timed-out shell cannot leave a forked child holding the audit open. These tests run under the race detector in CI even when development happens on Windows.
 
@@ -101,6 +101,9 @@ Regression review should verify:
 - Docker Compose labels are allowlisted, effective Docker socket mounts are deduplicated, and official host-network deployment context does not hide unrelated privileged containers.
 - A broad `CapabilityBoundingSet` alone is not a risk; an explicit high-impact `AmbientCapabilities` grant is.
 - external DNS/TLS observation stays disabled without `--external-domain`; failures are `UNKNOWN`, while an explicitly expected CDN domain that publishes the local address is `RISK`.
+- deployment policy distinguishes public, restricted, blocked, TLS/path, and egress/DNS intent; an absent policy does not become compliance `PASS`.
+- embedded advisory ranges are tested at vulnerable and fixed boundaries, and a full `ps` row must reach runtime version matching.
+- second-vantage plans exclude DHCP clients, preserve explicit UDP uncertainty, reject changed role/exposure metadata, and import a matching TCP observation without overwriting the source report.
 
 The July 2026 hardening regression used five disposable Debian 13, 1 vCPU / 1 GB
 hosts. A full cross-host matrix completed 40/40 TCP and UDP probes. The same

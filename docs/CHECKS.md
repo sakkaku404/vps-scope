@@ -8,7 +8,7 @@ Check IDs are stable across languages and report formats. A status is separate f
 | Accounts | `ACC-001`–`ACC-003` | `/etc/passwd`, `/etc/shadow`, effective SSH authentication, PAM |
 | SSH | `SSH-001`–`SSH-005` | `sshd -T`, filesystem ownership/modes, privacy-safe SHA-256 authorized-key fingerprints |
 | Privileges | `PRIV-001`–`PRIV-002` | sudoers; deep-mode SUID/SGID, `getcap`, `dpkg-query -S` |
-| Network | `NET-001`–`NET-003` | listeners and established connections from `ss`, address classification, profile intent |
+| Network | `NET-001`–`NET-004` | listeners and established connections from `ss`, address classification, profile intent, and optional imported second-vantage TCP observations |
 | Firewall | `FW-001`–`FW-002` | Effective UFW plus direct nftables INPUT policy, firewalld and iptables/ip6tables rules, address-family coverage, and stale public allows without a listener |
 | Authentication | `AUTH-001`–`AUTH-003` | journald/auth.log, sudo journal, Fail2ban and CrowdSec clients |
 | Updates | `UPD-001`–`UPD-002` | simulated APT upgrade, reboot marker, timers |
@@ -16,7 +16,7 @@ Check IDs are stable across languages and report formats. A status is separate f
 | Processes | `PROC-001`–`PROC-002` | failed systemd units, `/proc/*/exe` |
 | Docker | `DOCKER-001`–`DOCKER-002` | container isolation and publication; published-port path through INPUT, FORWARD and DOCKER-USER |
 | TLS | `TLS-001`–`TLS-002` | file-backed X.509 parsing, renewal schedule/success/failure/reload closure; privacy-safe embedded-material detection |
-| Workloads | `WORK-001`–`WORK-014` | proxy processes/configs, management/control exposure, native self-tests, permissions, service isolation, UDP context, config-to-listener/firewall relations, privacy-safe log counts, WireGuard runtime, panel role/runtime consistency, reverse-proxy chains, and opt-in external DNS/TLS observation |
+| Workloads | `WORK-001`–`WORK-017` | proxy processes/configs, management/control exposure, native self-tests, permissions, service isolation, UDP context, config-to-listener/firewall relations, privacy-safe log counts, WireGuard runtime, panel role/runtime consistency, reverse-proxy chains, opt-in external DNS/TLS observation, declared deployment policy, egress/DNS policy, and bundled offline security advisories |
 | Filesystem | `FS-001` | sensitive paths, modes, sticky bits |
 | Persistence | `PERSIST-001`–`PERSIST-002` | systemd, timers, cron, startup files, executables running from temporary directories |
 | Reliability | `REL-001`–`REL-002` | kernel journal, coredumps, journal persistence and size, disk and inode state |
@@ -40,6 +40,9 @@ Check IDs are stable across languages and report formats. A status is separate f
 - Reality private keys, server names, targets, and short IDs are never exported; only presence and counts are retained.
 - Embedded S-UI TLS blobs are never exported merely to inspect expiry; validity remains `UNKNOWN` until a safe interface exists.
 - systemd capability bounding sets are context, not grants; only explicit high-impact ambient capabilities elevate `WORK-007`.
+- A policy file states operator intent for endpoint roles, exposure, TLS/path requirements, allowed sources, and egress. Without one, inferred inventory remains useful but is not presented as a deterministic policy match.
+- The bundled advisory database matches only supported products and exact detected versions. A missing version or stale database produces `UNKNOWN`; absence of a match is not a general vulnerability scan.
+- A second-vantage probe makes bounded TCP connection observations. UDP is deliberately `UNKNOWN` until a protocol-aware client test exists; sending arbitrary UDP data is not treated as proof.
 
 ## Standard and deep audit
 

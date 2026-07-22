@@ -245,8 +245,8 @@ func TestFirewallExposureReportsStaleAllowRule(t *testing.T) {
 	ctx.Facts.listenersOnce.Do(func() {
 		ctx.Facts.listeners = []Listener{{Protocol: "tcp", Address: "0.0.0.0", Port: "22", Scope: "public-wildcard", Process: "sshd"}}
 	})
-	ctx.Facts.ufwOnce.Do(func() {
-		ctx.Facts.ufw = parsePanelUFW("Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n22/tcp ALLOW IN Anywhere\n31001/tcp ALLOW IN Anywhere")
+	ctx.Facts.hostFirewallOnce.Do(func() {
+		ctx.Facts.hostFirewall = parsePanelUFW("Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n22/tcp ALLOW IN Anywhere\n31001/tcp ALLOW IN Anywhere")
 	})
 	f := checkFirewallExposure(ctx)
 	if f.Status != model.Risk || f.Severity != model.Medium || f.Facts["stale_allow_rules"] != "1" {
@@ -309,14 +309,14 @@ func TestParsePanelPort(t *testing.T) {
 func TestPanelFirewallDisposition(t *testing.T) {
 	tests := []struct {
 		name string
-		ufw  panelUFW
+		ufw  hostFirewallSnapshot
 		want string
 	}{
-		{"inactive", panelUFW{available: true}, "inactive"},
-		{"allow anywhere", panelUFW{available: true, active: true, defaultDeny: true, lines: []string{"2053/tcp ALLOW IN Anywhere"}}, "allow-anywhere"},
-		{"trusted source", panelUFW{available: true, active: true, defaultDeny: true, lines: []string{"2053/tcp ALLOW IN 10.8.0.0/24"}}, "restricted"},
-		{"default blocked", panelUFW{available: true, active: true, defaultDeny: true}, "blocked-by-default"},
-		{"unsupported firewall", panelUFW{}, "inactive"},
+		{"inactive", hostFirewallSnapshot{available: true}, "inactive"},
+		{"allow anywhere", hostFirewallSnapshot{available: true, active: true, defaultDeny: true, lines: []string{"2053/tcp ALLOW IN Anywhere"}}, "allow-anywhere"},
+		{"trusted source", hostFirewallSnapshot{available: true, active: true, defaultDeny: true, lines: []string{"2053/tcp ALLOW IN 10.8.0.0/24"}}, "restricted"},
+		{"default blocked", hostFirewallSnapshot{available: true, active: true, defaultDeny: true}, "blocked-by-default"},
+		{"unsupported firewall", hostFirewallSnapshot{}, "inactive"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -635,7 +635,7 @@ func TestOpenVPNSummaryIgnoresSecretPaths(t *testing.T) {
 }
 
 func TestEndpointFirewallDispositionSeparatesTCPAndUDP(t *testing.T) {
-	ufw := panelUFW{available: true, active: true, defaultDeny: true, lines: []string{"443/tcp ALLOW IN Anywhere", "8443/udp ALLOW IN 10.0.0.0/8"}}
+	ufw := hostFirewallSnapshot{available: true, active: true, defaultDeny: true, lines: []string{"443/tcp ALLOW IN Anywhere", "8443/udp ALLOW IN 10.0.0.0/8"}}
 	if got := endpointFirewallDisposition(ufw, "443", "tcp"); got != "allow-anywhere" {
 		t.Fatalf("tcp disposition=%q", got)
 	}

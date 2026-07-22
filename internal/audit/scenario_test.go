@@ -129,8 +129,8 @@ func TestScenarioPanelAndDockerRiskRelations(t *testing.T) {
 	ctx.Facts.listenersOnce.Do(func() {
 		ctx.Facts.listeners = []Listener{{Protocol: "tcp", Address: "0.0.0.0", Port: "2053", Scope: "public-wildcard", Process: "x-ui"}, {Protocol: "tcp", Address: "0.0.0.0", Port: "31001", Scope: "public-wildcard", Process: "xray"}}
 	})
-	ctx.Facts.ufwOnce.Do(func() {
-		ctx.Facts.ufw = parsePanelUFW("Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n2053/tcp ALLOW IN Anywhere\n31001/tcp ALLOW IN Anywhere")
+	ctx.Facts.hostFirewallOnce.Do(func() {
+		ctx.Facts.hostFirewall = parsePanelUFW("Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n2053/tcp ALLOW IN Anywhere\n31001/tcp ALLOW IN Anywhere")
 	})
 	panel := panelSnapshot{Product: "3x-ui", Database: "/etc/x-ui/x-ui.db", DatabaseAvailable: true, Endpoints: []panelEndpoint{{Role: "management", Listen: "::", Port: "2053", Source: "fixture", TLSKnown: true, TLS: true}}, Inbounds: []panelInboundFact{{Enabled: true, Listen: "::", Port: "31001", Protocol: "vless", Network: "tcp", Security: "reality", RealityKeySet: true, RealityTargets: 1, RealityIDs: 1}}}
 	ctx.Facts.panelsOnce.Do(func() { ctx.Facts.panels = []panelSnapshot{panel} })
@@ -164,8 +164,8 @@ COMMIT`, "ipv4")
 	if unresolved != 0 {
 		t.Fatalf("iptables fixture unresolved=%d", unresolved)
 	}
-	ctx.Facts.ufwOnce.Do(func() {
-		ctx.Facts.ufw = panelUFW{available: true, active: true, backend: "iptables", defaultPolicyByFamily: map[string]string{"ipv4": policy}, rules: rules}
+	ctx.Facts.hostFirewallOnce.Do(func() {
+		ctx.Facts.hostFirewall = hostFirewallSnapshot{available: true, active: true, backend: "iptables", defaultPolicyByFamily: map[string]string{"ipv4": policy}, rules: rules}
 	})
 	panel := panelSnapshot{Product: "3x-ui", DatabaseAvailable: true, Endpoints: []panelEndpoint{{Role: "management", Port: "2095", Listen: "0.0.0.0", Source: "fixture", TLSKnown: true, TLS: true, PathKnown: true}}}
 	ctx.Facts.panelsOnce.Do(func() { ctx.Facts.panels = []panelSnapshot{panel} })
@@ -185,8 +185,8 @@ func TestScenarioConnectionSnapshotIsSharedAcrossNetworkAndProxyFindings(t *test
 	ctx.Facts.listenersOnce.Do(func() {
 		ctx.Facts.listeners = []Listener{{Protocol: "tcp", Address: "0.0.0.0", Port: "443", Scope: "public-wildcard", Process: "sing-box"}}
 	})
-	ctx.Facts.ufwOnce.Do(func() {
-		ctx.Facts.ufw = parsePanelUFW("Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n443/tcp ALLOW IN Anywhere")
+	ctx.Facts.hostFirewallOnce.Do(func() {
+		ctx.Facts.hostFirewall = parsePanelUFW("Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n443/tcp ALLOW IN Anywhere")
 	})
 	summary := proxyConfigSummary{Product: "sing-box", Path: "/etc/sing-box/config.json", Inbounds: []proxyInbound{{Product: "sing-box", Protocol: "vless", Port: "443", Transports: []string{"tcp"}}}}
 
@@ -378,10 +378,10 @@ func TestScenarioIncompleteFirewallFactsPropagateToWorkloadFindings(t *testing.T
 			{Protocol: "udp", Address: "0.0.0.0", Port: "51820", Scope: "public-wildcard", Process: "wireguard"},
 		}
 	})
-	ctx.Facts.ufwOnce.Do(func() {
+	ctx.Facts.hostFirewallOnce.Do(func() {
 		f := parsePanelUFW("Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n443/tcp ALLOW IN Anywhere\n9090/tcp ALLOW IN Anywhere\n51820/udp ALLOW IN Anywhere")
 		f.collectionErr = fmt.Errorf("nft list ruleset: permission denied")
-		ctx.Facts.ufw = f
+		ctx.Facts.hostFirewall = f
 	})
 	panel := panelSnapshot{Product: "3x-ui", Database: "/etc/x-ui/x-ui.db", DatabaseAvailable: true, Endpoints: []panelEndpoint{{Role: "management", Listen: "127.0.0.1", Port: "2053", Source: "fixture"}}}
 	ctx.Facts.panelsOnce.Do(func() { ctx.Facts.panels = []panelSnapshot{panel} })
@@ -413,8 +413,8 @@ func TestScenarioUnknownPanelSchemaDoesNotPassManagementCheck(t *testing.T) {
 	ctx.Facts.listenersOnce.Do(func() {
 		ctx.Facts.listeners = []Listener{{Protocol: "tcp", Address: "127.0.0.1", Port: "2053", Scope: "loopback", Process: "x-ui"}}
 	})
-	ctx.Facts.ufwOnce.Do(func() {
-		ctx.Facts.ufw = parsePanelUFW("Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)")
+	ctx.Facts.hostFirewallOnce.Do(func() {
+		ctx.Facts.hostFirewall = parsePanelUFW("Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)")
 	})
 	panel := panelSnapshot{Product: "3x-ui", Database: "/etc/x-ui/x-ui.db", SchemaFingerprint: "0123456789abcdef", Endpoints: []panelEndpoint{{Role: "management", Listen: "127.0.0.1", Port: "2053", Source: "fixture"}}}
 	ctx.Facts.panelsOnce.Do(func() { ctx.Facts.panels = []panelSnapshot{panel} })
@@ -430,8 +430,8 @@ func TestScenarioPublicControlAPIAndPanelRuntimeMismatch(t *testing.T) {
 	ctx.Facts.listenersOnce.Do(func() {
 		ctx.Facts.listeners = []Listener{{Protocol: "tcp", Address: "0.0.0.0", Port: "9090", Scope: "public-wildcard", Process: "sing-box"}}
 	})
-	ctx.Facts.ufwOnce.Do(func() {
-		ctx.Facts.ufw = parsePanelUFW("Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n9090/tcp ALLOW IN Anywhere")
+	ctx.Facts.hostFirewallOnce.Do(func() {
+		ctx.Facts.hostFirewall = parsePanelUFW("Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n9090/tcp ALLOW IN Anywhere")
 	})
 	summary := proxyConfigSummary{Product: "sing-box", Path: "/etc/sing-box/config.json", Controls: []controlEndpoint{{Product: "sing-box", Kind: "clash-api", Listen: "0.0.0.0", Port: "9090"}}}
 	requireStatus(t, []model.Finding{checkProxyControlEndpoints(ctx, []proxyConfigSummary{summary})}, "WORK-005", model.Risk)
@@ -447,8 +447,8 @@ func TestScenarioPublicPanelPostureIncludesDefaultPathAndPlaintext(t *testing.T)
 	ctx.Facts.listenersOnce.Do(func() {
 		ctx.Facts.listeners = []Listener{{Protocol: "tcp", Address: "0.0.0.0", Port: "56709", Scope: "public-wildcard", Process: "sui"}}
 	})
-	ctx.Facts.ufwOnce.Do(func() {
-		ctx.Facts.ufw = parsePanelUFW("Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n56709/tcp ALLOW IN Anywhere")
+	ctx.Facts.hostFirewallOnce.Do(func() {
+		ctx.Facts.hostFirewall = parsePanelUFW("Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n56709/tcp ALLOW IN Anywhere")
 	})
 	panel := panelSnapshot{Product: "S-UI", DatabaseAvailable: true, Endpoints: []panelEndpoint{{Role: "management", Port: "56709", Listen: "::", Source: "fixture", TLSKnown: true, TLS: false, PathKnown: true, PathIsDefault: true}}}
 	ctx.Facts.panelsOnce.Do(func() { ctx.Facts.panels = []panelSnapshot{panel} })
@@ -489,8 +489,8 @@ func TestScenarioPublicPlaintextSubscriptionIsHighRisk(t *testing.T) {
 	ctx.Facts.listenersOnce.Do(func() {
 		ctx.Facts.listeners = []Listener{{Protocol: "tcp", Address: "0.0.0.0", Port: "2096", Scope: "public-wildcard", Process: "x-ui"}}
 	})
-	ctx.Facts.ufwOnce.Do(func() {
-		ctx.Facts.ufw = parsePanelUFW("Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n2096/tcp ALLOW IN Anywhere")
+	ctx.Facts.hostFirewallOnce.Do(func() {
+		ctx.Facts.hostFirewall = parsePanelUFW("Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n2096/tcp ALLOW IN Anywhere")
 	})
 	panel := panelSnapshot{
 		Product: "3x-ui", Database: "/etc/x-ui/x-ui.db", DatabaseAvailable: true,
@@ -589,8 +589,8 @@ func TestScenarioWireGuardPartialRuntimeIsUnknown(t *testing.T) {
 	ctx.Facts.listenersOnce.Do(func() {
 		ctx.Facts.listeners = []Listener{{Protocol: "udp", Address: "0.0.0.0", Port: "51820", Scope: "public-wildcard", Process: "wireguard"}}
 	})
-	ctx.Facts.ufwOnce.Do(func() {
-		ctx.Facts.ufw = panelUFW{available: true, active: true, defaultDeny: true, defaultDenyByFamily: map[string]bool{"ipv4": true}, backend: "fixture"}
+	ctx.Facts.hostFirewallOnce.Do(func() {
+		ctx.Facts.hostFirewall = hostFirewallSnapshot{available: true, active: true, defaultDeny: true, defaultDenyByFamily: map[string]bool{"ipv4": true}, backend: "fixture"}
 	})
 	f := checkWireGuardRuntime(ctx)
 	if f.Status != model.Unknown || !f.Unavailable || f.Facts["evidence_discovery_incomplete"] != "true" {
@@ -653,8 +653,8 @@ func TestScenarioPanelCapabilityFailuresDoNotBecomePass(t *testing.T) {
 	ctx.Facts.listenersOnce.Do(func() {
 		ctx.Facts.listeners = []Listener{{Protocol: "tcp", Address: "127.0.0.1", Port: "2053", Scope: "loopback", Process: "x-ui"}}
 	})
-	ctx.Facts.ufwOnce.Do(func() {
-		ctx.Facts.ufw = panelUFW{available: true, active: true, defaultDeny: true, backend: "fixture"}
+	ctx.Facts.hostFirewallOnce.Do(func() {
+		ctx.Facts.hostFirewall = hostFirewallSnapshot{available: true, active: true, defaultDeny: true, backend: "fixture"}
 	})
 	panel := panelSnapshot{
 		Product: "3x-ui", Database: "/etc/x-ui/x-ui.db", DatabaseAvailable: true, SchemaSupported: true,

@@ -16,7 +16,7 @@ Each new finding also carries a language-neutral `reason_code`. The check ID sta
 
 `vps-scope verify` treats transport integrity and report semantics as separate layers. For a bundle it first requires the complete allowlisted file set, rejects symlinked or undeclared payloads, and checks sizes and SHA-256 values. It then validates the canonical report: current reports must contain every known stable check ID exactly once, use valid status/severity combinations, preserve category and reason-code ownership, and carry summary counts derived from the findings. Reports from before the full v1 ID contract remain readable without pretending they contain checks that did not yet exist. A report produced by a newer tool may append well-formed IDs while retaining every ID known to the verifier, preserving report-v1 forward compatibility.
 
-Each of the 16 category evaluators has a panic boundary. If an unexpected runtime value causes one category to panic, the audit keeps every stable ID owned by that category and marks each one `UNKNOWN` / unavailable; the other categories continue. Panic values and stack details are withheld from report evidence because they may contain configuration data. This recovery path preserves the 51-ID semantic contract without converting an internal failure into `PASS`.
+Each of the 16 category evaluators has a panic boundary. If an unexpected runtime value causes one category to panic, the audit keeps every stable ID owned by that category and marks each one `UNKNOWN` / unavailable; the other categories continue. Panic values and stack details are withheld from report evidence because they may contain configuration data. This recovery path preserves the current 55-ID semantic contract without converting an internal failure into `PASS`.
 
 Every external command is resolved through a fixed Debian/Ubuntu system search path. Before execution, the binary and every parent directory must be root-owned and not group/other writable; the process does not trust the caller's `PATH`, a workload-provided binary, or a writable `/usr/local` shadow. Child processes receive a minimal fixed environment rather than the caller's environment, so Docker contexts, package-manager roots, dynamic-loader settings, pagers, and secret-shaped variables cannot redirect or contaminate evidence collection. Linux commands run in their own process group so a deadline terminates forked descendants and closes inherited output pipes. Standard output and standard error remain independently bounded to 8 MiB, and truncated evidence cannot become a clean result.
 
@@ -38,7 +38,11 @@ The embedded SQLite reader opens panel databases read-only after a regular-file 
 
 Proxy and web adapters emit configured endpoints into a shared graph. Runtime listeners and normalized host-firewall facts are attached separately; active UFW is combined with the effective nftables INPUT path so workload-managed rules are not hidden by a frontend summary. Policy then evaluates configuration-to-listener ownership, TCP/UDP transport, reverse-proxy frontends and backends, path-gated management routes, exposure scope, and firewall disposition. Product parsers do not decide whether an endpoint is safe.
 
-Network access is disabled by default. The only current opt-in path is `--external-domain`, which performs bounded DNS and TLS observations for the supplied domains. `--expect-cdn` adds an explicit policy expectation; it is never inferred from software names.
+Network access is disabled during a normal audit. `--external-domain` is an explicit bounded DNS/TLS observation for supplied domains, while `--expect-cdn` declares an operator expectation. A separate `probe plan/run/import` workflow transfers a credential-free endpoint plan to another controlled host, performs bounded TCP connects, and imports the observation into `NET-004`. UDP is left indeterminate because a generic datagram cannot prove a real proxy handshake. Neither path runs unless the operator explicitly invokes it.
+
+An optional policy document is a statement of operator intent, not a proxy configuration and not a remediation file. It declares endpoint role/exposure, source restrictions, TLS/path requirements, and IPv4/IPv6/DNS egress expectations. The parser rejects unknown fields, duplicate roles, invalid ports, addresses, interfaces, oversized files, symlinks, and input replacement races. `WORK-015` and `WORK-016` compare that intent with live typed facts; without a policy they remain inventory or not applicable rather than guessed compliance.
+
+`WORK-017` uses a small embedded advisory database sourced from official upstream GitHub security advisories. It performs no network request on the VPS. Exact detected versions are compared with explicit semantic-version ranges; missing versions or a database older than the freshness window produce `UNKNOWN`. A clean match means only that no bundled advisory range matched, not that the product has no vulnerabilities.
 
 ## Profiles
 
@@ -56,7 +60,7 @@ Local reports retain host evidence but never intentionally collect secret values
 
 ## Known limitations
 
-- A host-local audit cannot prove internet reachability or inspect provider security groups. Opt-in DNS/TLS observation adds evidence but still cannot replace a second network vantage point or historical DNS data.
+- A host-local audit cannot prove internet reachability or inspect provider security groups. The explicit probe workflow adds a second TCP vantage, but it cannot inspect the provider policy itself or replace protocol-aware client success evidence.
 - A clean report cannot prove that a host is uncompromised.
 - Generic nftables semantics and cloud firewall policy require more context than an internal process can always obtain.
-- CVE databases, rootkit signatures, active network scanning, and image-registry freshness are intentionally outside the default offline audit.
+- The bundled advisory set is intentionally narrow and offline; comprehensive CVE feeds, rootkit signatures, active network scanning, and image-registry freshness remain outside the default audit.

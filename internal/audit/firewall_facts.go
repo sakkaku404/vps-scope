@@ -20,11 +20,11 @@ type firewallRule struct {
 	Conditional                                         bool
 }
 
-// panelUFW is the historical name of the normalized host-firewall snapshot.
+// hostFirewallSnapshot is the historical name of the normalized host-firewall snapshot.
 // It now covers UFW, nftables, iptables and firewalld; keeping the internal
 // name avoids report-schema churn while the collector and policy model live in
 // this firewall-specific file.
-type panelUFW struct {
+type hostFirewallSnapshot struct {
 	available, active, defaultDeny bool
 	defaultDenyByFamily            map[string]bool
 	defaultPolicyByFamily          map[string]string
@@ -34,7 +34,7 @@ type panelUFW struct {
 	collectionErr                  error
 }
 
-func parsePanelUFW(output string) panelUFW {
+func parsePanelUFW(output string) hostFirewallSnapshot {
 	defaultDeny := regexp.MustCompile(`(?mi)^Default:\s+deny \(incoming\)`).MatchString(output)
 	policy := "unknown"
 	if defaultDeny {
@@ -42,14 +42,14 @@ func parsePanelUFW(output string) panelUFW {
 	} else if regexp.MustCompile(`(?mi)^Default:\s+allow \(incoming\)`).MatchString(output) {
 		policy = "allow"
 	}
-	f := panelUFW{available: true, active: regexp.MustCompile(`(?mi)^Status:\s+active\s*$`).MatchString(output), defaultDeny: defaultDeny, defaultDenyByFamily: map[string]bool{"any": defaultDeny}, defaultPolicyByFamily: map[string]string{"any": policy}, lines: lines(output), backend: "ufw"}
+	f := hostFirewallSnapshot{available: true, active: regexp.MustCompile(`(?mi)^Status:\s+active\s*$`).MatchString(output), defaultDeny: defaultDeny, defaultDenyByFamily: map[string]bool{"any": defaultDeny}, defaultPolicyByFamily: map[string]string{"any": policy}, lines: lines(output), backend: "ufw"}
 	f.rules = parseUFWRules(f.lines)
 	return f
 }
 
-func collectHostFirewall(cmd Commander) panelUFW {
-	var inactive panelUFW
-	var active panelUFW
+func collectHostFirewall(cmd Commander) hostFirewallSnapshot {
+	var inactive hostFirewallSnapshot
+	var active hostFirewallSnapshot
 	var collectionErr error
 	if cmd.Exists("ufw") {
 		r := cmd.Run(12*time.Second, "ufw", "status", "verbose")
@@ -110,7 +110,7 @@ func collectHostFirewall(cmd Commander) panelUFW {
 		collectionErr = fmt.Errorf("nft list ruleset: %s", commandError(r))
 	}
 	if cmd.Exists("iptables-save") || cmd.Exists("ip6tables-save") {
-		f := panelUFW{backend: "iptables", defaultDenyByFamily: map[string]bool{}, defaultPolicyByFamily: map[string]string{}}
+		f := hostFirewallSnapshot{backend: "iptables", defaultDenyByFamily: map[string]bool{}, defaultPolicyByFamily: map[string]string{}}
 		for _, spec := range []struct{ command, family string }{{"iptables-save", "ipv4"}, {"ip6tables-save", "ipv6"}} {
 			if !cmd.Exists(spec.command) {
 				continue
@@ -139,7 +139,7 @@ func collectHostFirewall(cmd Commander) panelUFW {
 		r := cmd.Run(12*time.Second, "iptables", "-S")
 		if r.Err == nil && !r.Truncated {
 			rules, policy, unresolved := parseIPTablesFirewallDetailed(r.Stdout, "ipv4")
-			f := panelUFW{available: true, active: true, defaultDenyByFamily: map[string]bool{}, defaultPolicyByFamily: map[string]string{}, backend: "iptables", rules: rules, lines: lines(r.Stdout)}
+			f := hostFirewallSnapshot{available: true, active: true, defaultDenyByFamily: map[string]bool{}, defaultPolicyByFamily: map[string]string{}, backend: "iptables", rules: rules, lines: lines(r.Stdout)}
 			setDefaultFirewallPolicy(&f, "ipv4", policy)
 			f.collectionErr = errors.Join(collectionErr, iptablesParseError("ipv4", unresolved))
 			return f
@@ -150,17 +150,17 @@ func collectHostFirewall(cmd Commander) panelUFW {
 	return inactive
 }
 
-func collectFirewalld(cmd Commander) panelUFW {
+func collectFirewalld(cmd Commander) hostFirewallSnapshot {
 	zonesResult := cmd.Run(10*time.Second, "firewall-cmd", "--get-active-zones")
 	if zonesResult.Err != nil || zonesResult.Truncated {
-		return panelUFW{collectionErr: fmt.Errorf("firewall-cmd --get-active-zones: %s", commandError(zonesResult))}
+		return hostFirewallSnapshot{collectionErr: fmt.Errorf("firewall-cmd --get-active-zones: %s", commandError(zonesResult))}
 	}
-	f := panelUFW{available: true, active: true, backend: "firewalld", defaultDenyByFamily: map[string]bool{}, defaultPolicyByFamily: map[string]string{}}
+	f := hostFirewallSnapshot{available: true, active: true, backend: "firewalld", defaultDenyByFamily: map[string]bool{}, defaultPolicyByFamily: map[string]string{}}
 	servicePorts := map[string]string{"ssh": "22", "http": "80", "https": "443"}
 	for _, zone := range parseFirewalldActiveZones(zonesResult.Stdout) {
 		detail := cmd.Run(10*time.Second, "firewall-cmd", "--zone="+zone, "--list-all")
 		if detail.Err != nil || detail.Truncated {
-			return panelUFW{collectionErr: fmt.Errorf("firewall-cmd --zone=%s --list-all: %s", zone, commandError(detail))}
+			return hostFirewallSnapshot{collectionErr: fmt.Errorf("firewall-cmd --zone=%s --list-all: %s", zone, commandError(detail))}
 		}
 		f.lines = append(f.lines, lines(detail.Stdout)...)
 		restricted := false
@@ -246,8 +246,8 @@ func parseUFWRules(input []string) []firewallRule {
 	return out
 }
 
-func parseNFTFirewall(output string) panelUFW {
-	f := panelUFW{available: true, active: true, backend: "nftables", lines: lines(output), defaultDenyByFamily: map[string]bool{}, defaultPolicyByFamily: map[string]string{}}
+func parseNFTFirewall(output string) hostFirewallSnapshot {
+	f := hostFirewallSnapshot{available: true, active: true, backend: "nftables", lines: lines(output), defaultDenyByFamily: map[string]bool{}, defaultPolicyByFamily: map[string]string{}}
 	collectNFTDefaultPolicies(&f, output)
 	var unresolved int
 	f.rules, unresolved = parseNFTHookRulesDetailed(f.lines, "input")
@@ -582,19 +582,19 @@ func expandNFTPortSet(line string, portSets map[string]nftPortSet) string {
 	return strings.Replace(line, match[0], replacement, 1)
 }
 
-func collectNFTDefaultPolicies(f *panelUFW, output string) {
+func collectNFTDefaultPolicies(f *hostFirewallSnapshot, output string) {
 	collectNFTHookPolicies(f, output, "input")
 }
 
 func collectNFTHookDefaultPolicies(target map[string]bool, output, hook string) {
-	temporary := panelUFW{defaultDenyByFamily: map[string]bool{}, defaultPolicyByFamily: map[string]string{}}
+	temporary := hostFirewallSnapshot{defaultDenyByFamily: map[string]bool{}, defaultPolicyByFamily: map[string]string{}}
 	collectNFTHookPolicies(&temporary, output, hook)
 	for family, deny := range temporary.defaultDenyByFamily {
 		target[family] = target[family] || deny
 	}
 }
 
-func collectNFTHookPolicies(f *panelUFW, output, hook string) {
+func collectNFTHookPolicies(f *hostFirewallSnapshot, output, hook string) {
 	if f.defaultDenyByFamily == nil {
 		f.defaultDenyByFamily = map[string]bool{}
 	}
@@ -636,11 +636,11 @@ func collectNFTHookPolicies(f *panelUFW, output, hook string) {
 	}
 }
 
-func firewallDisposition(f panelUFW, port, protocol string) string {
+func firewallDisposition(f hostFirewallSnapshot, port, protocol string) string {
 	return firewallDispositionFamily(f, port, protocol, "any")
 }
 
-func firewallDispositionFamily(f panelUFW, port, protocol, family string) string {
+func firewallDispositionFamily(f hostFirewallSnapshot, port, protocol, family string) string {
 	if !f.available {
 		if f.collectionErr != nil {
 			return "unknown"
@@ -706,7 +706,7 @@ func firewallDispositionFamily(f panelUFW, port, protocol, family string) string
 	return "no-explicit-rule"
 }
 
-func setDefaultFirewallPolicy(f *panelUFW, family, policy string) {
+func setDefaultFirewallPolicy(f *hostFirewallSnapshot, family, policy string) {
 	if f.defaultPolicyByFamily == nil {
 		f.defaultPolicyByFamily = map[string]string{}
 	}
@@ -721,7 +721,7 @@ func setDefaultFirewallPolicy(f *panelUFW, family, policy string) {
 	}
 }
 
-func mergeDefaultFirewallPolicy(f *panelUFW, family, policy string) {
+func mergeDefaultFirewallPolicy(f *hostFirewallSnapshot, family, policy string) {
 	existing := f.defaultPolicyByFamily[family]
 	if existing == "" {
 		setDefaultFirewallPolicy(f, family, policy)
@@ -740,7 +740,7 @@ func mergeDefaultFirewallPolicy(f *panelUFW, family, policy string) {
 	setDefaultFirewallPolicy(f, family, "unknown")
 }
 
-func defaultFirewallPolicyForFamily(f panelUFW, family string) string {
+func defaultFirewallPolicyForFamily(f hostFirewallSnapshot, family string) string {
 	if policy := f.defaultPolicyByFamily["any"]; policy != "" {
 		return policy
 	}
@@ -769,7 +769,7 @@ func defaultFirewallPolicyForFamily(f panelUFW, family string) string {
 	return "unknown"
 }
 
-func defaultDenyForFamily(f panelUFW, family string) bool {
+func defaultDenyForFamily(f hostFirewallSnapshot, family string) bool {
 	if len(f.defaultPolicyByFamily) > 0 {
 		return defaultFirewallPolicyForFamily(f, family) == "deny"
 	}
@@ -798,7 +798,7 @@ func listenerAddressFamily(address string) string {
 	return "ipv4"
 }
 
-func firewallEvidenceSource(f panelUFW) string {
+func firewallEvidenceSource(f hostFirewallSnapshot) string {
 	if f.backend == "" {
 		return "host firewall"
 	}

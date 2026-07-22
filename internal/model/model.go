@@ -67,6 +67,19 @@ type Summary struct {
 	NotApplicable int `json:"not_applicable"`
 }
 
+// Endpoint is a credential-free, structured view of a live listener. It lets
+// offline tooling build an external observation plan without parsing localized
+// evidence text.
+type Endpoint struct {
+	Protocol         string `json:"protocol"`
+	Port             int    `json:"port"`
+	Family           string `json:"family"`
+	Scope            string `json:"scope"`
+	Process          string `json:"process,omitempty"`
+	Role             string `json:"role,omitempty"`
+	ExpectedExposure string `json:"expected_exposure,omitempty"`
+}
+
 type Report struct {
 	SchemaVersion string            `json:"schema_version"`
 	ToolVersion   string            `json:"tool_version"`
@@ -79,6 +92,7 @@ type Report struct {
 	Profile       Profile           `json:"profile"`
 	Summary       Summary           `json:"summary"`
 	Findings      []Finding         `json:"findings"`
+	Endpoints     []Endpoint        `json:"endpoints,omitempty"`
 	Metadata      map[string]string `json:"metadata,omitempty"`
 }
 

@@ -45,7 +45,7 @@ type endpointAssessment struct {
 	Unknown  bool
 }
 
-func buildProxyEndpointGraph(inbounds []configuredProxyInbound, listeners []Listener, firewall panelUFW) endpointGraph {
+func buildProxyEndpointGraph(inbounds []configuredProxyInbound, listeners []Listener, firewall hostFirewallSnapshot) endpointGraph {
 	graph := endpointGraph{}
 	for index, inbound := range inbounds {
 		transports := inbound.Transports

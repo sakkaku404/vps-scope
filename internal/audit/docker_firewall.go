@@ -186,7 +186,7 @@ func checkDockerFirewallPath(ctx *Context, containers []dockerInspect) model.Fin
 	facts := ctx.Facts.DockerFirewall()
 	f := model.Finding{ID: "DOCKER-002", Category: "docker", Status: model.Pass, Facts: map[string]string{}}
 	published, public, bypasses, unknown := 0, 0, 0, 0
-	hostFirewall := ctx.Facts.UFW()
+	hostFirewall := ctx.Facts.HostFirewall()
 	for _, container := range containers {
 		name := strings.TrimPrefix(container.Name, "/")
 		for target, bindings := range container.NetworkSettings.Ports {

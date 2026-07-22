@@ -161,7 +161,7 @@ sudo vps-scope report list  # فهرست گزارش‌های ذخیره‌شده
 3. **تاثیر احتمالی بر در دسترس بودن**: مشکلات بازیابی پورتال، فایروال، گواهی یا خدمات
 4. **شواهد ناکافی**: بخشی که ابزار نمی تواند به طور قابل اعتماد قضاوت کند
 
-"شاخص نتایج بازرسی" نهایی به سادگی یک فهرست وضعیت برای 51 بازرسی است. شواهد کامل در HTML، Markdown و JSON است.
+«شاخص نتایج بازرسی» فهرست وضعیت 55 بازرسی است. شواهد کامل در HTML، Markdown و JSON قرار دارد.
 
 ## نصب و دستورات رایج
 
@@ -202,6 +202,27 @@ vps-scope diff old.json new.json
 vps-scope baseline create report.json baseline.json
 vps-scope baseline check baseline.json report-new.json
 ```
+
+### سیاست صریح و مشاهده از میزبان دوم
+
+شناسایی خودکار پنل‌ها و ورودی‌های رایج پروکسی را می‌شناسد، اما از محدودیت منبع، الزامات TLS و مسیر پنل یا مسیر خروجی IPv4/IPv6 مورد نظر شما خبر ندارد. فایل سیاست این انتظارها را بدون ذخیره اعتبارنامه گره و بدون تغییر سرور ثبت می‌کند:
+
+```bash
+vps-scope policy init policy.json
+# نقش‌ها، سطح دسترسی و انتظارهای خروجی را ویرایش کنید
+vps-scope policy validate policy.json
+sudo vps-scope audit --profile proxy --policy policy.json
+```
+
+برای بررسی دسترسی واقعی از شبکه‌ای دیگر، روی VPS ممیزی‌شده یک طرح بدون اطلاعات محرمانه بسازید، آن را روی VPS کنترل‌شده دیگری اجرا و نتیجه را وارد کنید:
+
+```bash
+vps-scope probe plan --target 203.0.113.10 --output plan.json report.json
+vps-scope probe run --output observation.json plan.json
+vps-scope probe import --output report-observed.json report.json observation.json
+```
+
+نتیجه TCP با سیاست اعلام‌شده مقایسه می‌شود. UDP عمداً `UNKNOWN` باقی می‌ماند، زیرا یک دیتاگرام دلخواه موفقیت دست‌دهی واقعی را ثابت نمی‌کند. `WORK-017` نیز نسخه‌های 3x-ui، sing-box و Xray را آفلاین با تصویر داخلی هشدارهای رسمی تطبیق می‌دهد. نسخه آسیب‌پذیر `RISK` و نسخه نامشخص یا پایگاه قدیمی `UNKNOWN` است؛ نبود تطبیق به معنی نبود سایر آسیب‌پذیری‌ها نیست.
 
 قبل از عمومی کردن گزارش، یک نسخه حساسیت زدایی ایجاد کنید:
 

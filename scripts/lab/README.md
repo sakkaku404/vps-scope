@@ -69,6 +69,20 @@ sudo VPS_SCOPE_LAB_AUDIT_BIN=/opt/vps-scope-lab/vps-scope \
 
 It intentionally refuses to pull an image or create more than 64 additional containers. The unit fixtures cover the 128-container refusal path; the disposable runner exists to prove the normal multi-batch path on a real Docker daemon without exhausting a small VPS.
 
+The advisory fixture builds a harmless sleeping process under the trusted
+`sing-box` executable name and reports version `1.4.4`, the vulnerable boundary
+covered by the bundled upstream advisory. The runner refuses to replace a real
+binary, removes the temporary executable and process, verifies the complete
+report, and requires `WORK-017` to preserve the critical advisory severity:
+
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+  -ldflags '-X main.product=sing-box -X main.version=1.4.4' \
+  -o sing-box-fixture ./scripts/lab/product-fixture.go
+sudo VPS_SCOPE_LAB_PRODUCT_FIXTURE=/opt/vps-scope-lab/sing-box-fixture \
+  ./scripts/lab/run-advisory-fixture.sh
+```
+
 The Docker firewall semantics runner creates one loopback publication, one
 public host-to-container port translation, and one privileged container. It
 also inserts a labelled source allow without a closing deny in `DOCKER-USER`;

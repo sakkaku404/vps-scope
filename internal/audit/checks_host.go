@@ -314,18 +314,18 @@ func panelListenerScope(listeners []Listener, port string, f *model.Finding) (st
 	return scope, scope != ""
 }
 
-func readPanelUFW(ctx *Context) panelUFW {
+func readPanelUFW(ctx *Context) hostFirewallSnapshot {
 	if ctx.Facts != nil {
-		return ctx.Facts.UFW()
+		return ctx.Facts.HostFirewall()
 	}
 	return collectHostFirewall(ctx.Commander)
 }
 
-func panelFirewallDisposition(ufw panelUFW, port string, f *model.Finding) string {
+func panelFirewallDisposition(ufw hostFirewallSnapshot, port string, f *model.Finding) string {
 	return panelFirewallDispositionFamily(ufw, port, "any", f)
 }
 
-func panelFirewallDispositionFamily(ufw panelUFW, port, family string, f *model.Finding) string {
+func panelFirewallDispositionFamily(ufw hostFirewallSnapshot, port, family string, f *model.Finding) string {
 	disposition := firewallDispositionFamily(ufw, port, "tcp", family)
 	if disposition == "allow-restricted" {
 		disposition = "restricted"

@@ -145,7 +145,7 @@ vps-scope render --lang zh-CN --format html --output report.zh-CN.html report.js
 vps-scope render --lang en --format markdown --output report.en.md report.json
 ```
 
-Both a standalone report and a complete bundle can be verified. Bundle verification checks the declared file set, undeclared files, and SHA-256 values; current reports are also checked for the complete 51-ID contract, consistent statuses and severities, summary counts, and reason codes:
+Both a standalone report and a complete bundle can be verified. Bundle verification checks the declared file set, undeclared files, and SHA-256 values; current reports are also checked for the complete 55-ID contract, consistent statuses and severities, summary counts, and reason codes:
 
 ```bash
 vps-scope verify report.json
@@ -189,6 +189,31 @@ vps-scope baseline check baseline.json report-new.json
 
 Checks keep the same IDs in every language, so reports remain comparable regardless of display language.
 
+## Declared policy and second-vantage observation
+
+Automatic discovery can explain common panels and proxy ingress, but it cannot know your intended source restrictions, TLS/path requirements, or IPv4/IPv6 egress. A policy file records that intent without storing proxy credentials or changing the host:
+
+```bash
+vps-scope policy init policy.json
+# edit the endpoint roles, exposure and egress expectations
+vps-scope policy validate policy.json
+sudo vps-scope audit --profile proxy --policy policy.json
+```
+
+With a policy, `WORK-015` and `WORK-016` compare endpoint exposure, allowed sources, TLS/path requirements, interfaces, and DNS against live evidence. Without one, ordinary discovery still runs, but inference is not presented as operator-approved policy.
+
+To check what another network vantage can actually reach, create a credential-free plan on the audited host, run it on another controlled VPS, and import the result:
+
+```bash
+vps-scope probe plan --target 203.0.113.10 --output plan.json report.json
+vps-scope probe run --output observation.json plan.json
+vps-scope probe import --output report-observed.json report.json observation.json
+```
+
+TCP observations are compared with declared exposure. UDP remains explicitly indeterminate because sending an arbitrary datagram is not proof that a real Hysteria2, TUIC, WireGuard, or other protocol handshake succeeded.
+
+`WORK-017` also compares detected 3x-ui, sing-box, and Xray versions with a bundled snapshot of official upstream security advisories. It performs no network request. A matched affected range is `RISK`; a missing version or stale database is `UNKNOWN`. No match means only that the bundled set contains no matching advisory, not that the product is vulnerability-free.
+
 ## Other commands
 
 ```text
@@ -200,6 +225,8 @@ redact      make a report safer to share
 support     create a privacy-safe compatibility support bundle
 report      view and manage saved reports
 verify      verify report semantics and report-bundle integrity
+policy      create or validate explicit deployment intent
+probe       plan, run, and import a second-vantage TCP observation
 version     show build information
 ```
 
@@ -209,7 +236,7 @@ VPS Scope currently supports Ubuntu and Debian on Linux `amd64` and `arm64`. Som
 
 VPS Scope is useful for reviewing a server, but it cannot prove that a machine is clean or see cloud firewall rules from inside the guest. See [the design notes](DESIGN.md) for the current trust boundary and known limitations.
 
-The 1.x guarantees for report schemas, check IDs, reason codes, public commands, exit behavior, and older reports are documented in the [stability and compatibility policy](STABILITY.md). Human-readable layout may evolve; automation should consume canonical JSON.
+The 1.x guarantees for report schemas, check IDs, reason codes, public commands, exit behavior, and older reports are documented in the [stability and compatibility policy](STABILITY.md). The complete policy/probe workflow is in [Deployment policy and external observation](POLICY-AND-PROBE.md). Human-readable layout may evolve; automation should consume canonical JSON.
 
 ## Development
 
