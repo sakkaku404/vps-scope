@@ -28,19 +28,36 @@ func verifyTrustedExecutable(path string) (string, error) {
 	if err := rootOwnedAndNotWritable(info, resolved); err != nil {
 		return "", err
 	}
-	for dir := filepath.Dir(resolved); ; dir = filepath.Dir(dir) {
-		info, err := os.Stat(dir)
-		if err != nil {
+	if err := trustedDirectoryChain(filepath.Dir(resolved)); err != nil {
+		return "", err
+	}
+	// The original symlink path is executed to preserve argv[0], so its parent
+	// chain must be protected too; otherwise a non-root user could swap the
+	// link after the target was verified.
+	if filepath.Clean(path) != resolved {
+		if err := trustedDirectoryChain(filepath.Dir(filepath.Clean(path))); err != nil {
 			return "", err
 		}
+	}
+	// Execute through the verified original path so multi-call binaries retain
+	// the argv[0] selected by their system symlink.
+	return filepath.Clean(path), nil
+}
+
+func trustedDirectoryChain(start string) error {
+	for dir := start; ; dir = filepath.Dir(dir) {
+		info, err := os.Stat(dir)
+		if err != nil {
+			return err
+		}
 		if err := rootOwnedAndNotWritable(info, dir); err != nil {
-			return "", err
+			return err
 		}
 		if dir == "/" {
 			break
 		}
 	}
-	return resolved, nil
+	return nil
 }
 
 func rootOwnedAndNotWritable(info fs.FileInfo, path string) error {

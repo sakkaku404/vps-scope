@@ -63,11 +63,11 @@ curl -fsSL https://sakkaku404.github.io/vps-scope/run.sh | sudo bash
 Аудит дает только один набор результатов, но они сохраняются в четырех форматах:
 
 ```text
-report.zh-CN.html   推荐，下载到电脑后用浏览器打开
-report.zh-CN.txt    终端文字版
-report.zh-CN.md     完整 Markdown 报告
-report.json         完整机器可读数据，用于对比和基线
-manifest.json       上面四份报告的 SHA-256 校验清单
+report.ru-RU.html   Рекомендуется: скачайте и откройте в браузере
+report.ru-RU.txt    Текстовая версия для терминала
+report.ru-RU.md     Полный отчёт Markdown
+report.json         Полные машиночитаемые данные для сравнения и базовых снимков
+manifest.json       SHA-256-манифест четырёх файлов отчёта
 ```
 
 Другими словами, в каталоге **4 разных формата одних и тех же результатов тестов плюс 1 контрольный список**, а не четыре теста.
@@ -75,15 +75,15 @@ manifest.json       上面四份报告的 SHA-256 校验清单
 В конце запуска программа отобразит полные пути к пяти файлам и выдаст команду загрузки `scp`. Файл HTML сохраняется на удаленном VPS и не может быть открыт напрямую, как веб-ссылка, в обычном терминале SSH; загрузите его на свой компьютер и дважды щелкните, чтобы просмотреть:
 
 ```bash
-scp root@你的VPS地址:'/root/vps-scope-reports/latest/report.zh-CN.html' .
+scp root@VPS_ADDRESS:'/root/vps-scope-reports/latest/report.ru-RU.html' .
 ```
 
 Если VPS Scope установлен, вы также можете запросить его в любое время:
 
 ```bash
-sudo vps-scope report show  # 在终端重新显示最近结果
-sudo vps-scope report path  # 显示最近报告目录
-sudo vps-scope report list  # 列出历史报告
+sudo vps-scope report show  # снова показать последний результат в терминале
+sudo vps-scope report path  # показать каталог последнего отчёта
+sudo vps-scope report list  # перечислить сохранённые отчёты
 ```
 
 Отчет HTML сначала ответит на пять вопросов о «входе к узлу, плоскости управления, конфигурации и эксплуатации, доступности сервисов и базе безопасности Linux», а затем покажет предложения по обработке и технические подробности. Страница поддерживает поиск, фильтрацию по статусу и раскрытие всех доказательств без загрузки внешних скриптов или шрифтов.
@@ -175,7 +175,7 @@ sudo vps-scope
 Без параметров будет введена китайская/английская загрузка. Вы также можете указать это напрямую:
 
 ```bash
-sudo vps-scope audit --lang zh-CN --profile proxy
+sudo vps-scope audit --lang ru-RU --profile proxy
 sudo vps-scope audit --profile custom --expect-public 22/tcp,443/tcp
 sudo vps-scope audit --deep
 ```
@@ -183,14 +183,14 @@ sudo vps-scope audit --deep
 Как интерактивный режим, так и специальные команды запуска в Интернете отображают сводную информацию о терминале и по умолчанию сохраняют полный отчет. Вручную укажите местоположение:
 
 ```bash
-sudo vps-scope audit --lang zh-CN --profile proxy \
+sudo vps-scope audit --lang ru-RU --profile proxy \
   --format bundle --also-terminal --output ./reports/my-vps
 ```
 
 Если у вас уже есть JSON, вы можете восстановить отчет в автономном режиме без повторного подключения к серверу:
 
 ```bash
-vps-scope render --lang zh-CN --format html --output report.html report.json
+vps-scope render --lang ru-RU --format html --output report.html report.json
 vps-scope verify report.json
 vps-scope verify ./reports/my-vps
 ```

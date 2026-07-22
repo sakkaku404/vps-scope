@@ -108,6 +108,9 @@ func TestDownloadCommandFromSSHConnection(t *testing.T) {
 }
 
 func TestBundleHelpExplainsOneAuditAndFiveFiles(t *testing.T) {
+	// The output contract under test is the non-SSH fallback. CI and real-VPS
+	// runners may themselves execute over SSH, so seal that ambient input.
+	t.Setenv("SSH_CONNECTION", "")
 	var out bytes.Buffer
 	e := environment{out: &out}
 	dir := filepath.Join(string(filepath.Separator), "root", "vps-scope-reports", "latest")

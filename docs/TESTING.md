@@ -102,7 +102,18 @@ Regression review should verify:
 - A broad `CapabilityBoundingSet` alone is not a risk; an explicit high-impact `AmbientCapabilities` grant is.
 - external DNS/TLS observation stays disabled without `--external-domain`; failures are `UNKNOWN`, while an explicitly expected CDN domain that publishes the local address is `RISK`.
 
-The latest four-host standard run completed in about 4 to 8 seconds with the expanded workload graph. Deep runs on the two busiest lab hosts took about 37 to 54 seconds. These timings are observations from 1 vCPU / 1 GB lab VPS instances, not performance guarantees.
+The July 2026 hardening regression used five disposable Debian 13, 1 vCPU / 1 GB
+hosts. A full cross-host matrix completed 40/40 TCP and UDP probes. The same
+candidate produced and semantically verified all four report languages, passed
+a deep audit, recognized an allow reached through a custom iptables INPUT chain,
+and evaluated real Docker publication plus DOCKER-USER fall-through semantics.
+Cleanup checks found no residual listeners, labelled rules, containers, helper
+processes, or runtime state. Host addresses and raw reports remain uncommitted.
+
+Earlier mixed-workload standard runs completed in about 4 to 8 seconds with the
+expanded workload graph. Deep runs on the two busiest lab hosts took about 37 to
+54 seconds. These timings are observations from 1 vCPU / 1 GB lab VPS instances,
+not performance guarantees.
 
 Never commit real host reports. They may contain IP addresses, domains, usernames, paths, and operational evidence.
 

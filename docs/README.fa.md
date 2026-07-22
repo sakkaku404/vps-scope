@@ -63,11 +63,11 @@ curl -fsSL https://sakkaku404.github.io/vps-scope/run.sh | sudo bash
 ممیزی تنها یک مجموعه از نتایج را تولید می کند، اما آنها در چهار قالب ذخیره می شوند:
 
 ```text
-report.zh-CN.html   推荐，下载到电脑后用浏览器打开
-report.zh-CN.txt    终端文字版
-report.zh-CN.md     完整 Markdown 报告
-report.json         完整机器可读数据，用于对比和基线
-manifest.json       上面四份报告的 SHA-256 校验清单
+report.fa-IR.html   توصیه می‌شود؛ پس از دانلود با مرورگر باز کنید
+report.fa-IR.txt    نسخه متنی برای ترمینال
+report.fa-IR.md     گزارش کامل Markdown
+report.json         داده کامل ماشین‌خوان برای مقایسه و خط مبنا
+manifest.json       فهرست SHA-256 چهار فایل گزارش بالا
 ```
 
 به عبارت دیگر، ** 4 فرمت مختلف از نتایج آزمون یکسان در فهرست، به اضافه 1 چک لیست **، نه چهار تست وجود دارد.
@@ -75,15 +75,15 @@ manifest.json       上面四份报告的 SHA-256 校验清单
 در پایان اجرا، برنامه مسیرهای کامل پنج فایل را نمایش می دهد و دستور دانلود `scp` را می دهد. فایل HTML در VPS از راه دور ذخیره می شود و نمی تواند مستقیماً مانند یک پیوند وب در ترمینال معمولی SSH باز شود. لطفا آن را در رایانه خود دانلود کنید و برای مشاهده دوبار کلیک کنید:
 
 ```bash
-scp root@你的VPS地址:'/root/vps-scope-reports/latest/report.zh-CN.html' .
+scp root@VPS_ADDRESS:'/root/vps-scope-reports/latest/report.fa-IR.html' .
 ```
 
 اگر VPS Scope نصب شده باشد، می‌توانید در هر زمان آن را پرس و جو کنید:
 
 ```bash
-sudo vps-scope report show  # 在终端重新显示最近结果
-sudo vps-scope report path  # 显示最近报告目录
-sudo vps-scope report list  # 列出历史报告
+sudo vps-scope report show  # نمایش دوباره آخرین نتیجه در ترمینال
+sudo vps-scope report path  # نمایش پوشه آخرین گزارش
+sudo vps-scope report list  # فهرست گزارش‌های ذخیره‌شده
 ```
 
 گزارش HTML ابتدا به پنج سوال در مورد "ورودی گره، سطح مدیریت، پیکربندی و عملکرد، در دسترس بودن سرویس و پایگاه امنیتی لینوکس" قبل از نمایش پیشنهادات پردازش و جزئیات فنی پاسخ می دهد. این صفحه از جستجو، فیلتر کردن بر اساس وضعیت، و گسترش همه شواهد بدون بارگیری اسکریپت ها یا فونت های خارجی پشتیبانی می کند.
@@ -175,7 +175,7 @@ sudo vps-scope
 بدون پارامتر، بوت چینی/انگلیسی وارد خواهد شد. همچنین می توانید مستقیماً آن را مشخص کنید:
 
 ```bash
-sudo vps-scope audit --lang zh-CN --profile proxy
+sudo vps-scope audit --lang fa-IR --profile proxy
 sudo vps-scope audit --profile custom --expect-public 22/tcp,443/tcp
 sudo vps-scope audit --deep
 ```
@@ -183,14 +183,14 @@ sudo vps-scope audit --deep
 هر دو حالت تعاملی و دستورات اجرای ad-hoc در وب خلاصه ترمینال را نشان می دهند و گزارش کامل را به طور پیش فرض ذخیره می کنند. مکان را به صورت دستی مشخص کنید:
 
 ```bash
-sudo vps-scope audit --lang zh-CN --profile proxy \
+sudo vps-scope audit --lang fa-IR --profile proxy \
   --format bundle --also-terminal --output ./reports/my-vps
 ```
 
 اگر از قبل JSON دارید، می توانید گزارش را به صورت آفلاین و بدون اتصال مجدد به سرور بازسازی کنید:
 
 ```bash
-vps-scope render --lang zh-CN --format html --output report.html report.json
+vps-scope render --lang fa-IR --format html --output report.html report.json
 vps-scope verify report.json
 vps-scope verify ./reports/my-vps
 ```

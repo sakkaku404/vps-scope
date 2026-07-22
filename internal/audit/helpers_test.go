@@ -316,7 +316,7 @@ func TestPanelFirewallDisposition(t *testing.T) {
 		{"allow anywhere", panelUFW{available: true, active: true, defaultDeny: true, lines: []string{"2053/tcp ALLOW IN Anywhere"}}, "allow-anywhere"},
 		{"trusted source", panelUFW{available: true, active: true, defaultDeny: true, lines: []string{"2053/tcp ALLOW IN 10.8.0.0/24"}}, "restricted"},
 		{"default blocked", panelUFW{available: true, active: true, defaultDeny: true}, "blocked-by-default"},
-		{"unsupported firewall", panelUFW{}, "unknown"},
+		{"unsupported firewall", panelUFW{}, "inactive"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

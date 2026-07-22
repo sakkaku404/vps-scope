@@ -123,7 +123,7 @@ func checkPanelManagement(ctx *Context) model.Finding {
 			publicUnrestricted++
 			f.Status, f.Severity = model.Risk, model.High
 			judgment = "public-management-exposed"
-		case "restricted", "blocked-by-default":
+		case "restricted", "blocked-by-default", "blocked-by-explicit-rule":
 			// Public binding is constrained by the host firewall.
 		default:
 			unknowns++
@@ -314,27 +314,11 @@ func panelListenerScope(listeners []Listener, port string, f *model.Finding) (st
 	return scope, scope != ""
 }
 
-type panelUFW struct {
-	available, active, defaultDeny bool
-	defaultDenyByFamily            map[string]bool
-	lines                          []string
-	backend                        string
-	rules                          []firewallRule
-	collectionErr                  error
-}
-
 func readPanelUFW(ctx *Context) panelUFW {
 	if ctx.Facts != nil {
 		return ctx.Facts.UFW()
 	}
 	return collectHostFirewall(ctx.Commander)
-}
-
-func parsePanelUFW(output string) panelUFW {
-	defaultDeny := regexp.MustCompile(`(?mi)^Default:\s+deny \(incoming\)`).MatchString(output)
-	f := panelUFW{available: true, active: regexp.MustCompile(`(?mi)^Status:\s+active\s*$`).MatchString(output), defaultDeny: defaultDeny, defaultDenyByFamily: map[string]bool{"any": defaultDeny}, lines: lines(output), backend: "ufw"}
-	f.rules = parseUFWRules(f.lines)
-	return f
 }
 
 func panelFirewallDisposition(ufw panelUFW, port string, f *model.Finding) string {

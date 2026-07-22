@@ -149,6 +149,32 @@ func TestScenarioPanelAndDockerRiskRelations(t *testing.T) {
 	requireStatus(t, checkDocker(ctx), "DOCKER-001", model.Risk)
 }
 
+func TestScenarioPublicPanelAllowedThroughCustomIPTablesChainIsRisk(t *testing.T) {
+	cmd := newScenarioCommander(nil, nil)
+	ctx := scenarioContext(cmd)
+	ctx.Facts.listenersOnce.Do(func() {
+		ctx.Facts.listeners = []Listener{{Protocol: "tcp", Address: "0.0.0.0", Port: "2095", Scope: "public-wildcard", Process: "x-ui"}}
+	})
+	rules, policy, unresolved := parseIPTablesFirewallDetailed(`*filter
+:INPUT DROP [0:0]
+:PANEL-IN - [0:0]
+-A INPUT -j PANEL-IN
+-A PANEL-IN -p tcp --dport 2095 -j ACCEPT
+COMMIT`, "ipv4")
+	if unresolved != 0 {
+		t.Fatalf("iptables fixture unresolved=%d", unresolved)
+	}
+	ctx.Facts.ufwOnce.Do(func() {
+		ctx.Facts.ufw = panelUFW{available: true, active: true, backend: "iptables", defaultPolicyByFamily: map[string]string{"ipv4": policy}, rules: rules}
+	})
+	panel := panelSnapshot{Product: "3x-ui", DatabaseAvailable: true, Endpoints: []panelEndpoint{{Role: "management", Port: "2095", Listen: "0.0.0.0", Source: "fixture", TLSKnown: true, TLS: true, PathKnown: true}}}
+	ctx.Facts.panelsOnce.Do(func() { ctx.Facts.panels = []panelSnapshot{panel} })
+	f := checkPanelManagement(ctx)
+	if f.Status != model.Risk || f.Severity != model.High {
+		t.Fatalf("custom-chain panel exposure status=%s severity=%s evidence=%+v", f.Status, f.Severity, f.Evidence)
+	}
+}
+
 func TestScenarioConnectionSnapshotIsSharedAcrossNetworkAndProxyFindings(t *testing.T) {
 	key := scenarioCommandKey("ss", "-H", "-ntup", "state", "established")
 	cmd := newScenarioCommander([]string{"ss", "ps"}, map[string]CommandResult{

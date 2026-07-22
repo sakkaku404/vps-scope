@@ -193,7 +193,7 @@ func checkFirewallExposure(ctx *Context) model.Finding {
 	groups := map[string]*ruleGroup{}
 	unrestricted := 0
 	for _, rule := range normalized.rules {
-		if rule.Action != "allow" || !includeFirewallExposureRule(normalized.backend, rule.Origin) {
+		if rule.Action != "allow" || !includeFirewallExposureRule(normalized.backend, rule) {
 			continue
 		}
 		key := strings.Join([]string{rule.Protocol, rule.Port, rule.Source}, "\x00")
@@ -293,12 +293,18 @@ func checkFirewallExposure(ctx *Context) model.Finding {
 	return withIncompleteEvidence(f, "host firewall discovery", normalized.collectionErr)
 }
 
-func includeFirewallExposureRule(backend, origin string) bool {
-	switch origin {
-	case "ufw-user", "firewalld-zone", "iptables-input", "nft-input", "nft-unknown":
+func includeFirewallExposureRule(backend string, rule firewallRule) bool {
+	switch rule.Origin {
+	case "ufw-user", "firewalld-zone", "iptables-input", "iptables-reachable", "nft-input", "nft-unknown":
 		return true
 	case "nft-reachable":
-		return backend == "nftables"
+		if backend == "nftables" {
+			return true
+		}
+		// When UFW is active, the live nftables graph is merged specifically
+		// to expose rules installed outside UFW. Do not re-list UFW's generated
+		// internal chains, but retain independent workload/user chains.
+		return backend == "ufw+nftables" && !strings.HasPrefix(strings.ToLower(rule.Chain), "ufw-")
 	default:
 		return false
 	}

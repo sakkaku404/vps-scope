@@ -35,10 +35,23 @@ Never commit lab addresses, SSH aliases, credentials, raw reports, or the author
 On a Windows development host, the bounded parallel matrix runner accepts SSH aliases as arguments and writes only alias-to-alias outcomes:
 
 ```powershell
-.\scripts\lab\run-connectivity-matrix.ps1 -Hosts lab-a,lab-b,lab-c,lab-d -Output .\lab-result.json
+.\scripts\lab\run-connectivity-matrix.ps1 -Hosts lab-a,lab-b,lab-c,lab-d `
+  -SshUser root -IdentityFile $HOME\.ssh\vps-scope-lab -Output .\lab-result.json
 ```
 
 The runner does not create the authorization marker or copy binaries. It verifies an exact network-and-port readiness marker before probing, uses bounded TCP/UDP retries within one timeout to tolerate an isolated dropped packet or connection attempt, waits for scenario cleanup, removes its bounded stdout/stderr capture files, and fails if a probe fails or a lab UFW rule, serving helper, or runtime state file remains. The target address is used only as the probe destination and is not written to the result.
+
+The host-firewall-chain runner inserts one temporary INPUT jump to a dedicated
+user chain and exposes one reserved TCP listener. It proves that an allow in a
+reachable custom iptables chain is not hidden by a default-deny policy. The
+listener, jump, chain, and helper log are removed by the exit trap; the verified
+report remains at the selected path for semantic review:
+
+```bash
+sudo VPS_SCOPE_LAB_AUDIT_BIN=/opt/vps-scope-lab/vps-scope \
+  VPS_SCOPE_LAB_REPORT=/run/vps-scope-lab/host-firewall-chain-report \
+  ./scripts/lab/run-host-firewall-chain.sh
+```
 
 The guarded report fault-injection runner verifies that the candidate rejects undeclared files, missing files, symlinked payloads, and a manifest-consistent but semantically invalid report. It accepts only an existing candidate binary and report bundle, uses a fixed runtime directory, and removes every injected bundle on exit:
 
@@ -55,3 +68,17 @@ sudo VPS_SCOPE_LAB_AUDIT_BIN=/opt/vps-scope-lab/vps-scope \
 ```
 
 It intentionally refuses to pull an image or create more than 64 additional containers. The unit fixtures cover the 128-container refusal path; the disposable runner exists to prove the normal multi-batch path on a real Docker daemon without exhausting a small VPS.
+
+The Docker firewall semantics runner creates one loopback publication, one
+public host-to-container port translation, and one privileged container. It
+also inserts a labelled source allow without a closing deny in `DOCKER-USER`;
+the report must recognize that unrelated Internet traffic still falls through
+to Docker's accept path. The rule and all three containers are removed by the
+exit trap, while the verified report is retained at the explicitly selected
+path for review:
+
+```bash
+sudo VPS_SCOPE_LAB_AUDIT_BIN=/opt/vps-scope-lab/vps-scope \
+  VPS_SCOPE_LAB_REPORT=/run/vps-scope-lab/docker-firewall-report \
+  ./scripts/lab/run-docker-firewall-semantics.sh
+```

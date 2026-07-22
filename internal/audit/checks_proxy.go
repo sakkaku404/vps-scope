@@ -228,7 +228,7 @@ func checkProxyControlEndpoints(ctx *Context, summaries []proxyConfigSummary) mo
 		switch panelFirewallDispositionFamily(ufw, endpoint.Port, family, &f) {
 		case "allow-anywhere", "inactive":
 			f.Status, f.Severity = model.Risk, model.High
-		case "restricted", "blocked-by-default":
+		case "restricted", "blocked-by-default", "blocked-by-explicit-rule":
 		default:
 			unknown++
 		}
@@ -419,7 +419,7 @@ func checkProxyEndpointRelations(ctx *Context, summaries []proxyConfigSummary) m
 	active := activeProxyProducts(ctx)
 	ufw := readPanelUFW(ctx)
 	graph := buildProxyEndpointGraph(inbounds, listeners, ufw)
-	matched, missing, semanticProblems := 0, 0, 0
+	matched, missing, semanticProblems, relationUnknown := 0, 0, 0, 0
 	for _, endpoint := range inbounds {
 		if endpoint.RealityEnabled && (!endpoint.RealityKeySet || endpoint.RealityTargets == 0 || endpoint.RealityServerIDs == 0) {
 			semanticProblems++
@@ -449,12 +449,20 @@ func checkProxyEndpointRelations(ctx *Context, summaries []proxyConfigSummary) m
 		if assessment.Risk {
 			f.Status, f.Severity = model.Risk, model.Medium
 		}
+		if assessment.Unknown {
+			relationUnknown++
+			if f.Status != model.Risk {
+				f.Status, f.Unavailable = model.Unknown, true
+				f.Error = "one or more proxy ingress firewall relationships could not be determined"
+			}
+		}
 		inbound := proxyInbound{Product: endpoint.Product, Protocol: endpoint.Protocol, Port: endpoint.Port, Security: endpoint.Security}
 		f.Evidence = append(f.Evidence, model.Evidence{Source: endpoint.Source + " + ss + host firewall", Key: "endpoint_relation", Value: endpointRelationValue(inbound, endpoint.Transport, valueOr(endpoint.Process, "none"), valueOr(endpoint.Scope, "none"), valueOr(endpoint.Firewall, "not-live"), assessment.Judgment)})
 	}
 	f.Facts["matched_listener_relations"] = strconv.Itoa(matched)
 	f.Facts["missing_listener_relations"] = strconv.Itoa(missing)
 	f.Facts["semantic_problems"] = strconv.Itoa(semanticProblems)
+	f.Facts["unknown_firewall_relations"] = strconv.Itoa(relationUnknown)
 	if connections, err := ctx.Facts.EstablishedConnections(); err == nil {
 		ports := map[string]bool{}
 		for _, endpoint := range inbounds {

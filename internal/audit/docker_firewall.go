@@ -93,7 +93,7 @@ func parseDockerIPTables(output, family string) (available, userChain, forwardHo
 	forwardHook = strings.Contains(output, "-A FORWARD") && containsAny(output, "DOCKER-USER", "DOCKER-FORWARD", "-j DOCKER")
 	defaultDrop = regexp.MustCompile(`(?m)^:FORWARD\s+(DROP|REJECT)\b`).MatchString(output)
 	for _, line := range lines(output) {
-		if !strings.HasPrefix(line, "-A DOCKER-USER ") || !containsAny(line, "-j ACCEPT", "-j DROP", "-j REJECT") {
+		if !strings.HasPrefix(line, "-A DOCKER-USER ") || !containsAny(line, "-j ACCEPT", "-j DROP", "-j REJECT", "-j RETURN") {
 			continue
 		}
 		fields := strings.Fields(line)
@@ -105,38 +105,65 @@ func parseDockerIPTables(output, family string) (available, userChain, forwardHo
 			}
 			return fallback
 		}
-		port := value("--dport", "")
+		port, origin := value("--ctorigdstport", ""), "docker-user-original"
 		if !validPort(port) {
-			continue
+			port, origin = value("--dport", "any"), "docker-user-translated"
+			if port != "any" && !validPort(port) {
+				continue
+			}
 		}
 		action := strings.ToLower(value("-j", ""))
 		if action == "accept" {
 			action = "allow"
-		} else {
+		} else if action == "drop" || action == "reject" {
 			action = "deny"
+		} else if action != "return" {
+			continue
 		}
 		source := value("-s", "any")
 		if source == "0.0.0.0/0" || source == "::/0" {
 			source = "any"
 		}
-		rules = append(rules, firewallRule{Family: family, Protocol: strings.ToLower(value("-p", "any")), Port: port, Source: source, Action: action, Origin: "docker-user", Raw: line})
+		parsed, understood := parseIPTablesTerminalRule(stripIPTablesComment(line), family, "DOCKER-USER", false)
+		conditional := !understood
+		if len(parsed) > 0 {
+			conditional = parsed[0].Conditional
+		}
+		// Original-destination matching is the reliable way to constrain a
+		// published host port in DOCKER-USER. A normal --dport observes the
+		// translated container port after DNAT.
+		rules = append(rules, firewallRule{Family: family, Protocol: strings.ToLower(value("-p", "any")), Port: port, Source: source, Action: action, Origin: origin, Raw: line, Chain: "DOCKER-USER", Conditional: conditional})
 	}
 	return
 }
 
-func dockerForwardDisposition(f dockerFirewallFacts, port, protocol, family string) string {
+func dockerForwardDisposition(f dockerFirewallFacts, hostPort, targetPort, protocol, family string) string {
 	if !f.Available || !f.ForwardHook {
 		return "unknown"
 	}
 	if family != "any" && len(f.AvailableByFamily) > 0 && !f.AvailableByFamily[family] {
 		return "unknown"
 	}
-	restricted := false
+	restricted, conditional := false, false
 	for _, rule := range f.Rules {
-		if rule.Port != port || (rule.Protocol != "any" && rule.Protocol != protocol) || (rule.Family != "any" && rule.Family != family) {
+		port := targetPort
+		if rule.Origin == "docker-user-original" {
+			port = hostPort
+		}
+		if (rule.Port != "any" && rule.Port != port) || (rule.Protocol != "any" && rule.Protocol != protocol) || (rule.Family != "any" && rule.Family != family) {
 			continue
 		}
+		if rule.Conditional {
+			conditional = true
+			continue
+		}
+		if rule.Action == "return" {
+			break
+		}
 		if rule.Action == "deny" && rule.Source == "any" {
+			if restricted {
+				return "restricted-by-docker-user"
+			}
 			return "blocked-by-docker-user"
 		}
 		if rule.Action == "allow" && rule.Source == "any" {
@@ -146,8 +173,8 @@ func dockerForwardDisposition(f dockerFirewallFacts, port, protocol, family stri
 			restricted = true
 		}
 	}
-	if restricted {
-		return "restricted-by-docker-user"
+	if conditional {
+		return "conditional-unknown"
 	}
 	if f.UserChain {
 		return "docker-user-fallthrough"
@@ -176,13 +203,14 @@ func checkDockerFirewallPath(ctx *Context, containers []dockerInspect) model.Fin
 				}
 				public++
 				family := listenerAddressFamily(binding.HostIP)
-				forward := dockerForwardDisposition(facts, binding.HostPort, protocol, family)
+				targetPort := strings.SplitN(target, "/", 2)[0]
+				forward := dockerForwardDisposition(facts, binding.HostPort, targetPort, protocol, family)
 				host := firewallDispositionFamily(hostFirewall, binding.HostPort, protocol, family)
 				judgment := "docker-published-path-visible"
-				if forward == "unknown" {
+				if forward == "unknown" || forward == "conditional-unknown" {
 					unknown++
 					judgment = "forwarding-path-unavailable"
-				} else if (host == "blocked-by-default" || host == "no-explicit-rule") && containsAny(forward, "fallthrough", "unfiltered", "allowed") {
+				} else if (host == "blocked-by-default" || host == "blocked-by-explicit-rule" || host == "no-explicit-rule") && containsAny(forward, "fallthrough", "unfiltered", "allowed") {
 					bypasses++
 					judgment = "docker-forward-may-bypass-host-input-policy"
 				}

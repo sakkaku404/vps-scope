@@ -133,7 +133,14 @@ func commandEnvironment() []string {
 
 func resolveSystemExecutable(name string) (string, error) {
 	if filepath.IsAbs(name) {
-		return filepath.EvalSymlinks(name)
+		info, err := os.Stat(name)
+		if err != nil {
+			return "", err
+		}
+		if info.IsDir() || info.Mode()&0o111 == 0 {
+			return "", fmt.Errorf("not an executable file: %s", name)
+		}
+		return filepath.Clean(name), nil
 	}
 	if strings.ContainsRune(name, filepath.Separator) {
 		return "", fmt.Errorf("relative executable paths are not allowed: %s", name)
@@ -142,7 +149,11 @@ func resolveSystemExecutable(name string) (string, error) {
 		candidate := filepath.Join(dir, name)
 		info, err := os.Stat(candidate)
 		if err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
-			return filepath.EvalSymlinks(candidate)
+			// Preserve the invoked name. Multi-call programs such as
+			// xtables-nft-multi select iptables-save/ip6tables-save behavior
+			// from argv[0]. verifyTrustedExecutable still validates the final
+			// target and every parent directory before execution.
+			return candidate, nil
 		}
 	}
 	return "", fmt.Errorf("executable not found in system PATH: %s", name)
