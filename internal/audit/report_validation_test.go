@@ -29,6 +29,17 @@ func TestValidateReportAcceptsCompleteContract(t *testing.T) {
 	}
 }
 
+func TestValidateReportRejectsInvalidStructuredEndpoint(t *testing.T) {
+	r := validContractReport()
+	r.Endpoints = []model.Endpoint{{Protocol: "tcp", Port: 443, Family: "ipv4", Scope: "public", Role: "ssh", ExpectedExposure: "public"}, {Protocol: "tcp", Port: 443, Family: "ipv4", Scope: "public", Role: "invented", ExpectedExposure: "magic"}}
+	failures := strings.Join(ValidateReport(r), "\n")
+	for _, want := range []string{"invalid role", "invalid expected_exposure", "duplicate endpoint"} {
+		if !strings.Contains(failures, want) {
+			t.Fatalf("missing %q in %s", want, failures)
+		}
+	}
+}
+
 func TestValidateReportAcceptsEverySupportedLocale(t *testing.T) {
 	for _, locale := range []string{"zh-CN", "en", "ru-RU", "fa-IR"} {
 		r := validContractReport()

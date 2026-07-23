@@ -56,6 +56,35 @@ func ValidateReport(r model.Report, verifierVersion ...string) []string {
 			failures = append(failures, fmt.Sprintf("invalid profile %s %q", field.name, field.value))
 		}
 	}
+	seenEndpoints := map[string]bool{}
+	for index, endpoint := range r.Endpoints {
+		if endpoint.Protocol != "tcp" && endpoint.Protocol != "udp" {
+			failures = append(failures, fmt.Sprintf("endpoint %d has invalid protocol %q", index+1, endpoint.Protocol))
+		}
+		if endpoint.Port < 1 || endpoint.Port > 65535 {
+			failures = append(failures, fmt.Sprintf("endpoint %d has invalid port %d", index+1, endpoint.Port))
+		}
+		if endpoint.Family != "ipv4" && endpoint.Family != "ipv6" {
+			failures = append(failures, fmt.Sprintf("endpoint %d has invalid family %q", index+1, endpoint.Family))
+		}
+		if !containsReportValue(endpoint.Scope, "public", "public-wildcard", "private", "loopback") {
+			failures = append(failures, fmt.Sprintf("endpoint %d has invalid scope %q", index+1, endpoint.Scope))
+		}
+		if endpoint.Role != "" && !containsReportValue(endpoint.Role, "proxy-ingress", "management", "subscription", "control-api", "web", "ssh", "other") {
+			failures = append(failures, fmt.Sprintf("endpoint %d has invalid role %q", index+1, endpoint.Role))
+		}
+		if endpoint.ExpectedExposure != "" && !containsReportValue(endpoint.ExpectedExposure, "public", "restricted", "private", "loopback", "blocked") {
+			failures = append(failures, fmt.Sprintf("endpoint %d has invalid expected_exposure %q", index+1, endpoint.ExpectedExposure))
+		}
+		if len(endpoint.Process) > 256 {
+			failures = append(failures, fmt.Sprintf("endpoint %d process evidence is too long", index+1))
+		}
+		key := fmt.Sprintf("%s/%d/%s/%s", endpoint.Protocol, endpoint.Port, endpoint.Family, endpoint.Scope)
+		if seenEndpoints[key] {
+			failures = append(failures, fmt.Sprintf("duplicate endpoint %s", key))
+		}
+		seenEndpoints[key] = true
+	}
 
 	expected := make(map[string]bool, len(StableCheckIDs))
 	for _, id := range StableCheckIDs {
@@ -124,6 +153,15 @@ func ValidateReport(r model.Report, verifierVersion ...string) []string {
 		failures = append(failures, fmt.Sprintf("summary does not match findings: declared=%+v recounted=%+v", r.Summary, recounted.Summary))
 	}
 	return failures
+}
+
+func containsReportValue(value string, allowed ...string) bool {
+	for _, item := range allowed {
+		if value == item {
+			return true
+		}
+	}
+	return false
 }
 
 func validSeverity(severity model.Severity) bool {

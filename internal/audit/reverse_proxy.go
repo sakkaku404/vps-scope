@@ -368,7 +368,7 @@ func checkReverseProxyRelations(ctx *Context) model.Finding {
 	return withIncompleteEvidence(f, "reverse-proxy configuration discovery", discoveryErr)
 }
 
-func assessReverseProxyRoutes(routes []reverseProxyRoute, listeners []Listener, firewall panelUFW, panels []panelSnapshot) model.Finding {
+func assessReverseProxyRoutes(routes []reverseProxyRoute, listeners []Listener, firewall hostFirewallSnapshot, panels []panelSnapshot) model.Finding {
 	f := model.Finding{ID: "WORK-013", Category: "workloads", Status: model.Pass, Facts: map[string]string{"routes": strconv.Itoa(len(routes))}}
 	managementPorts := map[string]string{}
 	for _, panel := range panels {

@@ -42,9 +42,10 @@ type endpointAssessment struct {
 	Judgment string
 	Risk     bool
 	Missing  bool
+	Unknown  bool
 }
 
-func buildProxyEndpointGraph(inbounds []configuredProxyInbound, listeners []Listener, firewall panelUFW) endpointGraph {
+func buildProxyEndpointGraph(inbounds []configuredProxyInbound, listeners []Listener, firewall hostFirewallSnapshot) endpointGraph {
 	graph := endpointGraph{}
 	for index, inbound := range inbounds {
 		transports := inbound.Transports
@@ -115,8 +116,15 @@ func assessProxyEndpointGraph(graph endpointGraph, active map[string]bool) []end
 			judgment, risk := "expected-proxy-ingress", false
 			if product, known := listenerProxyProduct(runtime.Process); known && !sameProxyProduct(product, configured.Product) {
 				judgment, risk = "listener-owner-does-not-match-configured-product", true
-			} else if (runtime.Scope == "public" || runtime.Scope == "public-wildcard") && runtime.Firewall == "blocked-by-default" {
-				judgment, risk = "configured-public-ingress-blocked-by-host-firewall", true
+			} else if runtime.Scope == "public" || runtime.Scope == "public-wildcard" {
+				switch runtime.Firewall {
+				case "blocked-by-default", "blocked-by-explicit-rule":
+					judgment, risk = "configured-public-ingress-blocked-by-host-firewall", true
+				case "unknown", "conditional-unknown", "no-explicit-rule":
+					judgment = "configured-public-ingress-firewall-unknown"
+					out = append(out, endpointAssessment{Node: combined, Judgment: judgment, Unknown: true})
+					continue
+				}
 			}
 			out = append(out, endpointAssessment{Node: combined, Judgment: judgment, Risk: risk})
 		}

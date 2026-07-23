@@ -23,7 +23,7 @@ type doctorFixtureCommander struct {
 }
 
 func TestSubcommandHelpIsSuccessfulAndUsesProvidedWriter(t *testing.T) {
-	for _, args := range [][]string{{"audit", "--help"}, {"diff", "--help"}, {"baseline", "--help"}, {"report", "--help"}, {"verify", "--help"}} {
+	for _, args := range [][]string{{"audit", "--help"}, {"diff", "--help"}, {"baseline", "--help"}, {"policy", "--help"}, {"probe", "--help"}, {"report", "--help"}, {"verify", "--help"}} {
 		var out bytes.Buffer
 		if err := Run(args, bytes.NewReader(nil), &out, &out, BuildInfo{Version: "test"}); err != nil {
 			t.Fatalf("%v: %v", args, err)
@@ -108,6 +108,9 @@ func TestDownloadCommandFromSSHConnection(t *testing.T) {
 }
 
 func TestBundleHelpExplainsOneAuditAndFiveFiles(t *testing.T) {
+	// The output contract under test is the non-SSH fallback. CI and real-VPS
+	// runners may themselves execute over SSH, so seal that ambient input.
+	t.Setenv("SSH_CONNECTION", "")
 	var out bytes.Buffer
 	e := environment{out: &out}
 	dir := filepath.Join(string(filepath.Separator), "root", "vps-scope-reports", "latest")

@@ -7,7 +7,7 @@ VPS Scope 1.x 将机器可读的审计格式视为公开接口。终端、文本
 ## Guaranteed throughout 1.x / 1.x 内的保证
 
 - `schema_version: "1.0"` reports remain readable by current 1.x commands. Existing required fields keep their meaning; new fields are optional unless a new report schema is introduced.
-- The 51 check IDs published at 1.0 are permanent and append-only. An ID is never reused for another check, and a new check receives a new ID.
+- The 51 check IDs published at 1.0 are permanent and append-only. The current catalog has 55 IDs; an ID is never reused for another check, and a new check receives a new ID.
 - Existing `reason_code` values keep their meaning. New reason codes may be added when evidence becomes more precise, without changing the meaning of an existing code.
 - Canonical statuses remain `PASS`, `RISK`, `INFO`, and `UNKNOWN`. Failed or incomplete collection does not become `PASS`.
 - JSON reports created before 1.0 remain accepted according to the contract available in their tool version. Baseline v1 remains readable with its weaker identity warning; baseline v2 is the stable 1.x baseline format.
@@ -16,7 +16,7 @@ VPS Scope 1.x 将机器可读的审计格式视为公开接口。终端、文本
 - Ubuntu and Debian on Linux amd64 and arm64 are the supported 1.x platform family. Unsupported distributions fail explicitly rather than receiving optimistic results.
 
 - `schema_version: "1.0"` 的报告在 1.x 中保持可读。既有必填字段不改变含义；除非引入新的报告 schema，否则新增字段必须是可选的。
-- 1.0 发布时已有的 51 个检查 ID 永久保留，只能追加，不能改作其他用途。
+- 1.0 发布时已有的 51 个检查 ID 永久保留，只能追加，不能改作其他用途；当前目录共有 55 个检查 ID。
 - 既有 `reason_code` 不改变含义。证据模型变得更精确时可以增加新原因码，但不能偷偷重定义旧原因码。
 - 规范状态保持为 `PASS`、`RISK`、`INFO` 和 `UNKNOWN`；取证失败或证据不完整不能变成 `PASS`。
 - 1.0 以前生成的 JSON 按其工具版本已有的契约继续可读。baseline v1 继续以较弱身份提示方式兼容，baseline v2 是稳定的 1.x 基线格式。

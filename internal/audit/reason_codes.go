@@ -76,6 +76,14 @@ func riskReasonSuffix(f model.Finding) string {
 		default:
 			return "panel-runtime-mismatch"
 		}
+	case "WORK-015":
+		return "deployment-policy-mismatch"
+	case "WORK-016":
+		return "egress-policy-mismatch"
+	case "WORK-017":
+		return "known-security-advisory"
+	case "NET-004":
+		return "external-observation-mismatch"
 	case "DOCKER-001":
 		return "unsafe-container-isolation"
 	case "DOCKER-002":

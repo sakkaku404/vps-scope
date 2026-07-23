@@ -31,7 +31,7 @@ curl -fsSL https://sakkaku404.github.io/vps-scope/run.sh | sudo bash
 
 [简体中文](README.md) · [English](docs/README.en.md) · [Русский](docs/README.ru.md) · [فارسی](docs/README.fa.md)
 
-[代理兼容性](docs/PROXY-COMPATIBILITY.md) · [检查项目](docs/CHECKS.md) · [隐私说明](docs/PRIVACY.md)
+[代理兼容性](docs/PROXY-COMPATIBILITY.md) · [检查项目](docs/CHECKS.md) · [策略与外部观察](docs/POLICY-AND-PROBE.md) · [隐私说明](docs/PRIVACY.md)
 
 ## 一个真实例子
 
@@ -163,7 +163,7 @@ HTML 报告会先回答“节点入口、管理面、配置与运行、服务可
 3. **可能影响可用性**：入口、防火墙、证书或服务恢复问题
 4. **证据不足**：工具无法可靠判断的部分
 
-最后的“检查结果索引”只是 51 项检查的状态目录。完整证据在 HTML、Markdown 和 JSON 中。
+最后的“检查结果索引”只是 55 项检查的状态目录。完整证据在 HTML、Markdown 和 JSON 中。
 
 ## 安装和常用命令
 
@@ -205,6 +205,41 @@ vps-scope baseline create report.json baseline.json
 vps-scope baseline check baseline.json report-new.json
 ```
 
+### 把“我的部署意图”写进审计
+
+自动识别可以解释常见面板和代理入口，但它不知道你是否特意把某个端口限制给 VPN、某个订阅是否必须使用 TLS，或 IPv4/IPv6 应该从哪张网卡出去。策略文件用来声明这些预期，不包含节点凭据，也不会修改系统：
+
+```bash
+vps-scope policy init policy.json
+# 编辑 policy.json，填写实际端口、角色、暴露范围和出口要求
+vps-scope policy validate policy.json
+sudo vps-scope audit --profile proxy --policy policy.json
+```
+
+有策略时，报告会明确比较管理面、订阅、控制 API、代理入口、来源限制、TLS/路径和出口 DNS；没有策略时仍会运行原有识别，但不会把工具的推断伪装成你的部署要求。
+
+### 从另一台机器复核公网可达性
+
+本机的 `ss` 和防火墙无法证明云防火墙及公网路由的最终效果。可以在被审计 VPS 生成一个不含凭据的探测计划，复制到另一台受控机器执行，再把结果导回报告：
+
+```bash
+# 被审计 VPS
+vps-scope probe plan --target 203.0.113.10 --output plan.json report.json
+
+# 另一台 VPS
+vps-scope probe run --output observation.json plan.json
+
+# 把 observation.json 复制回来后
+vps-scope probe import --output report-observed.json report.json observation.json
+vps-scope render --lang zh-CN --format html --output report-observed.html report-observed.json
+```
+
+TCP 会得到外部可达/不可达证据，并与策略中的预期暴露范围比较。UDP 不会因为“成功发送了一个任意数据包”就宣称节点可用，而是明确保留为 `UNKNOWN`，需要真正懂协议的客户端测试。
+
+### 离线版本安全公告
+
+报告会把检测到的 3x-ui、sing-box 和 Xray 版本与随程序发布的官方安全公告快照进行匹配。这个过程不联网；命中已知受影响范围会给出 `RISK` 和公告链接，版本读不到或公告库过旧会是 `UNKNOWN`。没有命中只表示“当前内置公告中没有匹配项”，不等于软件不存在其他漏洞。
+
 公开报告前先生成脱敏版：
 
 ```bash
@@ -225,7 +260,7 @@ VPS Scope 能检查 VPS 内部看到的配置和运行状态，但不能：
 
 - 证明服务器一定没有被入侵
 - 从 VPS 内部读取云厂商安全组
-- 代替真实客户端连接和异地网络测试
+- 代替真实客户端协议握手；外部 TCP 探针也不能证明代理协议本身可用
 - 保证尚未适配的新面板 schema 一定能被正确理解
 
 默认检查适合日常运行。`--deep` 会额外检查 SUID/SGID、文件 capabilities 和系统包完整性，耗时更长。未运行的深度项目会显示为未执行，不会显示 `PASS`。

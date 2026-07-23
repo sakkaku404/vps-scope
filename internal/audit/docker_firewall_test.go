@@ -13,29 +13,30 @@ func TestParseDockerIPTablesForwardPath(t *testing.T) {
 :DOCKER-FORWARD - [0:0]
 -A FORWARD -j DOCKER-USER
 -A FORWARD -j DOCKER-FORWARD
--A DOCKER-USER -p tcp -s 203.0.113.0/24 --dport 8443 -j ACCEPT
+	-A DOCKER-USER -p tcp -s 203.0.113.0/24 --dport 8443 -j ACCEPT
+	-A DOCKER-USER -p tcp --dport 8443 -j DROP
 -A DOCKER-USER -p tcp --dport 2053 -j DROP
 -A DOCKER-USER -j RETURN
 COMMIT`
 	available, user, hook, drop, rules := parseDockerIPTables(fixture, "ipv4")
-	if !available || !user || !hook || !drop || len(rules) != 2 {
+	if !available || !user || !hook || !drop || len(rules) != 4 {
 		t.Fatalf("available=%t user=%t hook=%t drop=%t rules=%+v", available, user, hook, drop, rules)
 	}
 	facts := dockerFirewallFacts{Available: true, AvailableByFamily: map[string]bool{"ipv4": true}, ForwardHook: true, UserChain: true, Rules: rules}
-	if got := dockerForwardDisposition(facts, "2053", "tcp", "ipv4"); got != "blocked-by-docker-user" {
+	if got := dockerForwardDisposition(facts, "2053", "2053", "tcp", "ipv4"); got != "blocked-by-docker-user" {
 		t.Fatalf("2053 disposition=%q", got)
 	}
-	if got := dockerForwardDisposition(facts, "8443", "tcp", "ipv4"); got != "restricted-by-docker-user" {
+	if got := dockerForwardDisposition(facts, "8443", "8443", "tcp", "ipv4"); got != "restricted-by-docker-user" {
 		t.Fatalf("8443 disposition=%q", got)
 	}
-	if got := dockerForwardDisposition(facts, "443", "tcp", "ipv4"); got != "docker-user-fallthrough" {
+	if got := dockerForwardDisposition(facts, "443", "443", "tcp", "ipv4"); got != "docker-user-fallthrough" {
 		t.Fatalf("443 disposition=%q", got)
 	}
 }
 
 func TestDockerForwardDispositionDoesNotInferMissingAddressFamily(t *testing.T) {
 	facts := dockerFirewallFacts{Available: true, AvailableByFamily: map[string]bool{"ipv4": true}, ForwardHook: true, UserChain: true}
-	if got := dockerForwardDisposition(facts, "443", "tcp", "ipv6"); got != "unknown" {
+	if got := dockerForwardDisposition(facts, "443", "443", "tcp", "ipv6"); got != "unknown" {
 		t.Fatalf("missing IPv6 evidence became %q", got)
 	}
 }
@@ -90,9 +91,9 @@ func TestCheckDockerFirewallPathKeepsMissingIPv6EvidenceUnknown(t *testing.T) {
 	}
 }
 
-func TestCheckDockerFirewallPathAcceptsSourceRestrictedDockerUserRule(t *testing.T) {
+func TestCheckDockerFirewallPathAcceptsClosedSourceRestrictedDockerUserRule(t *testing.T) {
 	results := map[string]CommandResult{
-		scenarioCommandKey("iptables-save"):            {Stdout: "*filter\n:FORWARD DROP [0:0]\n:DOCKER-USER - [0:0]\n-A FORWARD -j DOCKER-USER\n-A FORWARD -j DOCKER\n-A DOCKER-USER -p tcp -s 203.0.113.0/24 --dport 8443 -j ACCEPT\nCOMMIT\n"},
+		scenarioCommandKey("iptables-save"):            {Stdout: "*filter\n:FORWARD DROP [0:0]\n:DOCKER-USER - [0:0]\n-A FORWARD -j DOCKER-USER\n-A FORWARD -j DOCKER\n-A DOCKER-USER -p tcp -s 203.0.113.0/24 --dport 443 -j ACCEPT\n-A DOCKER-USER -p tcp --dport 443 -j DROP\nCOMMIT\n"},
 		scenarioCommandKey("ufw", "status", "verbose"): {Stdout: "Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n"},
 	}
 	ctx := scenarioContext(newScenarioCommander([]string{"iptables-save", "ufw"}, results))
@@ -108,7 +109,28 @@ func TestCheckDockerFirewallPathAcceptsSourceRestrictedDockerUserRule(t *testing
 	}
 }
 
-func TestCheckDockerFirewallPathDoesNotPassWithIncompleteHostFirewallFacts(t *testing.T) {
+func TestDockerSourceAllowWithoutClosingDenyFallsThrough(t *testing.T) {
+	fixture := "*filter\n:FORWARD DROP [0:0]\n:DOCKER-USER - [0:0]\n-A FORWARD -j DOCKER-USER\n-A FORWARD -j DOCKER\n-A DOCKER-USER -p tcp -s 203.0.113.0/24 --dport 443 -j ACCEPT\n-A DOCKER-USER -j RETURN\nCOMMIT\n"
+	_, _, _, _, rules := parseDockerIPTables(fixture, "ipv4")
+	facts := dockerFirewallFacts{Available: true, AvailableByFamily: map[string]bool{"ipv4": true}, ForwardHook: true, UserChain: true, Rules: rules}
+	if got := dockerForwardDisposition(facts, "8443", "443", "tcp", "ipv4"); got != "docker-user-fallthrough" {
+		t.Fatalf("source allow without closing deny became %q", got)
+	}
+}
+
+func TestDockerUserDPortMatchesTranslatedContainerPort(t *testing.T) {
+	fixture := "*filter\n:FORWARD DROP [0:0]\n:DOCKER-USER - [0:0]\n-A FORWARD -j DOCKER-USER\n-A FORWARD -j DOCKER\n-A DOCKER-USER -p tcp --dport 443 -j DROP\nCOMMIT\n"
+	_, _, _, _, rules := parseDockerIPTables(fixture, "ipv4")
+	facts := dockerFirewallFacts{Available: true, AvailableByFamily: map[string]bool{"ipv4": true}, ForwardHook: true, UserChain: true, Rules: rules}
+	if got := dockerForwardDisposition(facts, "8443", "443", "tcp", "ipv4"); got != "blocked-by-docker-user" {
+		t.Fatalf("translated container port was not matched: %q", got)
+	}
+	if got := dockerForwardDisposition(facts, "8443", "80", "tcp", "ipv4"); got != "docker-user-fallthrough" {
+		t.Fatalf("host port was incorrectly treated as --dport: %q", got)
+	}
+}
+
+func TestCheckDockerFirewallPathKeepsRiskWithIncompleteHostFirewallFacts(t *testing.T) {
 	results := map[string]CommandResult{
 		scenarioCommandKey("iptables-save"):            {Stdout: "*filter\n:FORWARD DROP [0:0]\n:DOCKER-USER - [0:0]\n-A FORWARD -j DOCKER-USER\n-A FORWARD -j DOCKER\n-A DOCKER-USER -p tcp -s 203.0.113.0/24 --dport 8443 -j ACCEPT\nCOMMIT\n"},
 		scenarioCommandKey("ufw", "status", "verbose"): {Err: errCommandOutputTruncated, Truncated: true},
@@ -121,7 +143,7 @@ func TestCheckDockerFirewallPathDoesNotPassWithIncompleteHostFirewallFacts(t *te
 		HostPort string `json:"HostPort"`
 	}{"443/tcp": {{HostIP: "0.0.0.0", HostPort: "8443"}}}
 	f := checkDockerFirewallPath(ctx, []dockerInspect{container})
-	if f.Status != model.Unknown || !f.Unavailable || f.Facts["evidence_discovery_incomplete"] != "true" {
+	if f.Status != model.Risk || f.Unavailable || f.Facts["evidence_discovery_incomplete"] != "true" {
 		t.Fatalf("unexpected finding: %#v", f)
 	}
 }

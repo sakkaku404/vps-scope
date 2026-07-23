@@ -1,0 +1,36 @@
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-07-23T00:00:00Z",
+  "advisories": [
+    {
+      "id": "GHSA-jm48-m3rr-9hgg",
+      "product": "3x-ui",
+      "severity": "high",
+      "summary": "Authenticated arbitrary file write via Xray log path manipulation",
+      "url": "https://github.com/MHSanaei/3x-ui/security/advisories/GHSA-jm48-m3rr-9hgg",
+      "affected": [{ "max_inclusive": "3.3.0" }],
+      "fixed": "3.3.1"
+    },
+    {
+      "id": "GHSA-r5hm-mp3j-285g",
+      "product": "sing-box",
+      "severity": "critical",
+      "summary": "Improper authentication in the SOCKS inbound",
+      "url": "https://github.com/SagerNet/sing-box/security/advisories/GHSA-r5hm-mp3j-285g",
+      "affected": [
+        { "max_exclusive": "1.4.5" },
+        { "min_inclusive": "1.5.0-beta.1", "max_exclusive": "1.5.0-rc.5" }
+      ],
+      "fixed": "1.4.5 or 1.5.0-rc.5"
+    },
+    {
+      "id": "GHSA-5wf9-h793-w73c",
+      "product": "xray",
+      "severity": "low",
+      "summary": "CA certificate pinning can permit hostname-mismatched MITM for affected Hy2/gRPC clients",
+      "url": "https://github.com/XTLS/Xray-core/security/advisories/GHSA-5wf9-h793-w73c",
+      "affected": [{ "min_inclusive": "26.1.13" }],
+      "fixed": "no fixed release listed by upstream"
+    }
+  ]
+}

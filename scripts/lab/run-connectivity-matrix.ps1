@@ -6,6 +6,11 @@ param(
 
     [string] $Output = "vps-scope-lab-connectivity.json",
 
+    [string] $IdentityFile,
+
+    [ValidatePattern('^[A-Za-z_][A-Za-z0-9_-]*$')]
+    [string] $SshUser,
+
     # Start-Job plus a fresh SSH handshake can consume more than ten seconds
     # on a Windows development host. Keep the advertised lower bound long
     # enough that every parallel probe starts while the scenario is alive.
@@ -14,6 +19,13 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$script:SshArgs = @("-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes")
+if ($IdentityFile) {
+    if (-not (Test-Path -LiteralPath $IdentityFile -PathType Leaf)) {
+        throw "SSH identity file does not exist: $IdentityFile"
+    }
+    $script:SshArgs += @("-i", (Resolve-Path -LiteralPath $IdentityFile).Path)
+}
 $networks = @(
     @{ Name = "tcp4"; Port = 39081 },
     @{ Name = "udp4"; Port = 39082 }
@@ -29,11 +41,16 @@ if (Test-Path -LiteralPath $Output) {
 }
 
 function Resolve-SshHost([string] $Alias) {
-    $line = ssh -G $Alias 2>$null | Select-String '^hostname ' | Select-Object -First 1
+    $line = & ssh @script:SshArgs -G (Get-SshTarget $Alias) 2>$null | Select-String '^hostname ' | Select-Object -First 1
     if (-not $line) { throw "Cannot resolve SSH host alias: $Alias" }
     $value = ($line.Line -split '\s+')[1]
     if ($value -notmatch '^[A-Za-z0-9.:-]+$') { throw "Unsafe resolved host value for $Alias" }
     return $value
+}
+
+function Get-SshTarget([string] $Alias) {
+    if ($SshUser) { return "$SshUser@$Alias" }
+    return $Alias
 }
 
 $addresses = @{}
@@ -43,7 +60,7 @@ $results = [System.Collections.Generic.List[object]]::new()
 function Wait-RemoteScenarioReady([string] $Target, [string] $Network, [int] $Port) {
     $expected = "$Network $Port"
     for ($attempt = 0; $attempt -lt 30; $attempt++) {
-        $actual = ssh $Target "cat /run/vps-scope-lab/ready 2>/dev/null || true"
+        $actual = & ssh @script:SshArgs (Get-SshTarget $Target) "cat /run/vps-scope-lab/ready 2>/dev/null || true"
         if (($actual | Out-String).Trim() -eq $expected) { return $true }
         Start-Sleep -Milliseconds 200
     }
@@ -53,7 +70,7 @@ function Wait-RemoteScenarioReady([string] $Target, [string] $Network, [int] $Po
 function Wait-RemoteScenarioFinished([string] $Target, [int] $MaxSeconds) {
     $deadline = [DateTime]::UtcNow.AddSeconds($MaxSeconds + 10)
     while ([DateTime]::UtcNow -lt $deadline) {
-        $actual = ssh $Target "cat /run/vps-scope-lab/ready 2>/dev/null || true"
+        $actual = & ssh @script:SshArgs (Get-SshTarget $Target) "cat /run/vps-scope-lab/ready 2>/dev/null || true"
         if ([string]::IsNullOrWhiteSpace(($actual | Out-String).Trim())) { return $true }
         Start-Sleep -Milliseconds 500
     }
@@ -65,9 +82,9 @@ $lifecycleFailed = $false
 foreach ($network in $networks) {
     foreach ($target in $Hosts) {
         $remote = "nohup env VPS_SCOPE_LAB_NETWORK=$($network.Name) VPS_SCOPE_LAB_PORT=$($network.Port) VPS_SCOPE_LAB_DURATION=$ScenarioSeconds VPS_SCOPE_LAB_OPEN_FIREWALL=1 VPS_SCOPE_LAB_HELPER=/opt/vps-scope-lab/net-helper /opt/vps-scope-lab/scenario.sh </dev/null >/run/vps-scope-lab/$($network.Name).out 2>&1 &"
-        ssh $target $remote | Out-Null
+        & ssh @script:SshArgs (Get-SshTarget $target) $remote | Out-Null
         if (-not (Wait-RemoteScenarioReady $target $network.Name $network.Port)) {
-            $diagnostic = ssh $target "tail -n 5 /run/vps-scope-lab/$($network.Name).out 2>/dev/null || true"
+            $diagnostic = & ssh @script:SshArgs (Get-SshTarget $target) "tail -n 5 /run/vps-scope-lab/$($network.Name).out 2>/dev/null || true"
             Write-Warning "Scenario did not become ready on $target ($($network.Name)): $diagnostic"
             foreach ($peer in $Hosts) {
                 if ($peer -eq $target) { continue }
@@ -80,10 +97,11 @@ foreach ($network in $networks) {
         foreach ($peer in $Hosts) {
             if ($peer -eq $target) { continue }
             $jobs += Start-Job -ScriptBlock {
-                param($From, $To, $Network, $Address, $Port)
-                ssh $From "/opt/vps-scope-lab/net-helper --mode probe --network $Network --address ${Address}:$Port --timeout 5s" 2>$null | Out-Null
+                param($From, $To, $Network, $Address, $Port, $SshArgs, $SshUser)
+                $sshTarget = if ($SshUser) { "$SshUser@$From" } else { $From }
+                & ssh @SshArgs $sshTarget "/opt/vps-scope-lab/net-helper --mode probe --network $Network --address ${Address}:$Port --timeout 5s" 2>$null | Out-Null
                 [pscustomobject]@{ Network = $Network; From = $From; To = $To; Passed = ($LASTEXITCODE -eq 0) }
-            } -ArgumentList $peer, $target, $network.Name, $addresses[$target], $network.Port
+            } -ArgumentList $peer, $target, $network.Name, $addresses[$target], $network.Port, $script:SshArgs, $SshUser
         }
         $jobs | Wait-Job -Timeout 12 | Out-Null
         foreach ($job in $jobs) {
@@ -104,10 +122,10 @@ foreach ($network in $networks) {
 
 $cleanup = @()
 foreach ($target in $Hosts) {
-    ssh $target "rm -f -- /run/vps-scope-lab/tcp4.out /run/vps-scope-lab/udp4.out" | Out-Null
-    $remaining = ssh $target "ufw status | grep -E '39081|39082' | wc -l"
-    $helpers = ssh $target "pgrep -fc '[n]et-helper --mode serve' || true"
-    $stateFiles = ssh $target "find /run/vps-scope-lab -maxdepth 1 -type f \( -name ready -o -name helper.log -o -name helper.pid -o -name tcp4.out -o -name udp4.out \) 2>/dev/null | wc -l"
+    & ssh @script:SshArgs (Get-SshTarget $target) "rm -f -- /run/vps-scope-lab/tcp4.out /run/vps-scope-lab/udp4.out" | Out-Null
+    $remaining = & ssh @script:SshArgs (Get-SshTarget $target) "ufw status | grep -E '39081|39082' | wc -l"
+    $helpers = & ssh @script:SshArgs (Get-SshTarget $target) "pgrep -fc '[n]et-helper --mode serve' || true"
+    $stateFiles = & ssh @script:SshArgs (Get-SshTarget $target) "find /run/vps-scope-lab -maxdepth 1 -type f \( -name ready -o -name helper.log -o -name helper.pid -o -name tcp4.out -o -name udp4.out \) 2>/dev/null | wc -l"
     $cleanup += [pscustomobject]@{
         Host = $target
         RemainingLabRules = [int]$remaining

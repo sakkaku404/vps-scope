@@ -27,12 +27,13 @@ func TestReportStableTokens(t *testing.T) {
 
 func TestReportRedactsFactsErrorsMetadataAndProfileReasons(t *testing.T) {
 	in := model.Report{
-		Profile:  model.Profile{Reasons: []string{"domain secret.example.net"}},
-		Metadata: map[string]string{"source": "198.51.100.23"},
-		Findings: []model.Finding{{Facts: map[string]string{"target": "secret.example.net"}, Error: "connect 198.51.100.23 failed"}},
+		Profile:   model.Profile{Reasons: []string{"domain secret.example.net"}},
+		Metadata:  map[string]string{"source": "198.51.100.23"},
+		Endpoints: []model.Endpoint{{Protocol: "tcp", Port: 443, Family: "ipv4", Scope: "public", Process: "proxy at secret.example.net"}},
+		Findings:  []model.Finding{{Facts: map[string]string{"target": "secret.example.net"}, Error: "connect 198.51.100.23 failed"}},
 	}
 	out := New().Report(in)
-	combined := out.Profile.Reasons[0] + out.Metadata["source"] + out.Findings[0].Facts["target"] + out.Findings[0].Error
+	combined := out.Profile.Reasons[0] + out.Metadata["source"] + out.Endpoints[0].Process + out.Findings[0].Facts["target"] + out.Findings[0].Error
 	if strings.Contains(combined, "secret.example.net") || strings.Contains(combined, "198.51.100.23") {
 		t.Fatalf("sensitive values survived redaction: %q", combined)
 	}

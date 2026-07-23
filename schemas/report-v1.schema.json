@@ -52,6 +52,23 @@
         "additionalProperties": true
       }
     },
+	"endpoints": {
+	  "type": "array",
+	  "items": {
+		"type": "object",
+		"required": ["protocol", "port", "family", "scope"],
+		"properties": {
+		  "protocol": { "enum": ["tcp", "udp"] },
+		  "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+		  "family": { "enum": ["ipv4", "ipv6"] },
+		  "scope": { "enum": ["public", "public-wildcard", "private", "loopback"] },
+		  "process": { "type": "string", "maxLength": 256 },
+		  "role": { "enum": ["proxy-ingress", "management", "subscription", "control-api", "web", "ssh", "other"] },
+		  "expected_exposure": { "enum": ["public", "restricted", "private", "loopback", "blocked"] }
+		},
+		"additionalProperties": false
+	  }
+	},
     "metadata": { "type": "object", "additionalProperties": { "type": "string" } }
   },
   "$defs": {

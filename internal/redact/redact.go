@@ -39,6 +39,11 @@ func (r *Redactor) Report(in model.Report) model.Report {
 	for i, reason := range in.Profile.Reasons {
 		out.Profile.Reasons[i] = r.text(reason)
 	}
+	out.Endpoints = make([]model.Endpoint, len(in.Endpoints))
+	for i, endpoint := range in.Endpoints {
+		out.Endpoints[i] = endpoint
+		out.Endpoints[i].Process = r.text(endpoint.Process)
+	}
 	out.Findings = make([]model.Finding, len(in.Findings))
 	for i, finding := range in.Findings {
 		out.Findings[i] = finding

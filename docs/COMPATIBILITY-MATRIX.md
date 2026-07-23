@@ -20,6 +20,9 @@ This matrix distinguishes recognized software from evidence exercised on a repro
 | OpenVPN | config/runtime v1 | server protocol/port/listen and runtime/firewall relation | Debian 12, OpenVPN 2.6 |
 | Nginx/Caddy/HAProxy | reverse-proxy v1 | public frontend to local/external backend, panel route, TLS/front-door relationship | Marzban, S-UI and Hiddify lab chains |
 | Docker/Compose | inspect/forward-path v1 | isolation, mounts, socket, namespaces, publication, INPUT vs FORWARD/DOCKER-USER | Ubuntu 26.04 safe and deliberately risky fixtures |
+| Deployment policy | policy schema 1.0 | endpoint roles/exposure, source restrictions, TLS/path requirements, IPv4/IPv6 interfaces and DNS scope | matching and adverse policies on Debian 13 disposable hosts |
+| External observation | probe schema 1.0 | bounded TCP reachability, host/plan binding, explicit UDP indeterminacy | Debian 13 host-to-host import workflow plus 40/40 guarded TCP/UDP lab matrix |
+| Offline advisories | advisory DB 1.0 | exact runtime version ranges for 3x-ui, sing-box and Xray from official upstream advisories | semantic-version boundary fixtures and guarded sing-box vulnerable-version process |
 
 ## Compatibility contract / 兼容规则
 

@@ -41,8 +41,8 @@ type FactStore struct {
 	processes     []ProcessInfo
 	processesErr  error
 
-	ufwOnce sync.Once
-	ufw     panelUFW
+	hostFirewallOnce sync.Once
+	hostFirewall     hostFirewallSnapshot
 
 	dockerOnce sync.Once
 	docker     []dockerInspect
@@ -241,11 +241,11 @@ func (f *FactStore) Processes() ([]ProcessInfo, error) {
 	return append([]ProcessInfo(nil), f.processes...), f.processesErr
 }
 
-func (f *FactStore) UFW() panelUFW {
-	f.ufwOnce.Do(func() {
-		f.ufw = collectHostFirewall(f.cmd)
+func (f *FactStore) HostFirewall() hostFirewallSnapshot {
+	f.hostFirewallOnce.Do(func() {
+		f.hostFirewall = collectHostFirewall(f.cmd)
 	})
-	return f.ufw
+	return f.hostFirewall
 }
 
 func (f *FactStore) DockerContainers() ([]dockerInspect, error) {

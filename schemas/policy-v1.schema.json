@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sakkaku404/vps-scope/schemas/policy-v1.schema.json",
+  "title": "VPS Scope policy schema 1.0",
+  "type": "object",
+  "required": ["schema_version"],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "endpoints": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "required": ["port", "protocol", "role", "exposure"],
+        "properties": {
+          "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+          "protocol": { "enum": ["tcp", "udp"] },
+          "role": { "enum": ["proxy-ingress", "management", "subscription", "control-api", "web", "ssh", "other"] },
+          "workload": { "type": "string", "maxLength": 64 },
+          "transport": { "type": "string", "maxLength": 64 },
+          "exposure": { "enum": ["public", "restricted", "private", "loopback", "blocked"] },
+          "families": { "type": "array", "uniqueItems": true, "items": { "enum": ["ipv4", "ipv6"] } },
+          "allowed_sources": { "type": "array", "maxItems": 256, "uniqueItems": true, "items": { "type": "string", "maxLength": 64 } },
+          "require_tls": { "type": "boolean" },
+          "require_non_default_path": { "type": "boolean" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "egress": {
+      "type": "object",
+      "properties": {
+        "ipv4_interfaces": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "type": "string", "maxLength": 15 } },
+        "ipv6_interfaces": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "type": "string", "maxLength": 15 } },
+        "require_same_path": { "type": "boolean" },
+        "dns_mode": { "enum": ["system", "private-only", "loopback-only"] }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

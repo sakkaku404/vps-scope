@@ -8,7 +8,7 @@ func TestEndpointGraphPolicyMatrix(t *testing.T) {
 		name      string
 		listeners []Listener
 		active    map[string]bool
-		firewall  panelUFW
+		firewall  hostFirewallSnapshot
 		judgment  string
 		risk      bool
 		missing   bool
@@ -35,7 +35,7 @@ func TestEndpointGraphPolicyMatrix(t *testing.T) {
 func TestEndpointGraphKeepsTCPAndUDPSeparate(t *testing.T) {
 	inbound := configuredProxyInbound{Path: "fixture", proxyInbound: proxyInbound{Product: "Shadowsocks", Protocol: "shadowsocks", Port: "8388", Transports: []string{"tcp", "udp"}}}
 	listeners := []Listener{{Protocol: "tcp", Address: "127.0.0.1", Port: "8388", Scope: "loopback", Process: "ss-server"}}
-	got := assessProxyEndpointGraph(buildProxyEndpointGraph([]configuredProxyInbound{inbound}, listeners, panelUFW{}), map[string]bool{"shadowsocks": true})
+	got := assessProxyEndpointGraph(buildProxyEndpointGraph([]configuredProxyInbound{inbound}, listeners, hostFirewallSnapshot{}), map[string]bool{"shadowsocks": true})
 	if len(got) != 2 || got[0].Node.Transport == got[1].Node.Transport {
 		t.Fatalf("TCP/UDP relations collapsed: %+v", got)
 	}

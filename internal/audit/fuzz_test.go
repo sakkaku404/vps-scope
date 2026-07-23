@@ -24,6 +24,7 @@ func FuzzEvidenceTextParsersDoNotPanic(f *testing.F) {
 		"tcp LISTEN 0 128 0.0.0.0:22 0.0.0.0:*",
 		"tcp ESTAB 0 0 10.0.0.1:443 203.0.113.1:50000",
 		"table inet filter { chain input { type filter hook input priority 0; policy drop; tcp dport 443 accept } }",
+		"*filter\n:INPUT DROP [0:0]\n:USER - [0:0]\n-A INPUT -j USER\n-A USER -p tcp --dport 443 -j ACCEPT\nCOMMIT",
 		"Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n443/tcp ALLOW IN Anywhere",
 	} {
 		f.Add(seed)
@@ -35,6 +36,8 @@ func FuzzEvidenceTextParsersDoNotPanic(f *testing.F) {
 		_, _ = parseListeners(input)
 		_, _ = parseEstablishedConnections(input)
 		_ = parseNFTFirewall(input)
+		_, _, _ = parseIPTablesFirewallDetailed(input, "ipv4")
+		_, _, _, _, _ = parseDockerIPTables(input, "ipv4")
 		_ = parsePanelUFW(input)
 	})
 }
