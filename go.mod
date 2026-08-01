@@ -4,7 +4,7 @@ module github.com/sakkaku404/vps-scope
 // HTML renderer, certificate inspection, URL parsing, and command runner.
 go 1.25.12
 
-require modernc.org/sqlite v1.54.0
+require modernc.org/sqlite v1.55.0
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
