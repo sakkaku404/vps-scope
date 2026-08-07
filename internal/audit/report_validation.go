@@ -7,11 +7,20 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sakkaku404/vps-scope/internal/contract"
 	"github.com/sakkaku404/vps-scope/internal/i18n"
 	"github.com/sakkaku404/vps-scope/internal/model"
 )
 
 var reportReasonCodePattern = regexp.MustCompile(`^[a-z0-9]+(?:[.-][a-z0-9]+)*$`)
+
+const (
+	maxReportDeploymentComponents = 512
+	maxReportDeploymentEndpoints  = 2048
+	maxReportDeploymentLinks      = 8192
+)
+
+var topologyIDPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}:[A-Za-z0-9][A-Za-z0-9_.:-]{0,95}$`)
 
 // ValidateReport checks the semantic integrity of a completed audit report.
 // It complements bundle hashes: a byte-perfect file can still be incomplete
@@ -85,6 +94,7 @@ func ValidateReport(r model.Report, verifierVersion ...string) []string {
 		}
 		seenEndpoints[key] = true
 	}
+	failures = append(failures, validateDeployment(r.Deployment)...)
 
 	expected := make(map[string]bool, len(StableCheckIDs))
 	for _, id := range StableCheckIDs {
@@ -96,7 +106,7 @@ func ValidateReport(r model.Report, verifierVersion ...string) []string {
 	requireReasons := !parsedVersion || versionAtLeast(r.ToolVersion, 0, 13)
 	allowFutureIDs := len(verifierVersion) == 1 && versionNewerThan(r.ToolVersion, verifierVersion[0])
 	for _, f := range r.Findings {
-		if !expected[f.ID] && !(allowFutureIDs && stableCheckIDPattern.MatchString(f.ID)) {
+		if !expected[f.ID] && !(allowFutureIDs && contract.ValidCheckID(f.ID)) {
 			failures = append(failures, fmt.Sprintf("unexpected check ID %q", f.ID))
 		}
 		if seen[f.ID] {
@@ -155,6 +165,161 @@ func ValidateReport(r model.Report, verifierVersion ...string) []string {
 	return failures
 }
 
+func validateDeployment(deployment *model.Deployment) []string {
+	if deployment == nil {
+		return nil
+	}
+	var failures []string
+	for _, field := range []struct{ name, value string }{
+		{"configuration", deployment.Coverage.Configuration},
+		{"runtime", deployment.Coverage.Runtime},
+		{"firewall", deployment.Coverage.Firewall},
+		{"panels", deployment.Coverage.Panels},
+		{"reverse_proxy", deployment.Coverage.ReverseProxy},
+		{"docker", deployment.Coverage.Docker},
+	} {
+		if !containsReportValue(field.value, "complete", "partial", "unavailable", "not-applicable") {
+			failures = append(failures, fmt.Sprintf("deployment coverage %s has invalid state %q", field.name, field.value))
+		}
+	}
+	tooLarge := false
+	for _, count := range []struct {
+		name       string
+		got, limit int
+	}{
+		{"components", len(deployment.Components), maxReportDeploymentComponents},
+		{"endpoints", len(deployment.Endpoints), maxReportDeploymentEndpoints},
+		{"links", len(deployment.Links), maxReportDeploymentLinks},
+	} {
+		if count.got > count.limit {
+			failures = append(failures, fmt.Sprintf("deployment contains %d %s; limit is %d", count.got, count.name, count.limit))
+			tooLarge = true
+		}
+	}
+	// Do not walk an attacker-controlled oversized topology after recording its
+	// bounded failure. Normal reports remain small enough for full validation.
+	if tooLarge {
+		return failures
+	}
+
+	componentIDs := make(map[string]bool, len(deployment.Components))
+	allIDs := make(map[string]bool, len(deployment.Components)+len(deployment.Endpoints))
+	for index, component := range deployment.Components {
+		label := fmt.Sprintf("deployment component %d", index+1)
+		if !validTopologyID(component.ID, "component") {
+			failures = append(failures, fmt.Sprintf("%s has invalid ID %q", label, component.ID))
+		}
+		if allIDs[component.ID] {
+			failures = append(failures, fmt.Sprintf("duplicate deployment node ID %q", component.ID))
+		}
+		allIDs[component.ID], componentIDs[component.ID] = true, true
+		if strings.TrimSpace(component.Product) == "" || len(component.Product) > 256 {
+			failures = append(failures, fmt.Sprintf("%s has invalid product", label))
+		}
+		if !validTopologyToken(component.Kind) {
+			failures = append(failures, fmt.Sprintf("%s has invalid kind %q", label, component.Kind))
+		}
+		if !validTopologyConfidence(component.Confidence) {
+			failures = append(failures, fmt.Sprintf("%s has invalid confidence %q", label, component.Confidence))
+		}
+		if len(component.Source) > 1024 || len(component.Deployment) > 256 {
+			failures = append(failures, fmt.Sprintf("%s contains oversized text", label))
+		}
+	}
+
+	for index, endpoint := range deployment.Endpoints {
+		label := fmt.Sprintf("deployment endpoint %d", index+1)
+		if !validTopologyID(endpoint.ID, "endpoint") {
+			failures = append(failures, fmt.Sprintf("%s has invalid ID %q", label, endpoint.ID))
+		}
+		if allIDs[endpoint.ID] {
+			failures = append(failures, fmt.Sprintf("duplicate deployment node ID %q", endpoint.ID))
+		}
+		allIDs[endpoint.ID] = true
+		if endpoint.ComponentID != "" && !componentIDs[endpoint.ComponentID] {
+			failures = append(failures, fmt.Sprintf("%s references unknown component %q", label, endpoint.ComponentID))
+		}
+		if endpoint.Port < 1 || endpoint.Port > 65535 {
+			failures = append(failures, fmt.Sprintf("%s has invalid port %d", label, endpoint.Port))
+		}
+		if !containsReportValue(endpoint.Transport, "tcp", "udp") {
+			failures = append(failures, fmt.Sprintf("%s has invalid transport %q", label, endpoint.Transport))
+		}
+		if !containsReportValue(endpoint.Role,
+			"proxy-ingress", "management", "subscription", "control-api", "web", "ssh", "other",
+			"reverse-proxy-frontend", "reverse-proxy-backend", "container-publish",
+			"unclassified-listener", "unclassified-product-listener") {
+			failures = append(failures, fmt.Sprintf("%s has invalid role %q", label, endpoint.Role))
+		}
+		if !containsReportValue(endpoint.State, "configured", "live") {
+			failures = append(failures, fmt.Sprintf("%s has invalid state %q", label, endpoint.State))
+		}
+		if !validTopologyConfidence(endpoint.Confidence) {
+			failures = append(failures, fmt.Sprintf("%s has invalid confidence %q", label, endpoint.Confidence))
+		}
+		if endpoint.Family != "" && !containsReportValue(endpoint.Family, "ipv4", "ipv6", "any") {
+			failures = append(failures, fmt.Sprintf("%s has invalid family %q", label, endpoint.Family))
+		}
+		if endpoint.Scope != "" && !containsReportValue(endpoint.Scope, "public", "public-wildcard", "private", "loopback", "container", "unknown") {
+			failures = append(failures, fmt.Sprintf("%s has invalid scope %q", label, endpoint.Scope))
+		}
+		if endpoint.TLS != "" && !containsReportValue(endpoint.TLS, "true", "false", "unknown") {
+			failures = append(failures, fmt.Sprintf("%s has invalid TLS state %q", label, endpoint.TLS))
+		}
+		if endpoint.PathPosture != "" && !containsReportValue(endpoint.PathPosture, "root-or-default", "non-default", "unknown") {
+			failures = append(failures, fmt.Sprintf("%s has invalid path posture %q", label, endpoint.PathPosture))
+		}
+		if endpoint.ConnectionCount != nil && *endpoint.ConnectionCount < 0 {
+			failures = append(failures, fmt.Sprintf("%s has a negative connection count", label))
+		}
+		if len(endpoint.Product) > 256 || len(endpoint.Protocol) > 256 || len(endpoint.Address) > 512 ||
+			len(endpoint.Process) > 256 || len(endpoint.Security) > 512 || len(endpoint.Firewall) > 512 ||
+			len(endpoint.Judgment) > 512 || len(endpoint.Source) > 1024 {
+			failures = append(failures, fmt.Sprintf("%s contains oversized text", label))
+		}
+	}
+
+	seenLinks := make(map[string]bool, len(deployment.Links))
+	for index, link := range deployment.Links {
+		label := fmt.Sprintf("deployment link %d", index+1)
+		if !allIDs[link.From] {
+			failures = append(failures, fmt.Sprintf("%s has unknown source %q", label, link.From))
+		}
+		if !allIDs[link.To] {
+			failures = append(failures, fmt.Sprintf("%s has unknown target %q", label, link.To))
+		}
+		if !containsReportValue(link.Kind, "declares", "owns", "published-as", "proxies-to", "routes-to") {
+			failures = append(failures, fmt.Sprintf("%s has invalid kind %q", label, link.Kind))
+		}
+		key := link.From + "\x00" + link.To + "\x00" + link.Kind
+		if seenLinks[key] {
+			failures = append(failures, fmt.Sprintf("duplicate deployment link %s -> %s (%s)", link.From, link.To, link.Kind))
+		}
+		seenLinks[key] = true
+	}
+	return failures
+}
+
+func validTopologyID(id, kind string) bool {
+	return len(id) <= 128 && strings.HasPrefix(id, kind+":") && topologyIDPattern.MatchString(id)
+}
+
+func validTopologyToken(value string) bool {
+	if value == "" || len(value) > 64 {
+		return false
+	}
+	for _, r := range value {
+		if !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') && r != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func validTopologyConfidence(value string) bool {
+	return containsReportValue(value, "confirmed", "inferred", "partial", "unknown")
+}
+
 func containsReportValue(value string, allowed ...string) bool {
 	for _, item := range allowed {
 		if value == item {
@@ -200,43 +365,7 @@ func versionNewerThan(version, reference string) bool {
 }
 
 func reportCategoryForID(id string) string {
-	prefix, _, _ := strings.Cut(id, "-")
-	switch prefix {
-	case "SYS":
-		return "system"
-	case "ACC":
-		return "accounts"
-	case "SSH":
-		return "ssh"
-	case "PRIV":
-		return "privileges"
-	case "NET":
-		return "network"
-	case "FW":
-		return "firewall"
-	case "AUTH":
-		return "auth"
-	case "UPD":
-		return "updates"
-	case "PKG":
-		return "packages"
-	case "PROC":
-		return "processes"
-	case "DOCKER":
-		return "docker"
-	case "TLS":
-		return "tls"
-	case "WORK":
-		return "workloads"
-	case "FS":
-		return "filesystem"
-	case "PERSIST":
-		return "persistence"
-	case "REL":
-		return "reliability"
-	default:
-		return ""
-	}
+	return contract.Category(id)
 }
 
 func validReportProfile(profile string, requested bool) bool {

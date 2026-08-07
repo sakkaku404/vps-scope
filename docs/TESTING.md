@@ -61,7 +61,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o dist/vps-scope-linux
 
 Real-host tests must use disposable release candidates and explicitly chosen report paths. Read the resulting JSON and human report; a successful exit code alone is not acceptance.
 
-The current disposable matrix includes Debian 12, Debian 13, Ubuntu 22.04, and Ubuntu 26.04 on 1 vCPU / 1 GB VPS instances. It covers S-UI with VLESS Reality, Hysteria2, and Shadowsocks; 3x-ui v3.4.2 with VLESS Reality, Trojan TLS, Shadowsocks TCP/UDP, and VMess WS; native sing-box with Hysteria2, TUIC, Trojan, Shadowsocks, and Clash API; a two-host WireGuard tunnel; an OpenVPN 2.6 UDP server; official Outline Shadowbox; Nginx/Caddy/HAProxy management chains; Docker loopback publication; deliberately privileged containers; expiring TLS; invalid JSON beside a still-running service; UFW; IPv6; and empty cloud-image `authorized_keys` placeholders.
+The active fixed live laboratory currently consists of three disposable amd64,
+1 vCPU / 1 GB VPS instances: Debian 13 with S-UI 1.5.3, Debian 12 with 3x-ui
+3.4.2 and its embedded Xray, and Ubuntu 24.04 with Docker and Nginx. The current
+matrix deliberately includes public and loopback listeners, UFW, a public
+Docker publication whose forwarding path differs from host INPUT, a loopback
+container backend, and an Nginx frontend/backend route. Broader protocol,
+panel, TLS, VPN, and failure cases remain deterministic fixtures or retained
+historical evidence; deleted hosts are never described as active.
 
 Regression review should verify:
 
@@ -112,6 +119,26 @@ a deep audit, recognized an allow reached through a custom iptables INPUT chain,
 and evaluated real Docker publication plus DOCKER-USER fall-through semantics.
 Cleanup checks found no residual listeners, labelled rules, containers, helper
 processes, or runtime state. Host addresses and raw reports remain uncommitted.
+
+The August 2026 evidence-architecture regression used the three-host mixed-OS
+laboratory described above. Standard audits completed in 1.10 to 3.11 seconds
+with maximum RSS between 63,408 and 112,356 KiB. Deep audits completed in 27.64
+to 40.18 seconds without a higher memory envelope. All three bundles passed
+manifest and 55-ID semantic verification; the same S-UI report was rendered in
+Chinese, English, Russian, and Persian. Live review found and fixed S-UI's
+omitted-root-path database default, duplicate 3x-ui/Xray advisory inventory,
+and an Xray API inbound incorrectly counted as proxy ingress. Addresses and raw
+reports remain uncommitted.
+
+The same three hosts then completed a 12/12 cross-host TCP/UDP IPv4 matrix with
+zero remaining UFW rules, helper processes, or runtime state. The Docker host
+also passed a 32-container bounded inventory run, public-versus-loopback
+publication through `DOCKER-USER`, and a reachable custom INPUT-chain test.
+After adverse-state evidence was captured, public panel and subscription rules
+were removed, the public Docker fixture was deleted, panel databases were set
+to mode 0600, and effective SSH password authentication was disabled. A final
+audit confirmed those findings changed from risk to pass while the services
+remained active.
 
 Earlier mixed-workload standard runs completed in about 4 to 8 seconds with the
 expanded workload graph. Deep runs on the two busiest lab hosts took about 37 to

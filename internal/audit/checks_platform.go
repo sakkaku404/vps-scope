@@ -552,15 +552,38 @@ func discoverCertificatePaths(ctx *Context) ([]string, error) {
 			add(path)
 		}
 	}
-	if ctx.Commander.Exists("nginx") {
-		r := ctx.Commander.Run(15*time.Second, "nginx", "-T")
-		if r.Truncated || r.Err != nil {
-			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("nginx -T: %s", commandError(r)))
+	nginxCertificateRE := regexp.MustCompile(`(?m)^\s*ssl_certificate\s+([^;]+);`)
+	nginxRuntimeLoaded := false
+	if ctx.Options.NativeSelfTest && ctx.Commander.Exists("nginx") {
+		binary, trustErr := trustedExecutable(ctx.Commander, "nginx")
+		if trustErr != nil {
+			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("nginx -T skipped: %w", trustErr))
+		} else {
+			nginxRuntimeLoaded = true
+			r := ctx.Commander.Run(15*time.Second, binary, "-T")
+			if r.Truncated || r.Err != nil {
+				discoveryErr = errors.Join(discoveryErr, fmt.Errorf("nginx -T: %s", commandError(r)))
+			}
+			for _, match := range nginxCertificateRE.FindAllStringSubmatch(r.Stdout+r.Stderr, -1) {
+				if len(match) > 1 {
+					add(match[1])
+				}
+			}
 		}
-		re := regexp.MustCompile(`(?m)^\s*ssl_certificate\s+([^;]+);`)
-		for _, match := range re.FindAllStringSubmatch(r.Stdout+r.Stderr, -1) {
-			if len(match) > 1 {
-				add(match[1])
+	}
+	if !nginxRuntimeLoaded {
+		nginxPaths, err := discoverExistingFiles(512, "/etc/nginx/nginx.conf", "/etc/nginx/sites-enabled/*", "/etc/nginx/conf.d/*.conf")
+		discoveryErr = errors.Join(discoveryErr, err)
+		for _, path := range nginxPaths {
+			data, readErr := readSmall(path, 4<<20)
+			if readErr != nil {
+				discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s: %w", path, readErr))
+				continue
+			}
+			for _, match := range nginxCertificateRE.FindAllStringSubmatch(data, -1) {
+				if len(match) > 1 {
+					add(match[1])
+				}
 			}
 		}
 	}

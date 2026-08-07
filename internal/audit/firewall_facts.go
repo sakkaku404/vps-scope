@@ -48,6 +48,10 @@ func parsePanelUFW(output string) hostFirewallSnapshot {
 }
 
 func collectHostFirewall(cmd Commander) hostFirewallSnapshot {
+	return collectHostFirewallFromProgram(cmd, newFirewallProgram(cmd))
+}
+
+func collectHostFirewallFromProgram(cmd Commander, program *firewallProgram) hostFirewallSnapshot {
 	var inactive hostFirewallSnapshot
 	var active hostFirewallSnapshot
 	var collectionErr error
@@ -67,8 +71,12 @@ func collectHostFirewall(cmd Commander) hostFirewallSnapshot {
 	// effective nftables INPUT path.  UFW's summary intentionally omits rules
 	// inserted by other managers, so merge the live nftables view instead of
 	// returning as soon as an active UFW frontend is found.
-	if active.available && cmd.Exists("nft") {
-		r := cmd.Run(15*time.Second, "nft", "list", "ruleset")
+	if active.available {
+		r, exists := program.nftRuleset()
+		if !exists {
+			active.collectionErr = collectionErr
+			return active
+		}
 		if r.Err == nil && !r.Truncated {
 			nft := parseNFTFirewall(r.Stdout)
 			active.rules = append(active.rules, nft.rules...)
@@ -80,10 +88,6 @@ func collectHostFirewall(cmd Commander) hostFirewallSnapshot {
 		} else {
 			active.collectionErr = fmt.Errorf("nft list ruleset: %s", commandError(r))
 		}
-		return active
-	}
-	if active.available {
-		active.collectionErr = collectionErr
 		return active
 	}
 	if cmd.Exists("firewall-cmd") {
@@ -100,8 +104,7 @@ func collectHostFirewall(cmd Commander) hostFirewallSnapshot {
 			}
 		}
 	}
-	if cmd.Exists("nft") {
-		r := cmd.Run(15*time.Second, "nft", "list", "ruleset")
+	if r, exists := program.nftRuleset(); exists {
 		if r.Err == nil && !r.Truncated {
 			f := parseNFTFirewall(r.Stdout)
 			f.collectionErr = collectionErr
@@ -109,13 +112,15 @@ func collectHostFirewall(cmd Commander) hostFirewallSnapshot {
 		}
 		collectionErr = fmt.Errorf("nft list ruleset: %s", commandError(r))
 	}
-	if cmd.Exists("iptables-save") || cmd.Exists("ip6tables-save") {
+	_, ipv4SaveExists := program.iptablesSave("ipv4")
+	_, ipv6SaveExists := program.iptablesSave("ipv6")
+	if ipv4SaveExists || ipv6SaveExists {
 		f := hostFirewallSnapshot{backend: "iptables", defaultDenyByFamily: map[string]bool{}, defaultPolicyByFamily: map[string]string{}}
 		for _, spec := range []struct{ command, family string }{{"iptables-save", "ipv4"}, {"ip6tables-save", "ipv6"}} {
-			if !cmd.Exists(spec.command) {
+			r, exists := program.iptablesSave(spec.family)
+			if !exists {
 				continue
 			}
-			r := cmd.Run(12*time.Second, spec.command)
 			if r.Err == nil && !r.Truncated {
 				f.available, f.active = true, true
 				rules, policy, unresolved := parseIPTablesFirewallDetailed(r.Stdout, spec.family)

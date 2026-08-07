@@ -71,12 +71,12 @@ func loadEmbeddedAdvisories() (advisoryDatabase, error) {
 	return db, nil
 }
 
-func checkProxyAdvisories(ctx *Context) model.Finding {
+func checkProxyAdvisories(ctx *Context, summaries []proxyConfigSummary) model.Finding {
 	db, err := loadEmbeddedAdvisories()
 	if err != nil {
 		return unknown("WORK-017", "workloads", "embedded advisory database", err.Error())
 	}
-	products := activeProxyProducts(ctx)
+	detectedProducts := activeProxyProducts(ctx)
 	panels, panelErr := ctx.Facts.Panels()
 	versions := map[string]string{}
 	for _, panel := range panels {
@@ -84,19 +84,33 @@ func checkProxyAdvisories(ctx *Context) model.Finding {
 		if panel.Version != "" {
 			versions[product] = extractVersion(panel.Version)
 		}
-		products[product] = true
+		detectedProducts[product] = true
 	}
-	for _, spec := range []struct {
-		product string
-		command string
-		args    []string
-	}{{"sing-box", "sing-box", []string{"version"}}, {"xray", "xray", []string{"version"}}} {
-		if !products[spec.product] || !ctx.Commander.Exists(spec.command) {
-			continue
-		}
-		r := ctx.Commander.Run(8*time.Second, spec.command, spec.args...)
-		if r.Err == nil && !r.Truncated {
-			versions[spec.product] = extractVersion(r.Stdout + "\n" + r.Stderr)
+	products := map[string]bool{}
+	for product := range detectedProducts {
+		products[normalizeAdvisoryProduct(product)] = true
+	}
+	if ctx.Options.NativeSelfTest {
+		for _, spec := range []struct {
+			product string
+			command string
+			args    []string
+		}{{"sing-box", "sing-box", []string{"version"}}, {"xray", "xray", []string{"version"}}} {
+			if !products[spec.product] {
+				continue
+			}
+			binary := advisoryExecutable(spec.product, spec.command, summaries, ctx.Commander)
+			if binary == "" {
+				continue
+			}
+			trustedBinary, trustErr := trustedExecutable(ctx.Commander, binary)
+			if trustErr != nil {
+				continue
+			}
+			r := ctx.Commander.Run(8*time.Second, trustedBinary, spec.args...)
+			if r.Err == nil && !r.Truncated {
+				versions[spec.product] = extractVersion(r.Stdout + "\n" + r.Stderr)
+			}
 		}
 	}
 	relevant := map[string][]advisory{}
@@ -105,7 +119,6 @@ func checkProxyAdvisories(ctx *Context) model.Finding {
 	}
 	activeRelevant := []string{}
 	for product := range products {
-		product = normalizeAdvisoryProduct(product)
 		if len(relevant[product]) > 0 {
 			activeRelevant = append(activeRelevant, product)
 		}
@@ -150,6 +163,33 @@ func checkProxyAdvisories(ctx *Context) model.Finding {
 		f.Error = "advisory conclusion is incomplete because a relevant version is unavailable or the bundled database is stale"
 	}
 	return withIncompleteEvidence(f, "panel discovery", panelErr)
+}
+
+func advisoryExecutable(product, fallback string, summaries []proxyConfigSummary, cmd Commander) string {
+	if cmd.Exists(fallback) {
+		return fallback
+	}
+	for _, summary := range summaries {
+		if normalizeAdvisoryProduct(summary.Product) != product {
+			continue
+		}
+		var candidates []string
+		if product == "xray" && strings.Contains(summary.Path, "/usr/local/x-ui/") {
+			candidates = append(candidates, "/usr/local/x-ui/bin/xray-linux-amd64")
+		}
+		if product == "sing-box" && strings.Contains(summary.Path, "/usr/local/s-ui/") {
+			candidates = append(candidates, "/usr/local/s-ui/bin/sing-box")
+		}
+		if binary, _ := proxySelfTest(summary.Product, summary.Path); binary != "" {
+			candidates = append(candidates, binary)
+		}
+		for _, binary := range candidates {
+			if cmd.Exists(binary) {
+				return binary
+			}
+		}
+	}
+	return ""
 }
 
 func normalizeAdvisoryProduct(value string) string {

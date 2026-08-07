@@ -96,6 +96,12 @@ func parseSingBoxSummary(path string, data []byte) proxyConfigSummary {
 
 func parseXraySummary(path string, data []byte) proxyConfigSummary {
 	var cfg struct {
+		API struct {
+			Tag string `json:"tag"`
+		} `json:"api"`
+		Metrics struct {
+			Listen string `json:"listen"`
+		} `json:"metrics"`
 		Inbounds []struct {
 			Listen   string          `json:"listen"`
 			Port     json.RawMessage `json:"port"`
@@ -126,6 +132,14 @@ func parseXraySummary(path string, data []byte) proxyConfigSummary {
 	for _, item := range cfg.Inbounds {
 		port := jsonPort(item.Port)
 		listen := normalizeListen(item.Listen)
+		isAPIInbound := cfg.API.Tag != "" && item.Tag == cfg.API.Tag
+		if cfg.API.Tag == "" && strings.EqualFold(strings.TrimSpace(item.Tag), "api") && strings.EqualFold(item.Protocol, "dokodemo-door") {
+			isAPIInbound = true
+		}
+		if isAPIInbound {
+			s.Controls = append(s.Controls, controlEndpoint{Product: s.Product, Kind: "api-inbound", Listen: listen, Port: port})
+			continue
+		}
 		reality := strings.EqualFold(item.StreamSettings.Security, "reality")
 		targets := 0
 		if item.StreamSettings.Reality.Target != "" || item.StreamSettings.Reality.Dest != "" {
@@ -143,9 +157,9 @@ func parseXraySummary(path string, data []byte) proxyConfigSummary {
 		for _, transport := range transports {
 			s.UsesUDP = s.UsesUDP || transport == "udp"
 		}
-		if strings.Contains(strings.ToLower(item.Tag), "api") {
-			s.Controls = append(s.Controls, controlEndpoint{Product: s.Product, Kind: "api-inbound", Listen: listen, Port: port})
-		}
+	}
+	if host, port, ok := splitEndpoint(cfg.Metrics.Listen); ok {
+		s.Controls = append(s.Controls, controlEndpoint{Product: s.Product, Kind: "metrics", Listen: host, Port: port})
 	}
 	return s
 }

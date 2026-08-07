@@ -65,8 +65,16 @@ func checkExternalExposure(ctx *Context) model.Finding {
 		f.Evidence = append(f.Evidence, model.Evidence{Source: "ip -o addr show scope global", Key: "local_address_evidence", Value: "unavailable"})
 	}
 	directOrigins, dnsFailures, tlsFailures, expiring := 0, 0, 0, 0
-	for _, domain := range ctx.ExternalDomains {
-		probeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	overallCtx, overallCancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer overallCancel()
+	for index, domain := range ctx.ExternalDomains {
+		if overallCtx.Err() != nil {
+			remaining := len(ctx.ExternalDomains) - index
+			dnsFailures += remaining
+			f.Evidence = append(f.Evidence, model.Evidence{Source: "external DNS/TLS", Key: "observation_budget_exhausted", Value: fmt.Sprintf("%d domain observations skipped after the 45s total network budget", remaining)})
+			break
+		}
+		probeCtx, cancel := context.WithTimeout(overallCtx, 10*time.Second)
 		observation := prober.Observe(probeCtx, domain)
 		cancel()
 		if len(observation.Addresses) == 0 {

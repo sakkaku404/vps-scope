@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +26,7 @@ type probePlan struct {
 	SchemaVersion  string           `json:"schema_version"`
 	ReportStableID string           `json:"report_stable_id"`
 	Target         string           `json:"target"`
+	ResolvedIPs    []string         `json:"resolved_ips,omitempty"`
 	CreatedAt      time.Time        `json:"created_at"`
 	Nonce          string           `json:"nonce"`
 	Endpoints      []model.Endpoint `json:"endpoints"`
@@ -71,11 +73,16 @@ func (e environment) probePlan(args []string) error {
 	target := fs.String("target", "", "public IP address or hostname to observe")
 	output := fs.String("output", "", "new probe plan JSON path")
 	management := fs.String("management", "", "comma-separated management endpoints such as 2095/tcp")
+	allowPrivate := fs.Bool("allow-private-target", false, "allow loopback, private, or link-local observation targets")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 || *output == "" || !validProbeTarget(*target) {
-		return errors.New("usage: vps-scope probe plan --target HOST --output PLAN.json [--management PORT/tcp,...] REPORT.json")
+		return errors.New("usage: vps-scope probe plan --target HOST --output PLAN.json [--management PORT/tcp,...] [--allow-private-target] REPORT.json")
+	}
+	resolvedIPs, err := resolveProbeTarget(*target, *allowPrivate)
+	if err != nil {
+		return err
 	}
 	report, err := readReport(fs.Arg(0))
 	if err != nil {
@@ -113,7 +120,7 @@ func (e environment) probePlan(args []string) error {
 	if _, err := rand.Read(nonce); err != nil {
 		return fmt.Errorf("create probe nonce: %w", err)
 	}
-	plan := probePlan{SchemaVersion: probeSchemaVersion, ReportStableID: report.Host.StableID, Target: *target, CreatedAt: time.Now().UTC(), Nonce: hex.EncodeToString(nonce), Endpoints: endpoints}
+	plan := probePlan{SchemaVersion: probeSchemaVersion, ReportStableID: report.Host.StableID, Target: *target, ResolvedIPs: resolvedIPs, CreatedAt: time.Now().UTC(), Nonce: hex.EncodeToString(nonce), Endpoints: endpoints}
 	if err := writeJSONNew(*output, plan); err != nil {
 		return err
 	}
@@ -126,11 +133,12 @@ func (e environment) probeRun(args []string) error {
 	output := fs.String("output", "", "new observation JSON path")
 	timeout := fs.Duration("timeout", 3*time.Second, "per-endpoint TCP timeout")
 	observer := fs.String("observer", "", "optional non-secret observer label")
+	allowPrivate := fs.Bool("allow-private-target", false, "allow loopback, private, or link-local observation targets")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 || *output == "" {
-		return errors.New("usage: vps-scope probe run --output OBSERVATION.json [--timeout 3s] PLAN.json")
+		return errors.New("usage: vps-scope probe run --output OBSERVATION.json [--timeout 3s] [--allow-private-target] PLAN.json")
 	}
 	if *timeout < 500*time.Millisecond || *timeout > 10*time.Second {
 		return errors.New("probe timeout must be between 500ms and 10s")
@@ -146,7 +154,17 @@ func (e environment) probeRun(args []string) error {
 	if err := validateProbePlan(plan); err != nil {
 		return err
 	}
-	results := runProbePlan(plan, *timeout)
+	resolvedIPs := plan.ResolvedIPs
+	if len(resolvedIPs) == 0 {
+		// Compatibility with plans created before resolved targets were embedded.
+		resolvedIPs, err = resolveProbeTarget(plan.Target, *allowPrivate)
+		if err != nil {
+			return err
+		}
+	} else if err := validateResolvedProbeIPs(resolvedIPs, *allowPrivate); err != nil {
+		return err
+	}
+	results := runProbePlan(plan, resolvedIPs, *timeout)
 	digest := sha256.Sum256(planBytes)
 	observation := probeObservation{SchemaVersion: probeSchemaVersion, PlanSHA256: hex.EncodeToString(digest[:]), Plan: plan, ObservedAt: time.Now().UTC(), Observer: strings.TrimSpace(*observer), Results: results}
 	if err := writeJSONNew(*output, observation); err != nil {
@@ -188,7 +206,7 @@ func (e environment) probeImport(args []string) error {
 	return nil
 }
 
-func runProbePlan(plan probePlan, timeout time.Duration) []probeResult {
+func runProbePlan(plan probePlan, resolvedIPs []string, timeout time.Duration) []probeResult {
 	results := make([]probeResult, len(plan.Endpoints))
 	jobs := make(chan int)
 	var wg sync.WaitGroup
@@ -209,12 +227,19 @@ func runProbePlan(plan probePlan, timeout time.Duration) []probeResult {
 					results[index] = result
 					continue
 				}
+				target := probeIPForFamily(resolvedIPs, endpoint.Family)
+				if target == "" {
+					result.State = "not-reachable"
+					result.Detail = "target has no address for endpoint family"
+					results[index] = result
+					continue
+				}
 				started := time.Now()
 				network := "tcp4"
 				if endpoint.Family == "ipv6" {
 					network = "tcp6"
 				}
-				connection, err := (&net.Dialer{Timeout: timeout}).Dial(network, net.JoinHostPort(plan.Target, fmt.Sprint(endpoint.Port)))
+				connection, err := (&net.Dialer{Timeout: timeout}).Dial(network, net.JoinHostPort(target, fmt.Sprint(endpoint.Port)))
 				result.LatencyMillis = time.Since(started).Milliseconds()
 				if err != nil {
 					result.State = "not-reachable"
@@ -258,6 +283,14 @@ func validateProbePlan(plan probePlan) error {
 	}
 	if len(plan.Endpoints) == 0 || len(plan.Endpoints) > 128 {
 		return errors.New("probe plan must contain between 1 and 128 endpoints")
+	}
+	if len(plan.ResolvedIPs) > 16 {
+		return errors.New("probe plan contains too many resolved target addresses")
+	}
+	for _, value := range plan.ResolvedIPs {
+		if net.ParseIP(value) == nil {
+			return errors.New("probe plan contains an invalid resolved target address")
+		}
 	}
 	for _, endpoint := range plan.Endpoints {
 		if (endpoint.Protocol != "tcp" && endpoint.Protocol != "udp") || endpoint.Port < 1 || endpoint.Port > 65535 || (endpoint.Family != "ipv4" && endpoint.Family != "ipv6") || (endpoint.Scope != "public" && endpoint.Scope != "public-wildcard") || len(endpoint.Process) > 256 || !validProbeRole(endpoint.Role) || !validProbeExposure(endpoint.ExpectedExposure) {
@@ -418,6 +451,79 @@ func validProbeTarget(value string) bool {
 		return net.ParseIP(value) != nil
 	}
 	return net.ParseIP(value) != nil || probeHostnamePattern.MatchString(value)
+}
+
+func resolveProbeTarget(target string, allowPrivate bool) ([]string, error) {
+	target = strings.TrimSpace(target)
+	var addresses []net.IP
+	if parsed := net.ParseIP(target); parsed != nil {
+		addresses = []net.IP{parsed}
+	} else {
+		resolved, err := net.LookupIP(target)
+		if err != nil {
+			return nil, fmt.Errorf("resolve probe target: %w", err)
+		}
+		addresses = resolved
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(addresses))
+	for _, address := range addresses {
+		if !allowPrivate && !safePublicProbeIP(address) {
+			continue
+		}
+		canonical := address.String()
+		if !seen[canonical] {
+			seen[canonical] = true
+			out = append(out, canonical)
+		}
+	}
+	if len(out) == 0 {
+		if allowPrivate {
+			return nil, errors.New("probe target did not resolve to an IP address")
+		}
+		return nil, errors.New("probe target resolves only to loopback, private, link-local, multicast, or otherwise non-public addresses; use --allow-private-target only for a target you control")
+	}
+	if len(out) > 16 {
+		out = out[:16]
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func validateResolvedProbeIPs(values []string, allowPrivate bool) error {
+	if len(values) == 0 || len(values) > 16 {
+		return errors.New("probe plan must contain between 1 and 16 resolved target addresses")
+	}
+	for _, value := range values {
+		address := net.ParseIP(value)
+		if address == nil {
+			return errors.New("probe plan contains an invalid resolved target address")
+		}
+		if !allowPrivate && !safePublicProbeIP(address) {
+			return errors.New("probe plan contains a non-public target address; use --allow-private-target only for a target you control")
+		}
+	}
+	return nil
+}
+
+func safePublicProbeIP(address net.IP) bool {
+	return address.IsGlobalUnicast() && !address.IsPrivate() && !address.IsLoopback() && !address.IsLinkLocalUnicast() && !address.IsLinkLocalMulticast() && !address.IsUnspecified() && !address.IsMulticast()
+}
+
+func probeIPForFamily(values []string, family string) string {
+	for _, value := range values {
+		address := net.ParseIP(value)
+		if address == nil {
+			continue
+		}
+		if family == "ipv4" && address.To4() != nil {
+			return address.String()
+		}
+		if family == "ipv6" && address.To4() == nil {
+			return address.String()
+		}
+	}
+	return ""
 }
 
 func readLimitedJSONBytes(path string) ([]byte, error) {

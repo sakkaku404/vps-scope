@@ -7,7 +7,9 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 
+	"github.com/sakkaku404/vps-scope/internal/audit"
 	"github.com/sakkaku404/vps-scope/internal/i18n"
 	"github.com/sakkaku404/vps-scope/internal/model"
 )
@@ -29,6 +31,9 @@ func (e environment) diff(args []string) error {
 	newReport, err := readReport(fs.Arg(1))
 	if err != nil {
 		return err
+	}
+	if oldReport.Host.StableID != newReport.Host.StableID {
+		return errors.New("cannot diff reports from different hosts: stable_id mismatch")
 	}
 	locale := i18n.Locale(*lang)
 	oldMap, newMap := findingMap(oldReport), findingMap(newReport)
@@ -76,22 +81,62 @@ func (e environment) fleet(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	_ = lang
 	if fs.NArg() < 1 {
 		return errors.New("usage: vps-scope fleet REPORT.json [REPORT.json ...]")
 	}
-	fmt.Fprintf(e.out, "%-24s %5s %5s %5s %8s %10s\n", "HOST", "RISK", "PASS", "INFO", "UNKNOWN", "PROFILE")
+	locale := i18n.Locale(*lang)
+	fmt.Fprintf(e.out, "%-24s %5s %5s %5s %8s %10s  %s\n", strings.ToUpper(i18n.UI(locale, "主机", "Host")), "RISK", "PASS", "INFO", "UNKNOWN", "PROFILE", i18n.UI(locale, "最高优先级结果", "TOP FINDING"))
 	for _, path := range fs.Args() {
 		r, err := readReport(path)
 		if err != nil {
 			return fmt.Errorf("%s: %w", path, err)
 		}
-		fmt.Fprintf(e.out, "%-24s %5d %5d %5d %8d %10s\n", truncateDisplay(r.Host.Hostname, 24), r.Summary.Risk, r.Summary.Pass, r.Summary.Info, r.Summary.Unknown, r.Profile.Effective)
+		top := fleetTopFinding(r, locale)
+		fmt.Fprintf(e.out, "%-24s %5d %5d %5d %8d %10s  %s\n", truncateDisplay(r.Host.Hostname, 24), r.Summary.Risk, r.Summary.Pass, r.Summary.Info, r.Summary.Unknown, r.Profile.Effective, top)
 	}
 	return nil
 }
 
+func fleetTopFinding(r model.Report, locale string) string {
+	bestRank := 1 << 30
+	best := model.Finding{}
+	for _, finding := range r.Findings {
+		if finding.NotApplicable || (finding.Status != model.Risk && finding.Status != model.Unknown) {
+			continue
+		}
+		rank := 100
+		if finding.Status == model.Risk {
+			rank = map[model.Severity]int{model.Critical: 0, model.High: 10, model.Medium: 20, model.Low: 30}[finding.Severity]
+		} else {
+			rank = 40
+		}
+		if rank < bestRank || rank == bestRank && finding.ID < best.ID {
+			bestRank, best = rank, finding
+		}
+	}
+	if best.ID == "" {
+		return i18n.UI(locale, "没有 RISK；如有 INFO 请按需查看", "no RISK; review INFO as needed")
+	}
+	label := string(best.Status)
+	if best.Severity != "" {
+		label += "/" + strings.ToUpper(string(best.Severity))
+	}
+	title := i18n.Pick(i18n.RuleForLocale(best.ID, locale).Title, locale)
+	return fmt.Sprintf("[%s] %s %s", label, best.ID, truncateDisplay(title, 52))
+}
+
 func readReport(path string) (model.Report, error) {
+	return readReportWithOptions(path, reportReadOptions{})
+}
+
+type reportReadOptions struct {
+	// allowSemanticFailures is reserved for the verify command, which must load
+	// a damaged report in order to print every validation failure. All other
+	// offline commands consume only reports that pass the semantic contract.
+	allowSemanticFailures bool
+}
+
+func readReportWithOptions(path string, options reportReadOptions) (model.Report, error) {
 	file, err := openLimitedJSON(path)
 	if err != nil {
 		return model.Report{}, err
@@ -103,6 +148,9 @@ func readReport(path string) (model.Report, error) {
 	}
 	if r.SchemaVersion != "1.0" {
 		return r, fmt.Errorf("read report %q: unsupported report schema %q", path, r.SchemaVersion)
+	}
+	if failures := audit.ValidateReport(r); len(failures) > 0 && !options.allowSemanticFailures {
+		return r, fmt.Errorf("read report %q: semantic validation failed: %s", path, strings.Join(failures, "; "))
 	}
 	return r, nil
 }

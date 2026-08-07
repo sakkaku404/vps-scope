@@ -117,6 +117,15 @@ jobs:
             exit 1
           }
 
+      - name: Exercise staged amd64 release candidate
+        shell: bash
+        run: |
+          version_output="$(dist/vps-scope_linux_amd64 version)"
+          grep -Fq "${GITHUB_REF_NAME#v}" <<<"$version_output"
+          sudo dist/vps-scope_linux_amd64 audit --lang en --profile general \
+            --format bundle --output /tmp/vps-scope-release-candidate --quiet
+          dist/vps-scope_linux_amd64 verify /tmp/vps-scope-release-candidate
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}

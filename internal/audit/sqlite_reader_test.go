@@ -111,3 +111,44 @@ func TestQuerySQLiteDeadlineIsReportedExplicitly(t *testing.T) {
 		t.Fatalf("expired query context error=%v", err)
 	}
 }
+
+func TestSQLiteSessionReadsWALAndKeepsOneSnapshot(t *testing.T) {
+	path, writer := newSQLiteFixture(t)
+	if _, err := writer.Exec(`PRAGMA journal_mode=WAL;`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Exec(`PRAGMA wal_autocheckpoint=0; CREATE TABLE metadata (value INTEGER); INSERT INTO metadata VALUES (1);`); err != nil {
+		t.Fatal(err)
+	}
+	session, err := openSQLiteSession(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	rows, err := session.Query(`SELECT count(*) FROM metadata;`)
+	if err != nil || len(rows) != 1 || rows[0][0] != "1" {
+		t.Fatalf("initial WAL snapshot rows=%v err=%v", rows, err)
+	}
+	if _, err := writer.Exec(`INSERT INTO metadata VALUES (2);`); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = session.Query(`SELECT count(*) FROM metadata;`)
+	if err != nil || len(rows) != 1 || rows[0][0] != "1" {
+		t.Fatalf("repeat snapshot rows=%v err=%v, want stable count 1", rows, err)
+	}
+}
+
+func TestSQLiteSessionRejectsWrites(t *testing.T) {
+	path, db := newSQLiteFixture(t)
+	if _, err := db.Exec(`CREATE TABLE metadata (value INTEGER);`); err != nil {
+		t.Fatal(err)
+	}
+	session, err := openSQLiteSession(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	if _, err := session.Query(`INSERT INTO metadata VALUES (1) RETURNING value;`); err == nil {
+		t.Fatal("read-only SQLite session accepted a write")
+	}
+}

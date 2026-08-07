@@ -29,6 +29,94 @@ func TestValidateReportAcceptsCompleteContract(t *testing.T) {
 	}
 }
 
+func validDeploymentFixture() *model.Deployment {
+	count := 3
+	return &model.Deployment{
+		Coverage: model.DeploymentCoverage{
+			Configuration: "complete", Runtime: "complete", Firewall: "partial",
+			Panels: "not-applicable", ReverseProxy: "unavailable", Docker: "not-applicable",
+		},
+		Components: []model.Component{{
+			ID: "component:0000000000000001", Product: "sing-box", Kind: "proxy-core",
+			Source: "/etc/sing-box/config.json", Runtime: true, Deployment: "native-or-managed", Confidence: "confirmed",
+		}},
+		Endpoints: []model.ServiceEndpoint{{
+			ID: "endpoint:0000000000000001", ComponentID: "component:0000000000000001",
+			Product: "sing-box", Role: "proxy-ingress", Protocol: "vless", Transport: "tcp",
+			Port: 443, Address: "0.0.0.0", Family: "ipv4", Scope: "public-wildcard",
+			State: "live", Confidence: "confirmed", ConnectionCount: &count,
+		}},
+		Links: []model.TopologyLink{{From: "component:0000000000000001", To: "endpoint:0000000000000001", Kind: "declares"}},
+	}
+}
+
+func TestValidateReportAcceptsTypedDeploymentAndLegacyAbsence(t *testing.T) {
+	legacy := validContractReport()
+	if failures := ValidateReport(legacy); len(failures) != 0 {
+		t.Fatalf("legacy report failures=%v", failures)
+	}
+	current := validContractReport()
+	current.Deployment = validDeploymentFixture()
+	if failures := ValidateReport(current); len(failures) != 0 {
+		t.Fatalf("typed deployment failures=%v", failures)
+	}
+}
+
+func TestValidateReportRejectsInvalidDeploymentTopology(t *testing.T) {
+	tests := []struct {
+		name, want string
+		mutate     func(*model.Deployment)
+	}{
+		{"coverage", "coverage runtime has invalid state", func(d *model.Deployment) { d.Coverage.Runtime = "optimistic" }},
+		{"component ID", "invalid ID", func(d *model.Deployment) { d.Components[0].ID = "component:\nsecret" }},
+		{"duplicate component ID", "duplicate deployment node ID", func(d *model.Deployment) { d.Components = append(d.Components, d.Components[0]) }},
+		{"duplicate endpoint ID", "duplicate deployment node ID", func(d *model.Deployment) { d.Endpoints = append(d.Endpoints, d.Endpoints[0]) }},
+		{"component reference", "references unknown component", func(d *model.Deployment) { d.Endpoints[0].ComponentID = "component:missing" }},
+		{"port", "invalid port", func(d *model.Deployment) { d.Endpoints[0].Port = 0 }},
+		{"transport", "invalid transport", func(d *model.Deployment) { d.Endpoints[0].Transport = "icmp" }},
+		{"role", "invalid role", func(d *model.Deployment) { d.Endpoints[0].Role = "root-shell" }},
+		{"component confidence", "invalid confidence", func(d *model.Deployment) { d.Components[0].Confidence = "certain" }},
+		{"endpoint confidence", "invalid confidence", func(d *model.Deployment) { d.Endpoints[0].Confidence = "certain" }},
+		{"state", "invalid state", func(d *model.Deployment) { d.Endpoints[0].State = "maybe-live" }},
+		{"negative connections", "negative connection count", func(d *model.Deployment) { count := -1; d.Endpoints[0].ConnectionCount = &count }},
+		{"dangling link", "unknown source", func(d *model.Deployment) { d.Links[0].From, d.Links[0].To = "component:missing", "endpoint:missing" }},
+		{"link kind", "invalid kind", func(d *model.Deployment) { d.Links[0].Kind = "executes" }},
+		{"oversized text", "oversized text", func(d *model.Deployment) { d.Endpoints[0].Process = strings.Repeat("x", 257) }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			r := validContractReport()
+			r.Deployment = validDeploymentFixture()
+			test.mutate(r.Deployment)
+			failures := strings.Join(ValidateReport(r), "\n")
+			if !strings.Contains(failures, test.want) {
+				t.Fatalf("missing %q in %s", test.want, failures)
+			}
+		})
+	}
+}
+
+func TestValidateReportRejectsOversizedDeploymentCollections(t *testing.T) {
+	tests := []struct {
+		name, want string
+		mutate     func(*model.Deployment)
+	}{
+		{"components", "513 components", func(d *model.Deployment) { d.Components = make([]model.Component, maxReportDeploymentComponents+1) }},
+		{"endpoints", "2049 endpoints", func(d *model.Deployment) { d.Endpoints = make([]model.ServiceEndpoint, maxReportDeploymentEndpoints+1) }},
+		{"links", "8193 links", func(d *model.Deployment) { d.Links = make([]model.TopologyLink, maxReportDeploymentLinks+1) }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			r := validContractReport()
+			r.Deployment = validDeploymentFixture()
+			test.mutate(r.Deployment)
+			if failures := strings.Join(ValidateReport(r), "\n"); !strings.Contains(failures, test.want) {
+				t.Fatalf("missing %q in %s", test.want, failures)
+			}
+		})
+	}
+}
+
 func TestValidateReportRejectsInvalidStructuredEndpoint(t *testing.T) {
 	r := validContractReport()
 	r.Endpoints = []model.Endpoint{{Protocol: "tcp", Port: 443, Family: "ipv4", Scope: "public", Role: "ssh", ExpectedExposure: "public"}, {Protocol: "tcp", Port: 443, Family: "ipv4", Scope: "public", Role: "invented", ExpectedExposure: "magic"}}

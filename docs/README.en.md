@@ -1,6 +1,30 @@
 # VPS Scope
 
-VPS Scope is a security and runtime auditor for Ubuntu and Debian VPS hosts used for self-hosted proxies, tunnels, and privacy networks. It understands sing-box, Xray, Reality, Hysteria2, proxy panels, reverse proxies, and Docker deployment relationships instead of treating every public port as the same kind of exposure.
+> A security and runtime auditor for VPS hosts running self-hosted proxies, tunnels, and privacy networks.
+
+VPS Scope runs on Ubuntu and Debian. It begins with a complete host review covering accounts and SSH, sudo, firewalls, intrusion protection, system updates, packages, systemd services, Docker, TLS certificates, logs, resource reliability, and suspicious persistence. Those results remain useful even when the server does not run a proxy.
+
+On a proxy host, that Linux baseline is only the start. A public port may be an expected Reality, Hysteria2, or Shadowsocks ingress, or it may be a management panel, subscription endpoint, or internal API that should not be open to the entire internet.
+
+VPS Scope therefore joins the host and workload evidence into one view: panel databases and proxy configuration describe what should exist; systemd, Docker, processes, and live listeners show what is actually running; host firewall and reverse-proxy evidence show how it may be reached. The report tries to answer a few practical questions:
+
+- Are SSH, accounts, firewall policy, updates, and system services showing a confirmed risk?
+- Are proxy ingresses actually listening and handled correctly by the firewall?
+- Are S-UI, 3x-ui, or other management planes unintentionally public?
+- Do configuration, panel state, processes, and listeners agree?
+- Could TLS, logs, resource pressure, or a failed service interrupt the proxy?
+
+It is not just product detection and it is not a port scan with a Linux checklist attached. Ordinary VPS hosts still receive the full host baseline; proxy hosts receive the additional relationships among ingress, management, subscriptions, control APIs, containers, and reverse proxies.
+
+```bash
+curl -fsSL https://sakkaku404.github.io/vps-scope/run.sh | sudo bash
+```
+
+The prompt supports Simplified Chinese, English, Russian, and Persian. Non-interactive runs can use `--lang zh-CN`, `--lang en`, `--lang ru-RU`, or `--lang fa-IR`.
+
+By default, the terminal shows the conclusion and the VPS keeps a complete report bundle. VPS Scope has no repair mode and does not change SSH, firewall rules, services, accounts, or packages.
+
+The default audit also does not execute binaries belonging to S-UI, 3x-ui, sing-box, Xray, Nginx, or other audited workloads. It reads configuration, databases, and system runtime state. Only an explicit `--native-self-test` runs those local programs after ownership and permission checks; this mode executes third-party code already present on the server.
 
 [![CI](https://github.com/sakkaku404/vps-scope/actions/workflows/ci.yml/badge.svg)](https://github.com/sakkaku404/vps-scope/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/sakkaku404/vps-scope/actions/workflows/codeql.yml/badge.svg)](https://github.com/sakkaku404/vps-scope/actions/workflows/codeql.yml)
@@ -10,14 +34,6 @@ VPS Scope is a security and runtime auditor for Ubuntu and Debian VPS hosts used
 [简体中文](../README.md) · **English** · [Русский](README.ru.md) · [فارسی](README.fa.md)
 
 [Proxy compatibility](PROXY-COMPATIBILITY.md) · [Compatibility matrix](COMPATIBILITY-MATRIX.md) · [Privacy](PRIVACY.md) · [Checks](CHECKS.md) · [Design notes](DESIGN.md) · [Testing](TESTING.md)
-
-## Why VPS Scope exists
-
-This project began with a hands-on review of [vernu/vps-audit](https://github.com/vernu/vps-audit). That script makes a VPS check approachable, but on real servers, reading configuration files directly, applying service or port-count thresholds, and treating failed collection as safe can produce false positives and missed findings.
-
-VPS Scope is not a fork of that project; its code and detection implementation were developed independently. VPS Scope redesigns and implements its checks around effective system state and reviewable evidence: failed collection becomes `UNKNOWN`, listeners are separated into public, private, loopback, and container-published scopes, and findings are interpreted in the context of the server's role. The original comparison used commit [`e39115f`](https://github.com/vernu/vps-audit/tree/e39115f85414073ee5cf96bea5e3b1b811375a2a), whose script SHA-256 is `db1134574f3c8df30bc9ac10821d207dda13ae22b0905964e2c0bc7cc71192e6`.
-
-Thanks to OpenAI Codex for writing most of the Go—it has currently written far more Go than the maintainer, who is still working on understanding it.
 
 ## What it looks at
 
@@ -68,13 +84,15 @@ The prompt supports Simplified Chinese, English, Russian, and Persian. For non-i
 
 That one command downloads the current release, verifies its SHA-256, runs the audit, and removes the temporary binary. There is no second command.
 
+Both the temporary runner and installer always verify the checksum. When `cosign` is available, they also verify the GitHub Actions keyless signature. Without `cosign`, an interactive terminal must type `continue` before falling back to checksum-only mode, while non-interactive use stops by default. Automation should set `VPS_SCOPE_ALLOW_UNSIGNED=1` only after accepting that trade-off; set `VPS_SCOPE_REQUIRE_SIGNATURE=1` to forbid unsigned fallback entirely.
+
 To install `vps-scope` for repeated use:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sakkaku404/vps-scope/main/install.sh | sudo bash
 ```
 
-Then run `sudo vps-scope`. The installer detects amd64 or arm64 automatically and verifies the release checksum before installing anything. When `cosign` is already available it also verifies the GitHub Actions keyless signature; an explicitly selected version is bound to that exact tag identity. Set `VPS_SCOPE_REQUIRE_SIGNATURE=1` to make the signature mandatory. Releases also include the project license and a third-party notice generated from the modules linked into the binary. See [release artifact verification](SUPPLY-CHAIN.md) for the trust model and manual verification command.
+Then run `sudo vps-scope`. The installer detects amd64 or arm64 automatically. An explicitly selected version is bound to that exact tag identity during signature verification. Releases also include the project license and a third-party notice generated from the modules linked into the binary. See [release artifact verification](SUPPLY-CHAIN.md) for the trust model and manual verification command.
 
 If you prefer to inspect scripts before running them, download them first or use the manual steps below.
 
@@ -110,6 +128,8 @@ sudo ./vps-scope audit --lang ru-RU --profile proxy
 sudo ./vps-scope audit --lang fa-IR --profile proxy
 sudo ./vps-scope audit --profile custom --expect-public 22/tcp,443/tcp
 sudo ./vps-scope audit --profile proxy --external-domain panel.example.com --expect-cdn
+# Optional: execute trusted local workload binaries for their native self-tests
+sudo ./vps-scope audit --native-self-test
 ```
 
 The standard audit is suitable for routine use and avoids recursive filesystem scans. Use `sudo vps-scope audit --deep` to add SUID/SGID, file-capability, and installed-package integrity checks. Deep-only checks that were not run are shown as skipped, never as `PASS`.
@@ -237,6 +257,14 @@ VPS Scope currently supports Ubuntu and Debian on Linux `amd64` and `arm64`. Som
 VPS Scope is useful for reviewing a server, but it cannot prove that a machine is clean or see cloud firewall rules from inside the guest. See [the design notes](DESIGN.md) for the current trust boundary and known limitations.
 
 The 1.x guarantees for report schemas, check IDs, reason codes, public commands, exit behavior, and older reports are documented in the [stability and compatibility policy](STABILITY.md). The complete policy/probe workflow is in [Deployment policy and external observation](POLICY-AND-PROBE.md). Human-readable layout may evolve; automation should consume canonical JSON.
+
+## Why VPS Scope exists
+
+This project began with a hands-on review of [vernu/vps-audit](https://github.com/vernu/vps-audit). That script makes a VPS check approachable, but on real servers, reading configuration files directly, applying service or port-count thresholds, and treating failed collection as safe can produce false positives and missed findings.
+
+VPS Scope is not a fork of that project; its code and detection implementation were developed independently. VPS Scope redesigns and implements its checks around effective system state and reviewable evidence: failed collection becomes `UNKNOWN`, listeners are separated into public, private, loopback, and container-published scopes, and findings are interpreted in the context of the server's role. The original comparison used commit [`e39115f`](https://github.com/vernu/vps-audit/tree/e39115f85414073ee5cf96bea5e3b1b811375a2a), whose script SHA-256 is `db1134574f3c8df30bc9ac10821d207dda13ae22b0905964e2c0bc7cc71192e6`.
+
+Thanks to OpenAI Codex for writing most of the Go—it has currently written far more Go than the maintainer, who is still working on understanding it.
 
 ## Development
 

@@ -133,9 +133,33 @@ func TestAdvisoryCheckMatchesRunningVulnerableVersion(t *testing.T) {
 		scenarioCommandKey("ps", "-eo", "pid=,user=,comm=,args="): {Stdout: "4740 root sing-box /usr/local/bin/sing-box\n"},
 		scenarioCommandKey("sing-box", "version"):                 {Stdout: "sing-box version 1.4.4\n"},
 	})
-	finding := checkProxyAdvisories(scenarioContext(cmd))
+	ctx := scenarioContext(cmd)
+	ctx.Options.NativeSelfTest = true
+	ctx.Facts = NewFactStore(cmd, true)
+	finding := checkProxyAdvisories(ctx, nil)
 	if finding.Status != model.Risk || finding.Severity != model.Critical || finding.Facts["matched_advisories"] != "1" {
 		t.Fatalf("advisory finding = %#v", finding)
+	}
+}
+
+func TestAdvisoryUsesManagedCoreBinaryAndDeduplicatesProducts(t *testing.T) {
+	const xrayBinary = "/usr/local/x-ui/bin/xray-linux-amd64"
+	cmd := newScenarioCommander([]string{"ps", xrayBinary}, map[string]CommandResult{
+		scenarioCommandKey("ps", "-eo", "pid=,user=,comm=,args="): {Stdout: "1 root x-ui /usr/local/x-ui/x-ui\n2 root xray-linux-amd64 /usr/local/x-ui/bin/xray-linux-amd64 run"},
+		scenarioCommandKey(xrayBinary, "version"):                 {Stdout: "Xray 26.6.27"},
+	})
+	ctx := scenarioContext(cmd)
+	ctx.Options.NativeSelfTest = true
+	ctx.Facts = NewFactStore(cmd, true)
+	ctx.Facts.panelsOnce.Do(func() {
+		ctx.Facts.panels = []panelSnapshot{{Product: "3x-ui", Version: "3.4.2"}, {Product: "x-ui/3x-ui", Version: "3.4.2"}}
+	})
+	finding := checkProxyAdvisories(ctx, []proxyConfigSummary{{Product: "Xray", Path: "/usr/local/x-ui/bin/config.json"}})
+	if finding.Status != model.Risk || finding.Facts["products_checked"] != "2" || finding.Facts["unknown_product_versions"] != "0" {
+		t.Fatalf("advisory finding=%#v, want two deduplicated products with complete versions and the bundled Xray match", finding)
+	}
+	if got := cmd.calls[scenarioCommandKey(xrayBinary, "version")]; got != 1 {
+		t.Fatalf("managed Xray version calls=%d, want 1", got)
 	}
 }
 

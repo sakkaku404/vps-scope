@@ -197,6 +197,8 @@ func (e environment) audit(args []string) error {
 	noColor := fs.Bool("no-color", false, "disable color output")
 	redacted := fs.Bool("redact", false, "redact public IPs, domains, and host identifiers")
 	deep := fs.Bool("deep", false, "run slower filesystem and package-integrity checks")
+	nativeSelfTest := fs.Bool("native-self-test", false, "execute trusted local workload binaries for native configuration checks")
+	auditTimeout := fs.Duration("audit-timeout", 5*time.Minute, "overall audit command budget (30s to 30m)")
 	alsoTerminal := fs.Bool("also-terminal", false, "print terminal report before saving a bundle")
 	expectPublic := fs.String("expect-public", "", "expected public listeners, e.g. 22/tcp,443/tcp")
 	externalDomains := fs.String("external-domain", "", "comma-separated domains for opt-in DNS and TLS observation")
@@ -237,7 +239,7 @@ func (e environment) audit(args []string) error {
 			return err
 		}
 	}
-	r, err := audit.Run(audit.Options{Locale: locale, Profile: *profile, ExpectedPublic: expected, LogSince: duration, Deep: *deep, ExternalDomains: domains, ExpectCDN: *expectCDN, Policy: policy, Build: audit.Build{Version: e.build.Version, Commit: e.build.Commit}, Progress: progress})
+	r, err := audit.Run(audit.Options{Locale: locale, Profile: *profile, ExpectedPublic: expected, LogSince: duration, Deep: *deep, NativeSelfTest: *nativeSelfTest, AuditTimeout: *auditTimeout, ExternalDomains: domains, ExpectCDN: *expectCDN, Policy: policy, Build: audit.Build{Version: e.build.Version, Commit: e.build.Commit}, Progress: progress})
 	if err != nil {
 		return err
 	}
@@ -260,6 +262,7 @@ func (e environment) doctor(args []string) error {
 	if runtime.GOOS == "linux" {
 		fmt.Fprintln(e.out, choose(locale, "命令状态: TRUSTED=可安全执行  UNTRUSTED=存在但权限链不可信  MISSING=未找到", "command status: TRUSTED=safe to execute  UNTRUSTED=unsafe ownership or writable path  MISSING=not found"))
 	}
+	fmt.Fprintln(e.out, choose(locale, "原生工作负载自检: 默认关闭；audit --native-self-test 会在信任检查后执行服务器上的本地工作负载代码", "native workload self-test: disabled by default; audit --native-self-test executes local workload code after trust checks"))
 	commander := audit.OSCommander{}
 	for _, name := range []string{"sshd", "ss", "journalctl", "ufw", "firewall-cmd", "nft", "iptables", "fail2ban-client", "cscli", "apt-get", "dpkg", "systemctl", "docker", "coredumpctl", "getcap"} {
 		status := "MISSING"
@@ -444,7 +447,9 @@ func (e environment) verify(args []string) error {
 }
 
 func (e environment) verifyReport(path string) error {
-	r, err := readReport(path)
+	// Verification deliberately loads semantic damage so it can enumerate the
+	// complete failure set. Every other offline command uses strict readReport.
+	r, err := readReportWithOptions(path, reportReadOptions{allowSemanticFailures: true})
 	if err != nil {
 		return err
 	}
@@ -483,6 +488,7 @@ func parseDuration(value string) (time.Duration, error) {
 	return time.ParseDuration(value)
 }
 func parseExternalDomains(value string) ([]string, error) {
+	const maxExternalDomains = 16
 	seen := map[string]bool{}
 	var domains []string
 	for _, item := range strings.Split(value, ",") {
@@ -506,6 +512,9 @@ func parseExternalDomains(value string) ([]string, error) {
 		if !seen[domain] {
 			seen[domain] = true
 			domains = append(domains, domain)
+			if len(domains) > maxExternalDomains {
+				return nil, fmt.Errorf("--external-domain accepts at most %d unique domains", maxExternalDomains)
+			}
 		}
 	}
 	return domains, nil

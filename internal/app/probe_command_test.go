@@ -28,13 +28,18 @@ func TestProbePlanRunImportRoundTrip(t *testing.T) {
 	planPath := filepath.Join(dir, "plan.json")
 	observationPath := filepath.Join(dir, "observation.json")
 	enrichedPath := filepath.Join(dir, "enriched.json")
-	report := model.Report{
-		SchemaVersion: "1.0", ToolVersion: "dev", Locale: "en", StartedAt: time.Now().UTC(), FinishedAt: time.Now().UTC(), LogSince: "24h0m0s",
-		Host:      model.Host{StableID: "fixture-host", Hostname: "fixture", OS: "debian", OSVersion: "13", Kernel: "fixture", Architecture: "x86_64"},
-		Profile:   model.Profile{Requested: "proxy", Detected: "proxy", Effective: "proxy"},
-		Findings:  []model.Finding{{ID: "NET-004", Category: "network", Status: model.Info, NotApplicable: true}},
-		Endpoints: []model.Endpoint{{Protocol: "tcp", Port: port, Family: "ipv4", Scope: "public-wildcard"}},
+	report := appContractReport()
+	report.Host.StableID = "fixture-host"
+	report.Host.Hostname = "fixture"
+	report.Profile = model.Profile{Requested: "proxy", Detected: "proxy", Effective: "proxy"}
+	report.Endpoints = []model.Endpoint{{Protocol: "tcp", Port: port, Family: "ipv4", Scope: "public-wildcard"}}
+	for index := range report.Findings {
+		if report.Findings[index].ID == "NET-004" {
+			report.Findings[index] = model.Finding{ID: "NET-004", Category: "network", Status: model.Info, NotApplicable: true, ReasonCode: "net.004.not-applicable"}
+			break
+		}
 	}
+	report.Recount()
 	data, err := json.Marshal(report)
 	if err != nil {
 		t.Fatal(err)
@@ -43,10 +48,10 @@ func TestProbePlanRunImportRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	var output bytes.Buffer
-	if err := Run([]string{"probe", "plan", "--target", "127.0.0.1", "--output", planPath, "--management", strconv.Itoa(port) + "/tcp", reportPath}, nil, &output, &output, BuildInfo{Version: "test"}); err != nil {
+	if err := Run([]string{"probe", "plan", "--target", "127.0.0.1", "--allow-private-target", "--output", planPath, "--management", strconv.Itoa(port) + "/tcp", reportPath}, nil, &output, &output, BuildInfo{Version: "test"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := Run([]string{"probe", "run", "--output", observationPath, planPath}, nil, &output, &output, BuildInfo{Version: "test"}); err != nil {
+	if err := Run([]string{"probe", "run", "--allow-private-target", "--output", observationPath, planPath}, nil, &output, &output, BuildInfo{Version: "test"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := Run([]string{"probe", "import", "--output", enrichedPath, reportPath, observationPath}, nil, &output, &output, BuildInfo{Version: "test"}); err != nil {
@@ -56,14 +61,21 @@ func TestProbePlanRunImportRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(enriched.Findings) != 1 || enriched.Findings[0].Status != model.Risk || enriched.Findings[0].Severity != model.High {
-		t.Fatalf("external management observation = %#v", enriched.Findings)
+	var observed model.Finding
+	for _, finding := range enriched.Findings {
+		if finding.ID == "NET-004" {
+			observed = finding
+			break
+		}
+	}
+	if observed.ID == "" || observed.Status != model.Risk || observed.Severity != model.High {
+		t.Fatalf("external management observation = %#v", observed)
 	}
 }
 
 func TestProbeUDPIsExplicitlyIndeterminate(t *testing.T) {
 	plan := probePlan{SchemaVersion: probeSchemaVersion, ReportStableID: "fixture", Target: "127.0.0.1", CreatedAt: time.Now(), Nonce: "0123456789abcdef", Endpoints: []model.Endpoint{{Protocol: "udp", Port: 443, Family: "ipv4", Scope: "public-wildcard"}}}
-	results := runProbePlan(plan, time.Second)
+	results := runProbePlan(plan, []string{"127.0.0.1"}, time.Second)
 	if len(results) != 1 || results[0].State != "indeterminate" {
 		t.Fatalf("UDP result = %#v", results)
 	}
@@ -145,6 +157,27 @@ func TestProbeInputValidation(t *testing.T) {
 	}
 	if _, err := parseProbeRoleEndpoints("70000/tcp"); err == nil {
 		t.Fatal("invalid management endpoint accepted")
+	}
+}
+
+func TestProbeTargetRejectsPrivateAddressesByDefault(t *testing.T) {
+	for _, target := range []string{"127.0.0.1", "10.0.0.1", "169.254.169.254", "::1", "fd00::1", "fe80::1"} {
+		if _, err := resolveProbeTarget(target, false); err == nil {
+			t.Errorf("private target %s was accepted without opt-in", target)
+		}
+		if values, err := resolveProbeTarget(target, true); err != nil || len(values) != 1 {
+			t.Errorf("private target %s explicit opt-in failed: values=%v err=%v", target, values, err)
+		}
+	}
+}
+
+func TestProbeUsesPinnedResolvedAddress(t *testing.T) {
+	plan := probePlan{SchemaVersion: probeSchemaVersion, ReportStableID: "fixture", Target: "attacker.invalid", ResolvedIPs: []string{"203.0.113.9"}, CreatedAt: time.Now(), Nonce: strings.Repeat("0", 32), Endpoints: []model.Endpoint{{Protocol: "tcp", Port: 443, Family: "ipv4", Scope: "public"}}}
+	if err := validateProbePlan(plan); err != nil {
+		t.Fatal(err)
+	}
+	if got := probeIPForFamily(plan.ResolvedIPs, "ipv4"); got != "203.0.113.9" {
+		t.Fatalf("pinned address=%q", got)
 	}
 }
 

@@ -7,14 +7,16 @@ umask 022
 REPO="sakkaku404/vps-scope"
 VERSION="${VPS_SCOPE_VERSION:-latest}"
 INSTALL_DIR="${VPS_SCOPE_INSTALL_DIR:-/usr/local/bin}"
+ALLOW_UNSIGNED="${VPS_SCOPE_ALLOW_UNSIGNED:-0}"
 
 usage() {
   cat <<'EOF'
-Install VPS Scope from GitHub Release artifacts verified against SHA-256 checksums.
-If cosign is installed, the release asset is also verified against the GitHub
-Actions keyless signature. Set VPS_SCOPE_REQUIRE_SIGNATURE=1 to require it.
+Install VPS Scope from GitHub Release artifacts. Publisher signature
+verification is required by default. If cosign is unavailable, an interactive
+terminal must explicitly approve checksum-only mode; automation can set
+VPS_SCOPE_ALLOW_UNSIGNED=1 after reviewing the trust trade-off.
 
-Usage: install.sh [--version v0.1.0] [--install-dir /usr/local/bin]
+Usage: install.sh [--version v1.0.0] [--install-dir /usr/local/bin] [--allow-unsigned]
 EOF
 }
 
@@ -22,6 +24,7 @@ while (($#)); do
   case "$1" in
     --version) VERSION="${2:?missing value for --version}"; shift 2 ;;
     --install-dir) INSTALL_DIR="${2:?missing value for --install-dir}"; shift 2 ;;
+    --allow-unsigned) ALLOW_UNSIGNED=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -30,6 +33,10 @@ done
 if ((EUID != 0)); then
   echo "This installer needs root privileges. Run it with sudo." >&2
   exit 1
+fi
+if [[ "$ALLOW_UNSIGNED" != "0" && "$ALLOW_UNSIGNED" != "1" ]]; then
+  echo "VPS_SCOPE_ALLOW_UNSIGNED must be 0 or 1." >&2
+  exit 2
 fi
 
 if [[ "$VERSION" != "latest" && ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -88,11 +95,27 @@ if command -v cosign >/dev/null 2>&1; then
     --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
     "$asset"
   echo "Verified: GitHub Actions keyless signature"
-elif [[ "${VPS_SCOPE_REQUIRE_SIGNATURE:-0}" == "1" ]]; then
-  echo "cosign is required because VPS_SCOPE_REQUIRE_SIGNATURE=1." >&2
-  exit 1
 else
-  echo "Note: SHA-256 verified. Install cosign or set VPS_SCOPE_REQUIRE_SIGNATURE=1 to require signature verification." >&2
+  if [[ "${VPS_SCOPE_REQUIRE_SIGNATURE:-0}" == "1" ]]; then
+    echo "cosign is required because VPS_SCOPE_REQUIRE_SIGNATURE=1." >&2
+    exit 1
+  fi
+  if [[ "$ALLOW_UNSIGNED" != "1" ]]; then
+    echo "Publisher signature was not verified because cosign is not installed." >&2
+    echo "SHA-256 from the same Release detects corruption but does not authenticate the publisher." >&2
+    if [[ -r /dev/tty && -w /dev/tty ]]; then
+      printf 'Type continue to accept checksum-only installation, or press Enter to stop: ' >/dev/tty
+      IFS= read -r approval </dev/tty || true
+      if [[ "$approval" != "continue" ]]; then
+        echo "Installation stopped without publisher verification." >&2
+        exit 1
+      fi
+    else
+      echo "Non-interactive installation stopped. Install cosign, or explicitly set VPS_SCOPE_ALLOW_UNSIGNED=1." >&2
+      exit 1
+    fi
+  fi
+  echo "WARNING: continuing with checksum integrity only; publisher signature was not verified." >&2
 fi
 
 install -d -m 0755 "$INSTALL_DIR"

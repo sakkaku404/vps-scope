@@ -42,7 +42,7 @@ func proxyChecks(ctx *Context) []model.Finding {
 		checkExternalExposure(ctx),
 		checkDeploymentPolicy(ctx),
 		checkProxyEgress(ctx),
-		checkProxyAdvisories(ctx),
+		checkProxyAdvisories(ctx, summaries),
 	}
 	if discoveryErr != nil {
 		dependsOnConfigDiscovery := map[string]bool{
@@ -66,6 +66,7 @@ func proxyChecks(ctx *Context) []model.Finding {
 			}
 		}
 	}
+	ctx.Deployment = buildDeployment(ctx, summaries, errors.Join(discoveryErr, panelConfigErr))
 	return findings
 }
 func checkProxyInventory(ctx *Context, summaries []proxyConfigSummary) model.Finding {
@@ -131,7 +132,14 @@ func checkProxyConfiguration(ctx *Context, summaries []proxyConfigSummary) model
 	if len(summaries) == 0 {
 		return notApplicable("WORK-004", "workloads", "configuration discovery", "no supported proxy configuration file found")
 	}
-	f := model.Finding{ID: "WORK-004", Category: "workloads", Status: model.Pass, Facts: map[string]string{}}
+	f := model.Finding{ID: "WORK-004", Category: "workloads", Status: model.Info, Facts: map[string]string{}}
+	if ctx.Options.NativeSelfTest {
+		f.Facts["native_self_test_mode"] = "enabled_executes_local_workload_code"
+		f.Evidence = append(f.Evidence, model.Evidence{Source: "execution policy", Key: "native_self_test", Value: "enabled by --native-self-test; trusted local workload binaries may be executed"})
+	} else {
+		f.Facts["native_self_test_mode"] = "disabled_by_default"
+		f.Evidence = append(f.Evidence, model.Evidence{Source: "execution policy", Key: "native_self_test", Value: "disabled; no audited workload binary was executed"})
+	}
 	active := activeProxyProducts(ctx)
 	errorsFound, selfTests := 0, 0
 	testedCommands := map[string]bool{}
@@ -147,6 +155,9 @@ func checkProxyConfiguration(ctx *Context, summaries []proxyConfigSummary) model
 			continue
 		}
 		f.Evidence = append(f.Evidence, model.Evidence{Source: summary.Path, Key: "parsed", Value: fmt.Sprintf("product=%s inbounds=%d controls=%d", summary.Product, len(summary.Inbounds), len(summary.Controls))})
+		if !ctx.Options.NativeSelfTest {
+			continue
+		}
 		// Managed-panel summaries may represent an entire generated config tree
 		// or a database-derived runtime model. Passing such a directory to a
 		// single-file native self-test produces a false failure.
@@ -185,6 +196,9 @@ func checkProxyConfiguration(ctx *Context, summaries []proxyConfigSummary) model
 		} else {
 			f.Evidence = append(f.Evidence, model.Evidence{Source: command, Key: "self_test", Value: "passed"})
 		}
+	}
+	if ctx.Options.NativeSelfTest && selfTests > 0 && errorsFound == 0 {
+		f.Status = model.Pass
 	}
 	f.Facts["configs"] = strconv.Itoa(len(summaries))
 	f.Facts["parse_or_self_test_errors"] = strconv.Itoa(errorsFound)

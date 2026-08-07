@@ -1,11 +1,16 @@
 // Russian and Persian catalogs prepared with Codex. Native-speaker
 // corrections are welcome.
+//lint:file-ignore ST1018 Persian text intentionally contains native shaping characters.
 
 package i18n
 
 func init() {
 	ExtraUI = map[string]map[string]string{
 		"ru-RU": {
+			"Exposure and runtime issues": "Открытые поверхности и проблемы выполнения",
+			"Panel roles match the live listeners, but a subscription endpoint is publicly reachable over plaintext and may expose credentials carried in subscription links.":                                "Роли панели соответствуют активным слушателям, но конечная точка подписки доступна из интернета без TLS и может раскрыть учетные данные в ссылках подписки.",
+			"Maintenance issue: no updates are pending, but a reboot is required to finish applying installed updates.":                                                                                       "Техническое обслуживание: ожидающих обновлений нет, но для завершения применения уже установленных обновлений требуется перезагрузка.",
+			"Confirmed risk: a subscription endpoint is publicly reachable over plaintext, so bearer-like subscription links may leak in transit.":                                                            "Подтвержденный риск: конечная точка подписки доступна из интернета без TLS, поэтому ссылки подписки с токеном доступа могут быть перехвачены при передаче.",
 			"\nOutput:\n  1. terminal only\n  2. terminal and full report bundle (recommended)\n  3. full report bundle only":                                                                                 "Выход:\n  1. только терминал\n  2. пакет терминала и полного отчета (рекомендуется)\n  3. только полный пакет отчетов",
 			"\nServer role (choose 1 if unsure):\n  1. auto detect (recommended)\n  2. general VPS\n  3. proxy server\n  4. web server\n  5. Docker host\n  6. mixed workloads\n  7. custom public listeners": "Роль сервера (выберите 1, если не уверены):\n  1. автоматическое обнаружение (рекомендуется)\n  2. общий VPS\n  3. прокси-сервер\n  4. веб-сервер\n  5. Докер-хост\n  6. смешанная нагрузка\n  7. пользовательские публичные слушатели",
 			"  Status index only; open the HTML, Markdown, or JSON report for complete evidence.":                                                                                                             "Только индекс состояния; откройте отчет HTML, Markdown или JSON для получения полных доказательств.",
@@ -125,7 +130,8 @@ func init() {
 			"Value":                        "Ценить",
 			"Verify integrity when needed": "Проверка целостности при необходимости",
 			"Why it matters":               "Почему это важно",
-			"command status: TRUSTED=safe to execute  UNTRUSTED=unsafe ownership or writable path  MISSING=not found": "статус команды: TRUSTED=безопасно для выполнения UNTRUSTED=небезопасное владение или путь для записи ОТСУТСТВУЕТ=не найдено",
+			"command status: TRUSTED=safe to execute  UNTRUSTED=unsafe ownership or writable path  MISSING=not found":                  "статус команды: TRUSTED=безопасно для выполнения UNTRUSTED=небезопасное владение или путь для записи ОТСУТСТВУЕТ=не найдено",
+			"native workload self-test: disabled by default; audit --native-self-test executes local workload code after trust checks": "Нативная самопроверка рабочих нагрузок: по умолчанию отключена; audit --native-self-test запускает локальный код рабочей нагрузки после проверки доверия",
 			"detected":                     "обнаружен",
 			"full_audit_supported":         "full_audit_supported",
 			"non-default path":             "путь не по умолчанию",
@@ -133,6 +139,10 @@ func init() {
 			"… %d more; see WORK evidence": "… еще %d; см. доказательства РАБОТЫ",
 		},
 		"fa-IR": {
+			"Exposure and runtime issues": "سطوح در معرض و مشکلات زمان اجرا",
+			"Panel roles match the live listeners, but a subscription endpoint is publicly reachable over plaintext and may expose credentials carried in subscription links.":                                "نقش های پنل با درگاه های فعال مطابقت دارند، اما نقطه پایانی اشتراک بدون TLS از اینترنت در دسترس است و ممکن است اطلاعات دسترسی موجود در پیوندهای اشتراک را افشا کند.",
+			"Maintenance issue: no updates are pending, but a reboot is required to finish applying installed updates.":                                                                                       "نگهداری: به روزرسانی معوقی وجود ندارد، اما برای تکمیل اعمال به روزرسانی های نصب شده باید سیستم دوباره راه اندازی شود.",
+			"Confirmed risk: a subscription endpoint is publicly reachable over plaintext, so bearer-like subscription links may leak in transit.":                                                            "خطر تأییدشده: نقطهٔ پایانی اشتراک بدون TLS از اینترنت در دسترس است؛ بنابراین پیوندهای اشتراک حاوی توکن دسترسی ممکن است هنگام انتقال افشا شوند.",
 			"\nOutput:\n  1. terminal only\n  2. terminal and full report bundle (recommended)\n  3. full report bundle only":                                                                                 "خروجی:\n  1. فقط ترمینال\n  2. پایانه و بسته گزارش کامل (توصیه می شود)\n  3. فقط بسته گزارش کامل",
 			"\nServer role (choose 1 if unsure):\n  1. auto detect (recommended)\n  2. general VPS\n  3. proxy server\n  4. web server\n  5. Docker host\n  6. mixed workloads\n  7. custom public listeners": "نقش سرور (اگر مطمئن نیستید 1 را انتخاب کنید):\n  1. تشخیص خودکار (توصیه می شود)\n  2. وی پی اس عمومی\n  3. سرور پروکسی\n  4. وب سرور\n  5. میزبان داکر\n  6. حجم کار مختلط\n  7. شنوندگان عمومی سفارشی",
 			"  Status index only; open the HTML, Markdown, or JSON report for complete evidence.":                                                                                                             "فقط فهرست وضعیت؛ برای شواهد کامل، گزارش HTML، Markdown یا JSON را باز کنید.",
@@ -252,7 +262,8 @@ func init() {
 			"Value":                        "مقدار",
 			"Verify integrity when needed": "در صورت نیاز یکپارچگی را تأیید کنید",
 			"Why it matters":               "چرا مهم است",
-			"command status: TRUSTED=safe to execute  UNTRUSTED=unsafe ownership or writable path  MISSING=not found": "وضعیت فرمان: TRUSTED=ایمن برای اجرا UNTRUSTED=مالکیت ناامن یا مسیر قابل نوشتن MISSING= یافت نشد",
+			"command status: TRUSTED=safe to execute  UNTRUSTED=unsafe ownership or writable path  MISSING=not found":                  "وضعیت فرمان: TRUSTED=ایمن برای اجرا UNTRUSTED=مالکیت ناامن یا مسیر قابل نوشتن MISSING= یافت نشد",
+			"native workload self-test: disabled by default; audit --native-self-test executes local workload code after trust checks": "خودآزمایی بومی بار کاری: به‌طور پیش‌فرض غیرفعال است؛ audit --native-self-test پس از بررسی اعتماد، کد محلی بار کاری را اجرا می‌کند",
 			"detected":                     "شناسایی شد",
 			"full_audit_supported":         "full_audit_supported",
 			"non-default path":             "مسیر غیر پیش فرض",

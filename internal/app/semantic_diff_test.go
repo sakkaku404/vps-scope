@@ -43,3 +43,29 @@ func TestSemanticDiffDoesNotCallNewDeepEvidenceARegression(t *testing.T) {
 		t.Fatalf("unexpected deep comparison: %#v", changes)
 	}
 }
+
+func TestSemanticDiffClassifiesTypedTopologyExposure(t *testing.T) {
+	endpoint := model.ServiceEndpoint{ID: "endpoint:0123456789abcdef", Product: "S-UI", Role: "management", Transport: "tcp", Port: 2095, State: "live", Scope: "loopback", Firewall: "blocked-by-default", Judgment: "internal-panel-endpoint", Confidence: "confirmed"}
+	oldReport := model.Report{Deployment: &model.Deployment{Coverage: model.DeploymentCoverage{Configuration: "complete", Runtime: "complete", Firewall: "complete", Panels: "complete", ReverseProxy: "not-applicable", Docker: "not-applicable"}, Endpoints: []model.ServiceEndpoint{endpoint}}}
+	endpoint.Scope, endpoint.Firewall, endpoint.Judgment = "public-wildcard", "allow-anywhere", "public-management-exposed"
+	newReport := model.Report{Deployment: &model.Deployment{Coverage: oldReport.Deployment.Coverage, Endpoints: []model.ServiceEndpoint{endpoint}}}
+	changes, _ := semanticDiff(oldReport, newReport)
+	found := false
+	for _, change := range changes {
+		if change.ID == "TOPOLOGY" && change.Kind == "REGRESSION" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("topology exposure regression not reported: %#v", changes)
+	}
+}
+
+func TestSemanticDiffClassifiesTopologyCoverageLoss(t *testing.T) {
+	oldReport := model.Report{Deployment: &model.Deployment{Coverage: model.DeploymentCoverage{Configuration: "complete"}}}
+	newReport := model.Report{Deployment: &model.Deployment{Coverage: model.DeploymentCoverage{Configuration: "unavailable"}}}
+	changes, _ := semanticDiff(oldReport, newReport)
+	if len(changes) != 1 || changes[0].Kind != "REGRESSION" || changes[0].ID != "TOPOLOGY" {
+		t.Fatalf("coverage loss=%#v", changes)
+	}
+}

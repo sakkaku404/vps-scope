@@ -34,6 +34,16 @@ func TestSubcommandHelpIsSuccessfulAndUsesProvidedWriter(t *testing.T) {
 	}
 }
 
+func TestAuditHelpDocumentsNativeSelfTestOptIn(t *testing.T) {
+	var out bytes.Buffer
+	if err := Run([]string{"audit", "--help"}, bytes.NewReader(nil), &out, &out, BuildInfo{Version: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "native-self-test") {
+		t.Fatalf("audit help does not document the native self-test opt-in: %q", out.String())
+	}
+}
+
 func (c doctorFixtureCommander) Run(time.Duration, string, ...string) audit.CommandResult {
 	return audit.CommandResult{}
 }
@@ -406,5 +416,12 @@ func TestParseExternalDomains(t *testing.T) {
 		if _, err := parseExternalDomains(invalid); err == nil {
 			t.Fatalf("accepted invalid domain %q", invalid)
 		}
+	}
+	many := make([]string, 17)
+	for index := range many {
+		many[index] = "host-" + strconv.Itoa(index) + ".example.com"
+	}
+	if _, err := parseExternalDomains(strings.Join(many, ",")); err == nil {
+		t.Fatal("external domain safety limit was not enforced")
 	}
 }

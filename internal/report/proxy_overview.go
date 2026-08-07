@@ -27,6 +27,9 @@ func (o proxyOverview) HasContent() bool {
 // collected by the proxy checks. It is intentionally an inventory: findings
 // remain the source of truth for status and severity in every renderer.
 func collectProxyOverview(r model.Report, locale string) proxyOverview {
+	if r.Deployment != nil {
+		return collectTopologyOverview(r, locale)
+	}
 	panels, panelOK := findingByID(r, "WORK-002")
 	inventory, inventoryOK := findingByID(r, "WORK-003")
 	relations, relationsOK := findingByID(r, "WORK-009")

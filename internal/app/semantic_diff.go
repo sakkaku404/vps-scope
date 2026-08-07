@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -109,7 +110,122 @@ func semanticDiff(oldReport, newReport model.Report) ([]semanticChange, map[stri
 		covered["WORK-001"] = true
 		out = append(out, semanticChange{Kind: "CHANGE", ID: "WORK-001", MessageZH: "识别到的工作负载：" + displayEmpty(o) + " → " + displayEmpty(n), MessageEN: "detected workloads: " + displayEmpty(o) + " -> " + displayEmpty(n)})
 	}
+	out = append(out, topologySemanticDiff(oldReport.Deployment, newReport.Deployment)...)
 	return out, covered
+}
+
+func topologySemanticDiff(oldDeployment, newDeployment *model.Deployment) []semanticChange {
+	if oldDeployment == nil && newDeployment == nil {
+		return nil
+	}
+	if oldDeployment == nil || newDeployment == nil {
+		messageZH, messageEN := "新报告开始提供结构化部署拓扑", "structured deployment topology is available in the new report"
+		if newDeployment == nil {
+			messageZH, messageEN = "新报告缺少结构化部署拓扑", "structured deployment topology is missing from the new report"
+		}
+		return []semanticChange{{Kind: "CONTEXT", ID: "TOPOLOGY", MessageZH: messageZH, MessageEN: messageEN}}
+	}
+	oldEndpoints, newEndpoints := endpointTopologyMap(oldDeployment.Endpoints), endpointTopologyMap(newDeployment.Endpoints)
+	ids := make([]string, 0, len(oldEndpoints)+len(newEndpoints))
+	seen := map[string]bool{}
+	for id := range oldEndpoints {
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	for id := range newEndpoints {
+		if !seen[id] {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	var out []semanticChange
+	for _, id := range ids {
+		oldEndpoint, oldOK := oldEndpoints[id]
+		newEndpoint, newOK := newEndpoints[id]
+		switch {
+		case !oldOK:
+			kind := "CHANGE"
+			if topologyEndpointRisky(newEndpoint) {
+				kind = "REGRESSION"
+			}
+			out = append(out, semanticChange{Kind: kind, ID: "TOPOLOGY", MessageZH: "新增端点：" + topologyEndpointIdentity(newEndpoint), MessageEN: "endpoint added: " + topologyEndpointIdentity(newEndpoint)})
+		case !newOK:
+			kind := "CHANGE"
+			if topologyEndpointRisky(oldEndpoint) {
+				kind = "IMPROVEMENT"
+			}
+			out = append(out, semanticChange{Kind: kind, ID: "TOPOLOGY", MessageZH: "端点消失：" + topologyEndpointIdentity(oldEndpoint), MessageEN: "endpoint removed: " + topologyEndpointIdentity(oldEndpoint)})
+		default:
+			oldPosture, newPosture := topologyEndpointPosture(oldEndpoint), topologyEndpointPosture(newEndpoint)
+			if oldPosture == newPosture {
+				continue
+			}
+			kind := "CHANGE"
+			if topologyEndpointRisky(newEndpoint) && !topologyEndpointRisky(oldEndpoint) {
+				kind = "REGRESSION"
+			} else if topologyEndpointRisky(oldEndpoint) && !topologyEndpointRisky(newEndpoint) {
+				kind = "IMPROVEMENT"
+			}
+			out = append(out, semanticChange{Kind: kind, ID: "TOPOLOGY", MessageZH: topologyEndpointIdentity(newEndpoint) + "：" + oldPosture + " → " + newPosture, MessageEN: topologyEndpointIdentity(newEndpoint) + ": " + oldPosture + " -> " + newPosture})
+		}
+	}
+	coverageNames := []struct {
+		nameZH, nameEN, oldValue, newValue string
+	}{
+		{"配置证据", "configuration evidence", oldDeployment.Coverage.Configuration, newDeployment.Coverage.Configuration},
+		{"监听证据", "runtime evidence", oldDeployment.Coverage.Runtime, newDeployment.Coverage.Runtime},
+		{"防火墙证据", "firewall evidence", oldDeployment.Coverage.Firewall, newDeployment.Coverage.Firewall},
+		{"面板证据", "panel evidence", oldDeployment.Coverage.Panels, newDeployment.Coverage.Panels},
+		{"反向代理证据", "reverse-proxy evidence", oldDeployment.Coverage.ReverseProxy, newDeployment.Coverage.ReverseProxy},
+		{"Docker 证据", "Docker evidence", oldDeployment.Coverage.Docker, newDeployment.Coverage.Docker},
+	}
+	for _, coverage := range coverageNames {
+		if coverage.oldValue == coverage.newValue {
+			continue
+		}
+		kind := "CHANGE"
+		if coverageRank(coverage.newValue) < coverageRank(coverage.oldValue) {
+			kind = "REGRESSION"
+		} else if coverageRank(coverage.newValue) > coverageRank(coverage.oldValue) {
+			kind = "IMPROVEMENT"
+		}
+		out = append(out, semanticChange{Kind: kind, ID: "TOPOLOGY", MessageZH: coverage.nameZH + "：" + coverage.oldValue + " → " + coverage.newValue, MessageEN: coverage.nameEN + ": " + coverage.oldValue + " -> " + coverage.newValue})
+	}
+	return out
+}
+
+func endpointTopologyMap(endpoints []model.ServiceEndpoint) map[string]model.ServiceEndpoint {
+	out := make(map[string]model.ServiceEndpoint, len(endpoints))
+	for _, endpoint := range endpoints {
+		out[endpoint.ID] = endpoint
+	}
+	return out
+}
+
+func topologyEndpointIdentity(endpoint model.ServiceEndpoint) string {
+	product := endpoint.Product
+	if product == "" {
+		product = "unknown"
+	}
+	return fmt.Sprintf("%s %s %d/%s", product, endpoint.Role, endpoint.Port, endpoint.Transport)
+}
+
+func topologyEndpointPosture(endpoint model.ServiceEndpoint) string {
+	return strings.Join([]string{displayEmpty(endpoint.State), displayEmpty(endpoint.Scope), displayEmpty(endpoint.Firewall), displayEmpty(endpoint.Judgment)}, "/")
+}
+
+func topologyEndpointRisky(endpoint model.ServiceEndpoint) bool {
+	if endpoint.Confidence == "unknown" || strings.Contains(endpoint.Judgment, "unknown") {
+		return true
+	}
+	if strings.Contains(endpoint.Judgment, "blocked") || strings.Contains(endpoint.Judgment, "not-listening") || strings.Contains(endpoint.Judgment, "does-not-match") || strings.Contains(endpoint.Judgment, "not-classified") {
+		return true
+	}
+	return (endpoint.Role == "management" || endpoint.Role == "control-api") && (endpoint.Scope == "public" || endpoint.Scope == "public-wildcard") && (endpoint.Firewall == "allow-anywhere" || endpoint.Firewall == "inactive")
+}
+
+func coverageRank(value string) int {
+	return map[string]int{"unavailable": 0, "partial": 1, "not-applicable": 2, "complete": 3}[value]
 }
 
 func numericFact(f model.Finding, key string) (int, bool) {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -14,12 +15,22 @@ import (
 
 const (
 	sqliteQueryTimeout     = 10 * time.Second
+	sqliteSessionTimeout   = 20 * time.Second
 	maxSQLiteDatabaseBytes = 1 << 30
 	maxSQLiteRows          = 10_000
 	maxSQLiteColumns       = 64
 	maxSQLiteCellBytes     = 1 << 20
 	maxSQLiteResultBytes   = 8 << 20
 )
+
+type sqliteSession struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	file   *os.File
+	anchor *os.File
+	db     *sql.DB
+	tx     *sql.Tx
+}
 
 // querySQLite opens panel databases in SQLite read-only mode. The driver is
 // statically linked into the single VPS Scope binary, so audited hosts do not
@@ -32,6 +43,26 @@ func querySQLite(database, query string) ([][]string, error) {
 }
 
 func querySQLiteContext(ctx context.Context, database, query string) ([][]string, error) {
+	session, err := openSQLiteSessionContext(ctx, database)
+	if err != nil {
+		return nil, err
+	}
+	defer session.Close()
+	return session.Query(query)
+}
+
+func openSQLiteSession(database string) (*sqliteSession, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), sqliteSessionTimeout)
+	session, err := openSQLiteSessionContext(ctx, database)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	session.cancel = cancel
+	return session, nil
+}
+
+func openSQLiteSessionContext(ctx context.Context, database string) (*sqliteSession, error) {
 	abs, err := filepath.Abs(database)
 	if err != nil {
 		return nil, err
@@ -41,26 +72,69 @@ func querySQLiteContext(ctx context.Context, database, query string) ([][]string
 		return nil, fmt.Errorf("open SQLite database: %w", err)
 	}
 	info, statErr := file.Stat()
-	closeErr := file.Close()
 	if statErr != nil {
+		_ = file.Close()
 		return nil, fmt.Errorf("inspect SQLite database: %w", statErr)
 	}
-	if closeErr != nil {
-		return nil, fmt.Errorf("close SQLite database preflight: %w", closeErr)
-	}
 	if info.Size() < 0 || info.Size() > maxSQLiteDatabaseBytes {
+		_ = file.Close()
 		return nil, fmt.Errorf("SQLite database exceeds the %d byte safety limit", maxSQLiteDatabaseBytes)
 	}
-	dsn := "file:" + filepath.ToSlash(abs) + "?mode=ro&_pragma=" + url.QueryEscape("busy_timeout=5000")
+	openPath, anchor, err := sqliteOpenPath(file, abs)
+	if err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("anchor SQLite database path: %w", err)
+	}
+	dsn := sqlitePathDSN(openPath) + "&_pragma=" + url.QueryEscape("busy_timeout=5000") + "&_pragma=" + url.QueryEscape("query_only=1")
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
+		if anchor != nil {
+			_ = anchor.Close()
+		}
+		_ = file.Close()
 		return nil, fmt.Errorf("open SQLite read-only: %w", err)
 	}
-	defer db.Close()
 	db.SetMaxOpenConns(1)
-	rows, err := db.QueryContext(ctx, query)
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
+		_ = db.Close()
+		if anchor != nil {
+			_ = anchor.Close()
+		}
+		_ = file.Close()
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, errors.New("SQLite metadata session deadline exceeded")
+		}
+		return nil, fmt.Errorf("begin SQLite read-only snapshot: %w", err)
+	}
+	return &sqliteSession{ctx: ctx, file: file, anchor: anchor, db: db, tx: tx}, nil
+}
+
+func (s *sqliteSession) Close() {
+	if s == nil {
+		return
+	}
+	if s.tx != nil {
+		_ = s.tx.Rollback()
+	}
+	if s.db != nil {
+		_ = s.db.Close()
+	}
+	if s.file != nil {
+		_ = s.file.Close()
+	}
+	if s.anchor != nil {
+		_ = s.anchor.Close()
+	}
+	if s.cancel != nil {
+		s.cancel()
+	}
+}
+
+func (s *sqliteSession) Query(query string) ([][]string, error) {
+	rows, err := s.tx.QueryContext(s.ctx, query)
+	if err != nil {
+		if errors.Is(s.ctx.Err(), context.DeadlineExceeded) {
 			return nil, errors.New("SQLite metadata query deadline exceeded")
 		}
 		return nil, fmt.Errorf("query SQLite metadata: %w", err)
@@ -101,10 +175,14 @@ func querySQLiteContext(ctx context.Context, database, query string) ([][]string
 		out = append(out, row)
 	}
 	if err := rows.Err(); err != nil {
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		if errors.Is(s.ctx.Err(), context.DeadlineExceeded) {
 			return nil, errors.New("SQLite metadata query deadline exceeded")
 		}
 		return nil, err
 	}
 	return out, nil
+}
+
+func sqlitePathDSN(path string) string {
+	return "file:" + filepath.ToSlash(path) + "?mode=ro"
 }

@@ -59,7 +59,7 @@ func scenarioContext(cmd Commander) *Context {
 		Options: Options{Locale: "en", Profile: "proxy", LogSince: 24 * time.Hour, Commander: cmd, Now: func() time.Time { return time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC) }},
 		Host:    model.Host{OS: "ubuntu", OSVersion: "24.04", IsRoot: true},
 		Profile: model.Profile{Requested: "proxy", Detected: "proxy", Effective: "proxy"},
-		Facts:   NewFactStore(cmd),
+		Facts:   NewFactStore(cmd, false),
 	}
 }
 

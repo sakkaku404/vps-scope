@@ -6,9 +6,14 @@ umask 022
 
 REPO="sakkaku404/vps-scope"
 VERSION="${VPS_SCOPE_VERSION:-latest}"
+ALLOW_UNSIGNED="${VPS_SCOPE_ALLOW_UNSIGNED:-0}"
 
 if [[ "$VERSION" != "latest" && ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "Version must be latest or a tag such as v0.11.0." >&2
+  exit 2
+fi
+if [[ "$ALLOW_UNSIGNED" != "0" && "$ALLOW_UNSIGNED" != "1" ]]; then
+  echo "VPS_SCOPE_ALLOW_UNSIGNED must be 0 or 1." >&2
   exit 2
 fi
 
@@ -58,11 +63,27 @@ if command -v cosign >/dev/null 2>&1; then
     --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
     "$asset"
   echo "Verified: GitHub Actions keyless signature"
-elif [[ "${VPS_SCOPE_REQUIRE_SIGNATURE:-0}" == "1" ]]; then
-  echo "cosign is required because VPS_SCOPE_REQUIRE_SIGNATURE=1." >&2
-  exit 1
 else
-  echo "Note: SHA-256 verified. Install cosign or set VPS_SCOPE_REQUIRE_SIGNATURE=1 to require signature verification." >&2
+  if [[ "${VPS_SCOPE_REQUIRE_SIGNATURE:-0}" == "1" ]]; then
+    echo "cosign is required because VPS_SCOPE_REQUIRE_SIGNATURE=1." >&2
+    exit 1
+  fi
+  if [[ "$ALLOW_UNSIGNED" != "1" ]]; then
+    echo "Publisher signature was not verified because cosign is not installed." >&2
+    echo "SHA-256 from the same Release detects corruption but does not authenticate the publisher." >&2
+    if [[ -r /dev/tty && -w /dev/tty ]]; then
+      printf 'Type continue to run with checksum-only verification, or press Enter to stop: ' >/dev/tty
+      IFS= read -r approval </dev/tty || true
+      if [[ "$approval" != "continue" ]]; then
+        echo "Run stopped without publisher verification." >&2
+        exit 1
+      fi
+    else
+      echo "Non-interactive run stopped. Install cosign, or explicitly set VPS_SCOPE_ALLOW_UNSIGNED=1." >&2
+      exit 1
+    fi
+  fi
+  echo "WARNING: continuing with checksum integrity only; publisher signature was not verified." >&2
 fi
 chmod 0755 "$asset"
 

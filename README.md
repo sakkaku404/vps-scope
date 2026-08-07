@@ -24,6 +24,8 @@ curl -fsSL https://sakkaku404.github.io/vps-scope/run.sh | sudo bash
 
 默认会在终端显示结论，并在 VPS 上保存完整报告。VPS Scope 没有修复功能，不会更改 SSH、防火墙、服务、账户或软件包。
 
+默认审计也不会执行 S-UI、3x-ui、sing-box、Xray、Nginx 等被审计工作负载自带的二进制，只读取配置、数据库和系统运行态。只有明确使用 `--native-self-test` 时，才会在所有权和权限检查通过后执行这些本地程序；该模式会运行服务器上的第三方代码。
+
 [![CI](https://github.com/sakkaku404/vps-scope/actions/workflows/ci.yml/badge.svg)](https://github.com/sakkaku404/vps-scope/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/sakkaku404/vps-scope/actions/workflows/codeql.yml/badge.svg)](https://github.com/sakkaku404/vps-scope/actions/workflows/codeql.yml)
 [![Release](https://img.shields.io/github/v/release/sakkaku404/vps-scope)](https://github.com/sakkaku404/vps-scope/releases)
@@ -46,8 +48,8 @@ curl -fsSL https://sakkaku404.github.io/vps-scope/run.sh | sudo bash
 管理面         RISK/HIGH
   S-UI 56709/tcp · 公网通配 · 防火墙允许 · TLS启用 · 非默认路径
   判断：管理面仍可由整个公网访问
-配置与运行     PASS
-  配置自检和面板运行态关系未发现异常。
+配置与运行     INFO
+  配置已完成静态解析；默认未执行代理核心或面板程序。
 
 代理入口:
   443/tcp    sing-box/vless (reality)       公网通配 · 防火墙允许 · PASS
@@ -102,7 +104,7 @@ HTML 报告会先回答“节点入口、管理面、配置与运行、服务可
 
 ### 配置和运行状态
 
-- 执行 sing-box、Xray 的原生只读配置校验
+- 默认静态解析 sing-box、Xray 配置；可显式启用原生配置自检
 - 对照 S-UI、3x-ui/x-ui 数据库、生成配置与实际监听
 - 检查 Reality、Hysteria2、TUIC、Trojan、Shadowsocks、WireGuard 和 OpenVPN 的关键运行关系
 - 分类统计认证、握手、DNS、TLS、路由和面板登录错误，不复制原始日志和用户数据
@@ -180,6 +182,8 @@ sudo vps-scope
 sudo vps-scope audit --lang zh-CN --profile proxy
 sudo vps-scope audit --profile custom --expect-public 22/tcp,443/tcp
 sudo vps-scope audit --deep
+# 可选：在信任检查通过后执行本地工作负载程序进行原生自检
+sudo vps-scope audit --native-self-test
 ```
 
 交互模式和网页上的临时运行命令默认都会显示终端摘要并保存完整报告。手动指定位置：
@@ -267,7 +271,7 @@ VPS Scope 能检查 VPS 内部看到的配置和运行状态，但不能：
 
 ## 下载与安全验证
 
-临时运行和安装脚本都会下载 GitHub Release 并核对 SHA-256。如果系统已有 `cosign`，还会验证 GitHub Actions 的无密钥签名。
+临时运行和安装脚本都会下载 GitHub Release 并核对 SHA-256。如果系统已有 `cosign`，还会验证 GitHub Actions 的无密钥签名。没有 `cosign` 时，交互终端会要求输入 `continue` 才能仅凭校验和继续；非交互运行默认停止。自动化只有在明确接受这一取舍后才应设置 `VPS_SCOPE_ALLOW_UNSIGNED=1`，需要完全禁止无签名运行时可设置 `VPS_SCOPE_REQUIRE_SIGNATURE=1`。
 
 不想使用 `curl | bash` 时，可以从 [Releases](https://github.com/sakkaku404/vps-scope/releases) 手动下载二进制和 `SHA256SUMS`。签名、provenance 和第三方许可证说明见[供应链文档](docs/SUPPLY-CHAIN.md)。
 
@@ -290,6 +294,8 @@ go vet ./...
 ```
 
 欢迎提交可复现的 Ubuntu、Debian 和代理部署样本。公开 issue 不要附上未经脱敏的服务器报告；安全问题请使用 GitHub 私密漏洞报告，详见 [SECURITY.md](SECURITY.md)。
+
+当前开发分支的安全边界与修复验证记录见 [2026-08-07 安全审计](docs/SECURITY-AUDIT-2026-08-07.md)。
 
 ## 许可证
 

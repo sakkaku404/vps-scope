@@ -31,18 +31,26 @@ var (
 	caddyProxyRE  = regexp.MustCompile(`(?i)^\s*reverse_proxy\s+([^\s{]+)`)
 )
 
-func discoverReverseProxyRoutes(cmd Commander) ([]reverseProxyRoute, error) {
+func discoverReverseProxyRoutes(cmd Commander, nativeSelfTest bool) ([]reverseProxyRoute, error) {
 	var routes []reverseProxyRoute
 	var discoveryErr error
-	if cmd.Exists("nginx") {
-		result := cmd.Run(20*time.Second, "nginx", "-T")
-		if result.Err != nil || result.Truncated {
-			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("nginx -T: %s", commandError(result)))
+	nginxRuntimeLoaded := false
+	if nativeSelfTest && cmd.Exists("nginx") {
+		binary, trustErr := trustedExecutable(cmd, "nginx")
+		if trustErr != nil {
+			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("nginx -T skipped: %w", trustErr))
 		} else {
-			routes = append(routes, parseNginxRoutes("nginx -T (effective configuration)", result.Stdout+"\n"+result.Stderr)...)
-			discoveryErr = errors.Join(discoveryErr, reverseProxySyntaxGaps("nginx", result.Stdout+"\n"+result.Stderr))
+			nginxRuntimeLoaded = true
+			result := cmd.Run(20*time.Second, binary, "-T")
+			if result.Err != nil || result.Truncated {
+				discoveryErr = errors.Join(discoveryErr, fmt.Errorf("nginx -T: %s", commandError(result)))
+			} else {
+				routes = append(routes, parseNginxRoutes("nginx -T (effective configuration)", result.Stdout+"\n"+result.Stderr)...)
+				discoveryErr = errors.Join(discoveryErr, reverseProxySyntaxGaps("nginx", result.Stdout+"\n"+result.Stderr))
+			}
 		}
-	} else {
+	}
+	if !nginxRuntimeLoaded {
 		nginxPaths, err := discoverExistingFiles(512, "/etc/nginx/sites-enabled/*", "/etc/nginx/conf.d/*.conf")
 		discoveryErr = errors.Join(discoveryErr, err)
 		for _, path := range nginxPaths {
@@ -349,7 +357,7 @@ func uniqueReverseProxyRoutes(routes []reverseProxyRoute) []reverseProxyRoute {
 }
 
 func checkReverseProxyRelations(ctx *Context) model.Finding {
-	routes, discoveryErr := discoverReverseProxyRoutes(ctx.Commander)
+	routes, discoveryErr := ctx.Facts.ReverseProxyRoutes()
 	if len(routes) == 0 {
 		if discoveryErr != nil {
 			return unknown("WORK-013", "workloads", "reverse-proxy configuration discovery", discoveryErr.Error())

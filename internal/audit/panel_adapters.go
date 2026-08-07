@@ -12,13 +12,13 @@ import (
 type panelAdapter interface {
 	ID() string
 	Detect() bool
-	Collect(Commander) panelSnapshot
+	Collect(Commander, bool, time.Time) panelSnapshot
 }
 
 type nativePanelAdapter struct {
 	id, binary string
 	detect     func() bool
-	collect    func(Commander) panelSnapshot
+	collect    func(Commander, bool, time.Time) panelSnapshot
 }
 
 func (a nativePanelAdapter) ID() string { return a.id }
@@ -28,14 +28,16 @@ func (a nativePanelAdapter) Detect() bool {
 	}
 	return regularFile(a.binary)
 }
-func (a nativePanelAdapter) Collect(cmd Commander) panelSnapshot { return a.collect(cmd) }
+func (a nativePanelAdapter) Collect(cmd Commander, nativeSelfTest bool, auditTime time.Time) panelSnapshot {
+	return a.collect(cmd, nativeSelfTest, auditTime)
+}
 
 func panelAdapters() []panelAdapter {
 	return []panelAdapter{
-		nativePanelAdapter{id: "s-ui/native-v1", binary: "/usr/local/s-ui/sui", collect: collectSUIFacts},
-		nativePanelAdapter{id: "x-ui/native-v1", binary: "/usr/local/x-ui/x-ui", collect: collectXUIFacts},
-		nativePanelAdapter{id: "marzban/managed-v1", detect: func() bool { return directoryExists("/opt/marzban") || directoryExists("/var/lib/marzban") }, collect: collectMarzbanFacts},
-		nativePanelAdapter{id: "hiddify/managed-v1", detect: func() bool { return directoryExists("/opt/hiddify-manager") }, collect: collectHiddifyFacts},
+		nativePanelAdapter{id: "s-ui/native-v1", binary: "/usr/local/s-ui/sui", collect: collectSUIFactsAt},
+		nativePanelAdapter{id: "x-ui/native-v1", binary: "/usr/local/x-ui/x-ui", collect: collectXUIFactsAt},
+		nativePanelAdapter{id: "marzban/managed-v1", detect: func() bool { return directoryExists("/opt/marzban") || directoryExists("/var/lib/marzban") }, collect: func(cmd Commander, _ bool, _ time.Time) panelSnapshot { return collectMarzbanFacts(cmd) }},
+		nativePanelAdapter{id: "hiddify/managed-v1", detect: func() bool { return directoryExists("/opt/hiddify-manager") }, collect: func(cmd Commander, _ bool, _ time.Time) panelSnapshot { return collectHiddifyFacts(cmd) }},
 	}
 }
 
@@ -44,6 +46,8 @@ type panelSchemaInspection struct {
 	Fingerprint  string
 	Capabilities []string
 }
+
+type sqliteMetadataQuery func(string) ([][]string, error)
 
 func inspectPanelSchema(cmd Commander, database, product string) (panelSchemaInspection, error) {
 	var lastErr error
@@ -63,7 +67,13 @@ func inspectPanelSchema(cmd Commander, database, product string) (panelSchemaIns
 }
 
 func inspectPanelSchemaOnce(cmd Commander, database, product string) (panelSchemaInspection, error) {
-	rows, err := sqliteTSV(cmd, database, `SELECT name FROM sqlite_master WHERE type='table';`)
+	return inspectPanelSchemaWithQuery(func(query string) ([][]string, error) {
+		return sqliteTSV(cmd, database, query)
+	}, product)
+}
+
+func inspectPanelSchemaWithQuery(query sqliteMetadataQuery, product string) (panelSchemaInspection, error) {
+	rows, err := query(`SELECT name FROM sqlite_master WHERE type='table';`)
 	if err != nil {
 		return panelSchemaInspection{}, fmt.Errorf("panel schema tables: %w", err)
 	}
@@ -73,7 +83,7 @@ func inspectPanelSchemaOnce(cmd Commander, database, product string) (panelSchem
 			continue
 		}
 		name := row[0]
-		cols, queryErr := sqliteTSV(cmd, database, `PRAGMA table_info("`+strings.ReplaceAll(name, `"`, `""`)+`");`)
+		cols, queryErr := query(`PRAGMA table_info("` + strings.ReplaceAll(name, `"`, `""`) + `");`)
 		if queryErr != nil {
 			continue
 		}

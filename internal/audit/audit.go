@@ -17,11 +17,6 @@ import (
 
 const SchemaVersion = "1.0"
 
-var CategoryOrder = []string{
-	"system", "accounts", "ssh", "privileges", "network", "firewall", "auth", "updates",
-	"packages", "processes", "docker", "tls", "workloads", "filesystem", "persistence", "reliability",
-}
-
 type Build struct {
 	Version string
 	Commit  string
@@ -35,6 +30,8 @@ type Options struct {
 	ExpectedPublic  map[string]bool
 	LogSince        time.Duration
 	Deep            bool
+	NativeSelfTest  bool
+	AuditTimeout    time.Duration
 	ExternalDomains []string
 	ExpectCDN       bool
 	ExternalProber  ExternalProber
@@ -51,6 +48,7 @@ type Context struct {
 	Profile               model.Profile
 	ProfileDiscoveryError error
 	Facts                 *FactStore
+	Deployment            *model.Deployment
 }
 
 type CheckFunc func(*Context) []model.Finding
@@ -85,6 +83,13 @@ func Run(opts Options) (model.Report, error) {
 	if opts.Build.Version == "" {
 		opts.Build.Version = "dev"
 	}
+	if opts.AuditTimeout == 0 {
+		opts.AuditTimeout = 5 * time.Minute
+	}
+	if opts.AuditTimeout < 30*time.Second || opts.AuditTimeout > 30*time.Minute {
+		return model.Report{}, fmt.Errorf("audit timeout must be between 30s and 30m")
+	}
+	opts.Commander = newDeadlineCommander(opts.Commander, opts.AuditTimeout)
 	started := opts.Now().UTC()
 	host, err := collectHost(opts.Commander)
 	if err != nil {
@@ -93,7 +98,7 @@ func Run(opts Options) (model.Report, error) {
 	if host.OS != "ubuntu" && host.OS != "debian" {
 		return model.Report{}, fmt.Errorf("unsupported distribution %q; v1 supports Ubuntu and Debian only", host.OS)
 	}
-	facts := NewFactStore(opts.Commander)
+	facts := NewFactStoreAt(opts.Commander, opts.NativeSelfTest, started)
 	profile, profileErr := detectProfile(opts.Commander, facts, opts.Profile)
 	ctx := &Context{Options: opts, Host: host, Profile: profile, ProfileDiscoveryError: profileErr, Facts: facts}
 	findings := make([]model.Finding, 0, 64)
@@ -120,11 +125,14 @@ func Run(opts Options) (model.Report, error) {
 		Profile:       profile,
 		Findings:      findings,
 		Endpoints:     reportEndpoints(ctx),
+		Deployment:    ctx.Deployment,
 		Metadata: map[string]string{
-			"mutation_policy": "never-modify-system",
-			"network_checks":  map[bool]string{true: "explicitly-enabled", false: "disabled-by-default"}[len(opts.ExternalDomains) > 0],
-			"audit_depth":     map[bool]string{true: "deep", false: "standard"}[opts.Deep],
-			"policy_schema":   map[bool]string{true: PolicySchemaVersion, false: "none"}[opts.Policy != nil],
+			"mutation_policy":  "never-modify-system",
+			"network_checks":   map[bool]string{true: "explicitly-enabled", false: "disabled-by-default"}[len(opts.ExternalDomains) > 0],
+			"audit_depth":      map[bool]string{true: "deep", false: "standard"}[opts.Deep],
+			"native_self_test": map[bool]string{true: "enabled-executes-local-workload-code", false: "disabled-by-default"}[opts.NativeSelfTest],
+			"audit_timeout":    opts.AuditTimeout.String(),
+			"policy_schema":    map[bool]string{true: PolicySchemaVersion, false: "none"}[opts.Policy != nil],
 		},
 	}
 	report.Recount()

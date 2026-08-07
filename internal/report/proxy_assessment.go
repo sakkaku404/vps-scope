@@ -3,6 +3,7 @@ package report
 import (
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	"github.com/sakkaku404/vps-scope/internal/model"
@@ -64,6 +65,9 @@ func collectProxyAssessment(r model.Report, locale string) proxyAssessment {
 	runtime, runtimeOK := findingByID(r, "WORK-012")
 
 	components := setFromCSV(inventory.Facts["products"])
+	if r.Deployment != nil {
+		components = topologyComponentProducts(r.Deployment.Components)
+	}
 	hasProxyContext := len(components) > 0 ||
 		panelOK && !panel.NotApplicable ||
 		ingressOK && !ingress.NotApplicable ||
@@ -72,16 +76,111 @@ func collectProxyAssessment(r model.Report, locale string) proxyAssessment {
 		return proxyAssessment{}
 	}
 
+	ingressLine := proxyIngressAssessment(ingress, ingressOK, locale)
+	panelLine := proxyPanelAssessment(panel, panelOK, locale)
+	if r.Deployment != nil {
+		ingressLine = topologyIngressAssessment(*r.Deployment, ingress, ingressOK, locale)
+		panelLine = topologyPanelAssessment(*r.Deployment, panel, panelOK, locale)
+	}
 	return proxyAssessment{
 		Components: components,
 		Lines: []proxyAssessmentLine{
-			proxyIngressAssessment(ingress, ingressOK, locale),
-			proxyPanelAssessment(panel, panelOK, locale),
+			ingressLine,
+			panelLine,
 			proxyRuntimeAssessment(config, configOK, runtime, runtimeOK, locale),
 			proxyAvailabilityAssessment(r, locale),
 			hostBaselineAssessment(r, locale),
 		},
 	}
+}
+
+func topologyComponentProducts(components []model.Component) []string {
+	seen := map[string]bool{}
+	for _, component := range components {
+		if component.Product != "" && component.Product != "unknown" {
+			seen[component.Product] = true
+		}
+	}
+	if seen["3x-ui"] || seen["x-ui"] {
+		delete(seen, "x-ui/3x-ui")
+	}
+	out := make([]string, 0, len(seen))
+	for product := range seen {
+		out = append(out, product)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func topologyIngressAssessment(deployment model.Deployment, finding model.Finding, ok bool, locale string) proxyAssessmentLine {
+	line := proxyAssessmentLine{Label: choose(locale, "节点入口", "Proxy ingress"), Status: "INFO"}
+	var endpoints []model.ServiceEndpoint
+	for _, endpoint := range deployment.Endpoints {
+		if endpoint.Role == "proxy-ingress" {
+			endpoints = append(endpoints, endpoint)
+		}
+	}
+	if len(endpoints) == 0 {
+		line.Message = choose(locale, "未发现当前适配器能够确认的代理入口。", "No proxy ingress was confirmed by the active adapters.")
+		return line
+	}
+	if ok {
+		line.Status = assessmentFindingLabel(finding)
+	}
+	problems, unknown := 0, 0
+	for _, endpoint := range endpoints {
+		if endpoint.Confidence == "unknown" || strings.Contains(endpoint.Judgment, "unknown") {
+			unknown++
+		} else if endpoint.Judgment != "expected-proxy-ingress" {
+			problems++
+		}
+	}
+	switch {
+	case finding.Status == model.Risk || problems > 0:
+		line.Message = fmt.Sprintf(choose(locale, "已识别 %d 个代理入口，其中 %d 个配置、监听或防火墙关系异常。", "%d proxy ingress endpoints were identified; %d have a configuration, listener, or firewall mismatch."), len(endpoints), problems)
+	case finding.Status == model.Unknown || unknown > 0:
+		line.Message = fmt.Sprintf(choose(locale, "已识别 %d 个代理入口，但 %d 个关系证据不足，不能确认是否按预期工作。", "%d proxy ingress endpoints were identified, but %d relationships lack enough evidence to confirm expected operation."), len(endpoints), unknown)
+	default:
+		line.Message = fmt.Sprintf(choose(locale, "已确认 %d 个代理入口；配置、实际监听和主机防火墙关系一致。", "%d proxy ingress endpoints were confirmed; configuration, live listeners, and host-firewall state agree."), len(endpoints))
+	}
+	return line
+}
+
+func topologyPanelAssessment(deployment model.Deployment, finding model.Finding, ok bool, locale string) proxyAssessmentLine {
+	line := proxyAssessmentLine{Label: choose(locale, "管理面", "Management plane"), Status: "INFO"}
+	var management []model.ServiceEndpoint
+	for _, endpoint := range deployment.Endpoints {
+		if endpoint.Role == "management" {
+			management = append(management, endpoint)
+		}
+	}
+	if len(management) == 0 {
+		line.Message = choose(locale, "未检测到当前适配器支持的代理面板。", "No supported proxy panel was detected.")
+		return line
+	}
+	if ok {
+		line.Status = assessmentFindingLabel(finding)
+	}
+	switch finding.Status {
+	case model.Risk:
+		line.Message = choose(locale, "发现需要立即复核的管理面暴露。", "A management-plane exposure needs immediate review.")
+	case model.Pass:
+		line.Message = choose(locale, "未发现管理面直接向整个公网开放。", "No management plane was found directly open to the whole public internet.")
+	case model.Unknown:
+		line.Message = choose(locale, "面板结构、监听或防火墙证据不足，不能确认管理面是否安全。", "Panel schema, listener, or firewall evidence is incomplete; management exposure cannot be confirmed.")
+	default:
+		line.Message = choose(locale, "面板状态仅作为部署上下文记录。", "Panel state is recorded as deployment context only.")
+	}
+	first := management[0]
+	line.Message += fmt.Sprintf(" %s %d/%s · %s · %s · TLS=%s · %s.", first.Product, first.Port, first.Transport, scopeLabel(first.Scope, locale), firewallLabel(first.Firewall, locale), valueOrReport(first.TLS, "unknown"), topologyPathLabel(valueOrReport(first.PathPosture, "unknown"), locale))
+	return line
+}
+
+func valueOrReport(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
 }
 
 func proxyIngressAssessment(f model.Finding, ok bool, locale string) proxyAssessmentLine {
@@ -154,6 +253,8 @@ func proxyRuntimeAssessment(config model.Finding, configOK bool, runtime model.F
 	switch {
 	case status == model.Risk && configOK && config.Status == model.Risk:
 		line.Message = choose(locale, "代理核心原生配置校验失败；服务可能无法在重启后恢复。", "A native proxy-core configuration check failed; the service may not recover after restart.")
+	case status == model.Risk && runtimeOK && strings.HasSuffix(runtime.ReasonCode, "public-plaintext-subscription"):
+		line.Message = choose(locale, "面板角色与实际监听一致，但订阅端点从公网明文开放，订阅链接中的访问凭据可能泄露。", "Panel roles match the live listeners, but a subscription endpoint is publicly reachable over plaintext and may expose credentials carried in subscription links.")
 	case status == model.Risk:
 		line.Message = choose(locale, "面板数据库、生成配置和实际监听之间存在无法解释的差异。", "The panel database, generated configuration, and live listeners contain an unexplained mismatch.")
 	case status == model.Unknown:

@@ -5,7 +5,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/sakkaku404/vps-scope/internal/model"
 )
@@ -38,13 +37,13 @@ func (f dockerFirewallFacts) clone() dockerFirewallFacts {
 	return out
 }
 
-func collectDockerFirewall(cmd Commander) dockerFirewallFacts {
+func collectDockerFirewallFromProgram(program *firewallProgram) dockerFirewallFacts {
 	f := dockerFirewallFacts{DefaultDropByFamily: map[string]bool{}, AvailableByFamily: map[string]bool{}}
 	for _, spec := range []struct{ command, family string }{{"iptables-save", "ipv4"}, {"ip6tables-save", "ipv6"}} {
-		if !cmd.Exists(spec.command) {
+		r, exists := program.iptablesSave(spec.family)
+		if !exists {
 			continue
 		}
-		r := cmd.Run(15*time.Second, spec.command)
 		if r.Err != nil || r.Truncated {
 			f.Error = spec.command + ": " + commandError(r)
 			continue
@@ -63,10 +62,10 @@ func collectDockerFirewall(cmd Commander) dockerFirewallFacts {
 	if f.Available {
 		return f
 	}
-	if !cmd.Exists("nft") {
+	r, exists := program.nftRuleset()
+	if !exists {
 		return f
 	}
-	r := cmd.Run(20*time.Second, "nft", "list", "ruleset")
 	if r.Err != nil || r.Truncated {
 		f.Error = "nft: " + commandError(r)
 		return f

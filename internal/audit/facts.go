@@ -23,7 +23,9 @@ const (
 // facts instead of invoking ps, ss, UFW, or Docker repeatedly. Listener and
 // established-connection snapshots therefore remain internally consistent.
 type FactStore struct {
-	cmd Commander
+	cmd            Commander
+	nativeSelfTest bool
+	auditTime      time.Time
 
 	listenersOnce sync.Once
 	listeners     []Listener
@@ -43,6 +45,7 @@ type FactStore struct {
 
 	hostFirewallOnce sync.Once
 	hostFirewall     hostFirewallSnapshot
+	firewallProgram  *firewallProgram
 
 	dockerOnce sync.Once
 	docker     []dockerInspect
@@ -54,6 +57,14 @@ type FactStore struct {
 	panelsOnce sync.Once
 	panels     []panelSnapshot
 	panelsErr  error
+
+	reverseProxyOnce sync.Once
+	reverseProxy     []reverseProxyRoute
+	reverseProxyErr  error
+
+	proxyUnitsOnce sync.Once
+	proxyUnits     []string
+	proxyUnitsErr  error
 }
 
 // Panels returns native panel facts plus container-backed panel facts. Docker
@@ -62,7 +73,7 @@ type FactStore struct {
 // error is returned so a Docker-only panel is never mistaken for no panel.
 func (f *FactStore) Panels() ([]panelSnapshot, error) {
 	f.panelsOnce.Do(func() {
-		f.panels = collectPanelSnapshots(f.cmd)
+		f.panels = collectPanelSnapshots(f.cmd, f.nativeSelfTest, f.auditTime)
 		if !f.cmd.Exists("docker") {
 			return
 		}
@@ -76,6 +87,26 @@ func (f *FactStore) Panels() ([]panelSnapshot, error) {
 	return append([]panelSnapshot(nil), f.panels...), f.panelsErr
 }
 
+// ReverseProxyRoutes returns one configuration snapshot shared by management
+// exposure and reverse-proxy relationship checks. Running nginx -T twice can
+// otherwise correlate a panel with two different live configurations during a
+// reload.
+func (f *FactStore) ReverseProxyRoutes() ([]reverseProxyRoute, error) {
+	f.reverseProxyOnce.Do(func() {
+		f.reverseProxy, f.reverseProxyErr = discoverReverseProxyRoutes(f.cmd, f.nativeSelfTest)
+	})
+	return append([]reverseProxyRoute(nil), f.reverseProxy...), f.reverseProxyErr
+}
+
+// ProxyServiceUnits is the single systemd inventory used by service isolation
+// and log checks. The two conclusions must refer to the same set of units.
+func (f *FactStore) ProxyServiceUnits() ([]string, error) {
+	f.proxyUnitsOnce.Do(func() {
+		f.proxyUnits, f.proxyUnitsErr = collectProxyServiceUnits(f.cmd)
+	})
+	return append([]string(nil), f.proxyUnits...), f.proxyUnitsErr
+}
+
 type ProcessInfo struct {
 	PID     string
 	User    string
@@ -87,7 +118,14 @@ func processLine(p ProcessInfo) string {
 	return strings.TrimSpace(strings.Join([]string{p.PID, p.User, p.Command, p.Args}, " "))
 }
 
-func NewFactStore(cmd Commander) *FactStore { return &FactStore{cmd: cmd} }
+func NewFactStore(cmd Commander, nativeSelfTest bool) *FactStore {
+	return NewFactStoreAt(cmd, nativeSelfTest, time.Now().UTC())
+
+}
+
+func NewFactStoreAt(cmd Commander, nativeSelfTest bool, auditTime time.Time) *FactStore {
+	return &FactStore{cmd: cmd, nativeSelfTest: nativeSelfTest, auditTime: auditTime.UTC(), firewallProgram: newFirewallProgram(cmd)}
+}
 
 func (f *FactStore) Listeners() ([]Listener, error) {
 	f.listenersOnce.Do(func() {
@@ -243,7 +281,7 @@ func (f *FactStore) Processes() ([]ProcessInfo, error) {
 
 func (f *FactStore) HostFirewall() hostFirewallSnapshot {
 	f.hostFirewallOnce.Do(func() {
-		f.hostFirewall = collectHostFirewall(f.cmd)
+		f.hostFirewall = collectHostFirewallFromProgram(f.cmd, f.firewallProgram)
 	})
 	return f.hostFirewall
 }
@@ -321,7 +359,7 @@ func dockerContainerIDs(output string) ([]string, error) {
 
 func (f *FactStore) DockerFirewall() dockerFirewallFacts {
 	f.dockerFirewallOnce.Do(func() {
-		f.dockerFirewall = collectDockerFirewall(f.cmd)
+		f.dockerFirewall = collectDockerFirewallFromProgram(f.firewallProgram)
 	})
 	return f.dockerFirewall.clone()
 }

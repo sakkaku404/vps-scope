@@ -63,11 +63,11 @@ type panelSnapshot struct {
 	SensitiveFiles           []string
 }
 
-func collectPanelSnapshots(cmd Commander) []panelSnapshot {
+func collectPanelSnapshots(cmd Commander, nativeSelfTest bool, auditTime time.Time) []panelSnapshot {
 	var out []panelSnapshot
 	for _, adapter := range panelAdapters() {
 		if adapter.Detect() {
-			snapshot := adapter.Collect(cmd)
+			snapshot := adapter.Collect(cmd, nativeSelfTest, auditTime)
 			snapshot.Adapter = adapter.ID()
 			out = append(out, snapshot)
 		}
@@ -75,25 +75,31 @@ func collectPanelSnapshots(cmd Commander) []panelSnapshot {
 	return out
 }
 
-func collectSUIFacts(cmd Commander) panelSnapshot {
+func collectSUIFacts(cmd Commander, nativeSelfTest bool) panelSnapshot {
+	return collectSUIFactsAt(cmd, nativeSelfTest, time.Now().UTC())
+}
+
+func collectSUIFactsAt(cmd Commander, nativeSelfTest bool, _ time.Time) panelSnapshot {
 	s := panelSnapshot{Product: "S-UI", Binary: "/usr/local/s-ui/sui", Database: "/usr/local/s-ui/db/s-ui.db"}
-	binary, trustErr := trustedExecutable(cmd, s.Binary)
-	if trustErr != nil {
-		s.RuntimeCommandError = "panel command skipped: " + truncate(trustErr.Error(), 240)
-	} else {
-		version := cmd.Run(8*time.Second, binary, "-v")
-		s.Version = firstVersion(version.Stdout + "\n" + version.Stderr)
-		settings := cmd.Run(8*time.Second, binary, "setting", "-show")
-		if settings.Err != nil || settings.Truncated {
-			s.RuntimeCommandError = "sui setting -show: " + commandError(settings)
+	if nativeSelfTest {
+		binary, trustErr := trustedExecutable(cmd, s.Binary)
+		if trustErr != nil {
+			s.RuntimeCommandError = "panel command skipped: " + truncate(trustErr.Error(), 240)
 		} else {
-			if port, ok := parseNamedPort(settings.Stdout, "Panel port"); ok {
-				path, pathKnown := parseNamedTextKnown(settings.Stdout, "Panel path")
-				s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "management", Listen: "::", Port: port, Source: "sui setting -show", PathKnown: pathKnown, PathIsDefault: panelPathIsDefault(path)})
-			}
-			if port, ok := parseNamedPort(settings.Stdout, "Sub port"); ok {
-				path, pathKnown := parseNamedTextKnown(settings.Stdout, "Sub path")
-				s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "subscription", Listen: "::", Port: port, Source: "sui setting -show", PathKnown: pathKnown, PathIsDefault: subscriptionPathIsDefault(path)})
+			version := cmd.Run(8*time.Second, binary, "-v")
+			s.Version = firstVersion(version.Stdout + "\n" + version.Stderr)
+			settings := cmd.Run(8*time.Second, binary, "setting", "-show")
+			if settings.Err != nil || settings.Truncated {
+				s.RuntimeCommandError = "sui setting -show: " + commandError(settings)
+			} else {
+				if port, ok := parseNamedPort(settings.Stdout, "Panel port"); ok {
+					path, pathKnown := parseNamedTextKnown(settings.Stdout, "Panel path")
+					s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "management", Listen: "::", Port: port, Source: "sui setting -show", PathKnown: pathKnown, PathIsDefault: panelPathIsDefault(path)})
+				}
+				if port, ok := parseNamedPort(settings.Stdout, "Sub port"); ok {
+					path, pathKnown := parseNamedTextKnown(settings.Stdout, "Sub path")
+					s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "subscription", Listen: "::", Port: port, Source: "sui setting -show", PathKnown: pathKnown, PathIsDefault: subscriptionPathIsDefault(path)})
+				}
 			}
 		}
 	}
@@ -101,7 +107,13 @@ func collectSUIFacts(cmd Commander) panelSnapshot {
 		s.DatabaseError = "S-UI database missing"
 		return s
 	}
-	inspection, err := inspectPanelSchema(cmd, s.Database, "S-UI")
+	session, err := openSQLiteSession(s.Database)
+	if err != nil {
+		s.DatabaseError = err.Error()
+		return s
+	}
+	defer session.Close()
+	inspection, err := inspectPanelSchemaWithQuery(session.Query, "S-UI")
 	s.SchemaFingerprint = inspection.Fingerprint
 	if err != nil {
 		s.DatabaseError = err.Error()
@@ -110,14 +122,15 @@ func collectSUIFacts(cmd Commander) panelSnapshot {
 	s.SchemaVersion = inspection.Version
 	s.SchemaCapabilities = inspection.Capabilities
 	s.SchemaSupported = true
-	settingRows, err := sqliteTSV(cmd, s.Database, `SELECT key, value FROM settings WHERE key IN ('webListen','webPort','webBasePath','webCertFile','webKeyFile','subListen','subPort','subPath','subCertFile','subKeyFile');`)
+	settingRows, err := session.Query(`SELECT key, value FROM settings WHERE key IN ('webListen','webPort','webBasePath','webCertFile','webKeyFile','subListen','subPort','subPath','subCertFile','subKeyFile');`)
 	if err != nil {
 		s.DatabaseError = err.Error()
 		return s
 	}
 	s.DatabaseAvailable = true
 	applyPanelSettings(&s, settingRows, "S-UI database")
-	inboundRows, err := sqliteTSV(cmd, s.Database, `SELECT 1, COALESCE(json_extract(i.options,'$.listen'),''), COALESCE(json_extract(i.options,'$.listen_port'),''), i.type, '', CASE WHEN json_extract(t.server,'$.reality.enabled')=1 THEN 'reality' WHEN i.tls_id IS NULL OR i.tls_id=0 THEN '' ELSE 'tls' END, 0, 0, 0, CASE WHEN length(COALESCE(json_extract(t.server,'$.reality.private_key'),''))>0 THEN 1 ELSE 0 END, CASE WHEN length(COALESCE(json_extract(t.server,'$.reality.handshake.server'),''))>0 OR COALESCE(json_extract(t.server,'$.reality.handshake.server_port'),0)>0 THEN 1 ELSE 0 END, COALESCE(json_array_length(json_extract(t.server,'$.reality.short_id')),0)+CASE WHEN length(COALESCE(json_extract(t.server,'$.server_name'),''))>0 THEN 1 ELSE 0 END FROM inbounds i LEFT JOIN tls t ON t.id=i.tls_id;`)
+	applySUIDefaults(&s, settingRows)
+	inboundRows, err := session.Query(`SELECT 1, COALESCE(json_extract(i.options,'$.listen'),''), COALESCE(json_extract(i.options,'$.listen_port'),''), i.type, '', CASE WHEN json_extract(t.server,'$.reality.enabled')=1 THEN 'reality' WHEN i.tls_id IS NULL OR i.tls_id=0 THEN '' ELSE 'tls' END, 0, 0, 0, CASE WHEN length(COALESCE(json_extract(t.server,'$.reality.private_key'),''))>0 THEN 1 ELSE 0 END, CASE WHEN length(COALESCE(json_extract(t.server,'$.reality.handshake.server'),''))>0 OR COALESCE(json_extract(t.server,'$.reality.handshake.server_port'),0)>0 THEN 1 ELSE 0 END, COALESCE(json_array_length(json_extract(t.server,'$.reality.short_id')),0)+CASE WHEN length(COALESCE(json_extract(t.server,'$.server_name'),''))>0 THEN 1 ELSE 0 END FROM inbounds i LEFT JOIN tls t ON t.id=i.tls_id;`)
 	if err != nil {
 		s.DatabaseError = err.Error()
 		return s
@@ -127,13 +140,13 @@ func collectSUIFacts(cmd Commander) panelSnapshot {
 		s.DatabaseError = err.Error()
 		return s
 	}
-	certRows, err := sqliteTSV(cmd, s.Database, `SELECT DISTINCT COALESCE(json_extract(server,'$.certificate_path'),'') FROM tls WHERE length(COALESCE(json_extract(server,'$.certificate_path'),''))>0;`)
+	certRows, err := session.Query(`SELECT DISTINCT COALESCE(json_extract(server,'$.certificate_path'),'') FROM tls WHERE length(COALESCE(json_extract(server,'$.certificate_path'),''))>0;`)
 	if err == nil {
 		s.CertificateFiles = firstColumn(certRows)
 	} else {
 		s.CertificateMetadataError = err.Error()
 	}
-	clientRows, err := sqliteTSV(cmd, s.Database, `SELECT COALESCE(sum(CASE WHEN enable=1 THEN 1 ELSE 0 END),0), COALESCE(sum(CASE WHEN enable=1 THEN 0 ELSE 1 END),0) FROM clients;`)
+	clientRows, err := session.Query(`SELECT COALESCE(sum(CASE WHEN enable=1 THEN 1 ELSE 0 END),0), COALESCE(sum(CASE WHEN enable=1 THEN 0 ELSE 1 END),0) FROM clients;`)
 	if err == nil && len(clientRows) == 1 && len(clientRows[0]) == 2 {
 		enabled, enabledErr := nonNegativeInt(clientRows[0][0])
 		disabled, disabledErr := nonNegativeInt(clientRows[0][1])
@@ -150,22 +163,30 @@ func collectSUIFacts(cmd Commander) panelSnapshot {
 	return s
 }
 
-func collectXUIFacts(cmd Commander) panelSnapshot {
+func collectXUIFacts(cmd Commander, nativeSelfTest bool) panelSnapshot {
+	return collectXUIFactsAt(cmd, nativeSelfTest, time.Now().UTC())
+}
+
+func collectXUIFactsAt(cmd Commander, nativeSelfTest bool, auditTime time.Time) panelSnapshot {
 	s := panelSnapshot{Product: "x-ui", Binary: "/usr/local/x-ui/x-ui", Database: "/etc/x-ui/x-ui.db"}
-	binary, trustErr := trustedExecutable(cmd, s.Binary)
-	if trustErr != nil {
-		s.RuntimeCommandError = "panel command skipped: " + truncate(trustErr.Error(), 240)
-	} else {
-		version := cmd.Run(8*time.Second, binary, "-v")
-		s.Version = firstVersion(version.Stdout + "\n" + version.Stderr)
-		if containsAny(version.Stdout+"\n"+version.Stderr, "3x-ui", "3X-UI") {
-			s.Product = "3x-ui"
+	var binary string
+	trustErr := error(nil)
+	if nativeSelfTest {
+		binary, trustErr = trustedExecutable(cmd, s.Binary)
+		if trustErr != nil {
+			s.RuntimeCommandError = "panel command skipped: " + truncate(trustErr.Error(), 240)
+		} else {
+			version := cmd.Run(8*time.Second, binary, "-v")
+			s.Version = firstVersion(version.Stdout + "\n" + version.Stderr)
+			if containsAny(version.Stdout+"\n"+version.Stderr, "3x-ui", "3X-UI") {
+				s.Product = "3x-ui"
+			}
 		}
 	}
 	if script, err := readSmall("/usr/local/x-ui/x-ui.sh", 1<<20); err == nil && containsAny(script, "MHSanaei/3x-ui", "3X-UI", "3x-ui") {
 		s.Product = "3x-ui"
 	}
-	if trustErr == nil {
+	if nativeSelfTest && trustErr == nil {
 		settings := cmd.Run(8*time.Second, binary, "setting", "-show", "true")
 		if settings.Err != nil {
 			settings = cmd.Run(8*time.Second, binary, "setting", "-show")
@@ -204,7 +225,13 @@ func collectXUIFacts(cmd Commander) panelSnapshot {
 		s.DatabaseError = "x-ui database missing"
 		return s
 	}
-	inspection, err := inspectPanelSchema(cmd, s.Database, s.Product)
+	session, err := openSQLiteSession(s.Database)
+	if err != nil {
+		s.DatabaseError = err.Error()
+		return s
+	}
+	defer session.Close()
+	inspection, err := inspectPanelSchemaWithQuery(session.Query, s.Product)
 	s.SchemaFingerprint = inspection.Fingerprint
 	if err != nil {
 		s.DatabaseError = err.Error()
@@ -217,15 +244,15 @@ func collectXUIFacts(cmd Commander) panelSnapshot {
 	if s.Product == "3x-ui" {
 		apply3XUIDefaults(&s)
 	}
-	settingRows, err := sqliteTSV(cmd, s.Database, `SELECT key, value FROM settings WHERE key IN ('webListen','webPort','webBasePath','webCertFile','webCertKey','subEnable','subListen','subPort','subPath','subCertFile','subKeyFile');`)
+	settingRows, err := session.Query(`SELECT key, value FROM settings WHERE key IN ('webListen','webPort','webBasePath','webCertFile','webCertKey','subEnable','subListen','subPort','subPath','subCertFile','subKeyFile');`)
 	if err == nil {
 		applyPanelSettings(&s, settingRows, "x-ui database")
 	} else {
 		s.ManagementMetadataError = err.Error()
 	}
-	nowMillis := time.Now().UnixMilli()
+	nowMillis := auditTime.UnixMilli()
 	query := fmt.Sprintf(`SELECT enable, COALESCE(listen,''), port, protocol, CASE WHEN protocol='shadowsocks' THEN COALESCE(json_extract(settings,'$.network'),'') ELSE COALESCE(json_extract(stream_settings,'$.network'),'') END, COALESCE(json_extract(stream_settings,'$.security'),''), COALESCE(json_array_length(json_extract(settings,'$.clients')),0), CASE WHEN expiry_time>0 AND expiry_time<%d THEN 1 ELSE 0 END, CASE WHEN total>0 AND up+down>=total THEN 1 ELSE 0 END, CASE WHEN length(COALESCE(json_extract(stream_settings,'$.realitySettings.privateKey'),''))>0 THEN 1 ELSE 0 END, CASE WHEN length(COALESCE(json_extract(stream_settings,'$.realitySettings.target'),json_extract(stream_settings,'$.realitySettings.dest'),''))>0 THEN 1 ELSE 0 END, COALESCE(json_array_length(json_extract(stream_settings,'$.realitySettings.serverNames')),0)+COALESCE(json_array_length(json_extract(stream_settings,'$.realitySettings.shortIds')),0) FROM inbounds;`, nowMillis)
-	inboundRows, err := sqliteTSV(cmd, s.Database, query)
+	inboundRows, err := session.Query(query)
 	if err != nil {
 		s.DatabaseError = err.Error()
 		return s
@@ -235,13 +262,13 @@ func collectXUIFacts(cmd Commander) panelSnapshot {
 		s.DatabaseError = err.Error()
 		return s
 	}
-	certRows, err := sqliteTSV(cmd, s.Database, `SELECT DISTINCT COALESCE(json_extract(stream_settings,'$.tlsSettings.certificates[0].certificateFile'),'') FROM inbounds WHERE length(COALESCE(json_extract(stream_settings,'$.tlsSettings.certificates[0].certificateFile'),''))>0;`)
+	certRows, err := session.Query(`SELECT DISTINCT COALESCE(json_extract(stream_settings,'$.tlsSettings.certificates[0].certificateFile'),'') FROM inbounds WHERE length(COALESCE(json_extract(stream_settings,'$.tlsSettings.certificates[0].certificateFile'),''))>0;`)
 	if err == nil {
 		s.CertificateFiles = firstColumn(certRows)
 	} else {
 		s.CertificateMetadataError = err.Error()
 	}
-	clientRows, err := sqliteTSV(cmd, s.Database, `SELECT COALESCE(sum(CASE WHEN enable=1 THEN 1 ELSE 0 END),0), COALESCE(sum(CASE WHEN enable=1 THEN 0 ELSE 1 END),0) FROM clients;`)
+	clientRows, err := session.Query(`SELECT COALESCE(sum(CASE WHEN enable=1 THEN 1 ELSE 0 END),0), COALESCE(sum(CASE WHEN enable=1 THEN 0 ELSE 1 END),0) FROM clients;`)
 	if err == nil && len(clientRows) == 1 && len(clientRows[0]) == 2 {
 		enabled, enabledErr := nonNegativeInt(clientRows[0][0])
 		disabled, disabledErr := nonNegativeInt(clientRows[0][1])
@@ -268,6 +295,36 @@ func apply3XUIDefaults(snapshot *panelSnapshot) {
 		TLS: false, TLSKnown: true, Source: "3x-ui built-in defaults",
 		PathKnown: true, PathIsDefault: true,
 	})
+}
+
+func applySUIDefaults(snapshot *panelSnapshot, rows [][]string) {
+	// S-UI 1.5.x persists webBasePath only when it differs from the built-in
+	// root path. A configured webPort with no webBasePath row therefore means
+	// "/", not "unknown". Keep the inference local to a schema-supported S-UI
+	// database; persisted values applied above always take precedence.
+	hasWebPort, hasWebBasePath := false, false
+	for _, row := range rows {
+		if len(row) != 2 {
+			continue
+		}
+		switch row[0] {
+		case "webPort":
+			hasWebPort = strings.TrimSpace(row[1]) != ""
+		case "webBasePath":
+			hasWebBasePath = true
+		}
+	}
+	if !hasWebPort || hasWebBasePath {
+		return
+	}
+	endpoint, ok := panelEndpointByRole(*snapshot, "management")
+	if !ok {
+		return
+	}
+	endpoint.PathKnown = true
+	endpoint.PathIsDefault = true
+	endpoint.Source = "S-UI database + built-in default"
+	upsertPanelEndpoint(snapshot, endpoint)
 }
 
 func sqliteTSV(cmd Commander, database, query string) ([][]string, error) {

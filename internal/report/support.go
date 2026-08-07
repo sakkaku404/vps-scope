@@ -14,6 +14,15 @@ import (
 
 const SupportSchema = "vps-scope-support/v1"
 
+const supportReadme = `VPS Scope compatibility support bundle
+
+This bundle contains compatibility metadata and an automatically redacted report, not raw panel databases or configuration files. Before writing the bundle, VPS Scope rejects credential-like residue it can recognize. Automated redaction has limits, so review every file manually before sharing it.
+
+VPS Scope 兼容性支持包
+
+本支持包包含兼容性元数据和经过自动脱敏的报告，不包含原始面板数据库或配置文件。写出前，VPS Scope 会拒绝仍含可识别凭据特征的内容。自动脱敏存在边界，分享前仍须人工检查每个文件。
+`
+
 type SupportSnapshot struct {
 	SchemaVersion string           `json:"schema_version"`
 	CreatedAt     time.Time        `json:"created_at"`
@@ -57,6 +66,19 @@ type SupportFinding struct {
 func SupportBundle(dir string, source model.Report) (Manifest, error) {
 	redacted := redact.New().Report(source)
 	snapshot := supportSnapshot(redacted)
+	documents := []struct {
+		name  string
+		value any
+	}{{"report.redacted.json", redacted}, {"compatibility.json", snapshot}}
+	for _, document := range documents {
+		data, err := json.Marshal(document.value)
+		if err != nil {
+			return Manifest{}, fmt.Errorf("prepare %s for privacy validation: %w", document.name, err)
+		}
+		if err := redact.ValidateNoResidualCredentials(string(data)); err != nil {
+			return Manifest{}, fmt.Errorf("support bundle refused: %s failed the residual credential check (%v); manually review the source report before sharing", document.name, err)
+		}
+	}
 	files := map[string]func(io.Writer) error{
 		"report.redacted.json": func(w io.Writer) error { return JSON(w, redacted) },
 		"compatibility.json": func(w io.Writer) error {
@@ -65,7 +87,7 @@ func SupportBundle(dir string, source model.Report) (Manifest, error) {
 			return enc.Encode(snapshot)
 		},
 		"README.txt": func(w io.Writer) error {
-			_, err := io.WriteString(w, "VPS Scope compatibility support bundle\n\nThis bundle is generated from an already-redacted report. It contains no raw panel databases, configuration files, private keys, tokens, UUIDs, passwords, public host addresses, or SSH key fingerprints. Review every file before sharing.\n\nVPS Scope 兼容性支持包\n\n本目录由已脱敏报告生成，不包含原始面板数据库、配置文件、私钥、令牌、UUID、密码、公网主机地址或 SSH 密钥指纹。分享前仍应自行检查每个文件。\n")
+			_, err := io.WriteString(w, supportReadme)
 			return err
 		},
 	}

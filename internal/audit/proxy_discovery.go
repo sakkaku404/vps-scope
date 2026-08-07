@@ -105,10 +105,17 @@ func panelProxySummary(panel panelSnapshot) (proxyConfigSummary, bool) {
 }
 
 func proxyServiceUnits(ctx *Context) ([]string, error) {
-	if !ctx.Commander.Exists("systemctl") {
+	if ctx.Facts != nil {
+		return ctx.Facts.ProxyServiceUnits()
+	}
+	return collectProxyServiceUnits(ctx.Commander)
+}
+
+func collectProxyServiceUnits(cmd Commander) ([]string, error) {
+	if !cmd.Exists("systemctl") {
 		return nil, fmt.Errorf("systemctl command not found")
 	}
-	r := ctx.Commander.Run(12*time.Second, "systemctl", "list-units", "--type=service", "--all", "--no-legend", "--plain")
+	r := cmd.Run(12*time.Second, "systemctl", "list-units", "--type=service", "--all", "--no-legend", "--plain")
 	if r.Err != nil || r.Truncated {
 		return nil, fmt.Errorf("systemctl list-units: %s", commandError(r))
 	}

@@ -80,6 +80,67 @@ type Endpoint struct {
 	ExpectedExposure string `json:"expected_exposure,omitempty"`
 }
 
+// Deployment is the machine-readable view of how a proxy VPS is assembled.
+// Findings remain the stable policy contract; this topology lets renderers and
+// offline tools explain those findings without reverse-parsing prose evidence.
+type Deployment struct {
+	Coverage   DeploymentCoverage `json:"coverage"`
+	Components []Component        `json:"components,omitempty"`
+	Endpoints  []ServiceEndpoint  `json:"endpoints,omitempty"`
+	Links      []TopologyLink     `json:"links,omitempty"`
+}
+
+type DeploymentCoverage struct {
+	Configuration string `json:"configuration"`
+	Runtime       string `json:"runtime"`
+	Firewall      string `json:"firewall"`
+	Panels        string `json:"panels"`
+	ReverseProxy  string `json:"reverse_proxy"`
+	Docker        string `json:"docker"`
+}
+
+type Component struct {
+	ID         string `json:"id"`
+	Product    string `json:"product"`
+	Kind       string `json:"kind"`
+	Source     string `json:"source,omitempty"`
+	Runtime    bool   `json:"runtime,omitempty"`
+	Deployment string `json:"deployment,omitempty"`
+	Confidence string `json:"confidence"`
+}
+
+// ServiceEndpoint represents a configured or live endpoint and its security
+// context. Protocol is the application protocol (for example VLESS or
+// Hysteria2); Transport is the network transport (tcp or udp).
+type ServiceEndpoint struct {
+	ID              string `json:"id"`
+	ComponentID     string `json:"component_id,omitempty"`
+	Product         string `json:"product,omitempty"`
+	Role            string `json:"role"`
+	Protocol        string `json:"protocol,omitempty"`
+	Transport       string `json:"transport"`
+	Port            int    `json:"port"`
+	Address         string `json:"address,omitempty"`
+	Family          string `json:"family,omitempty"`
+	Scope           string `json:"scope,omitempty"`
+	Process         string `json:"process,omitempty"`
+	Security        string `json:"security,omitempty"`
+	Firewall        string `json:"firewall,omitempty"`
+	State           string `json:"state"`
+	Judgment        string `json:"judgment,omitempty"`
+	Source          string `json:"source,omitempty"`
+	Confidence      string `json:"confidence"`
+	TLS             string `json:"tls,omitempty"`
+	PathPosture     string `json:"path_posture,omitempty"`
+	ConnectionCount *int   `json:"connection_count,omitempty"`
+}
+
+type TopologyLink struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+	Kind string `json:"kind"`
+}
+
 type Report struct {
 	SchemaVersion string            `json:"schema_version"`
 	ToolVersion   string            `json:"tool_version"`
@@ -93,6 +154,7 @@ type Report struct {
 	Summary       Summary           `json:"summary"`
 	Findings      []Finding         `json:"findings"`
 	Endpoints     []Endpoint        `json:"endpoints,omitempty"`
+	Deployment    *Deployment       `json:"deployment,omitempty"`
 	Metadata      map[string]string `json:"metadata,omitempty"`
 }
 

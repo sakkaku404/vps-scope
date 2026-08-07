@@ -454,13 +454,19 @@ func TestParseSingBoxSummaryDoesNotExposeSecrets(t *testing.T) {
 }
 
 func TestParseXrayAPIInbound(t *testing.T) {
-	input := []byte(`{"inbounds":[{"tag":"api","listen":"127.0.0.1","port":10085,"protocol":"dokodemo-door"},{"port":"443","protocol":"vless"}]}`)
+	input := []byte(`{"api":{"tag":"internal-control"},"metrics":{"listen":"127.0.0.1:11111"},"inbounds":[{"tag":"internal-control","listen":"127.0.0.1","port":10085,"protocol":"dokodemo-door"},{"tag":"rapid-entry","port":"443","protocol":"vless"}]}`)
 	got := parseXraySummary("/etc/xray/config.json", input)
-	if got.Err != nil || len(got.Inbounds) != 2 || len(got.Controls) != 1 {
+	if got.Err != nil || len(got.Inbounds) != 1 || len(got.Controls) != 2 {
 		t.Fatalf("unexpected summary: %+v", got)
 	}
 	if got.Controls[0].Listen != "127.0.0.1" || got.Controls[0].Port != "10085" {
 		t.Fatalf("unexpected API endpoint: %+v", got.Controls[0])
+	}
+	if got.Controls[1].Kind != "metrics" || got.Controls[1].Port != "11111" {
+		t.Fatalf("unexpected metrics endpoint: %+v", got.Controls[1])
+	}
+	if got.Inbounds[0].Port != "443" {
+		t.Fatalf("ordinary inbound containing 'api' in its tag was excluded: %+v", got.Inbounds)
 	}
 }
 
@@ -699,6 +705,27 @@ func TestApplyPanelSettingsReadsPathsFromDatabase(t *testing.T) {
 	}
 	if len(snapshot.Endpoints) != 2 || !snapshot.Endpoints[1].PathKnown || snapshot.Endpoints[1].PathIsDefault {
 		t.Fatalf("endpoints=%+v", snapshot.Endpoints)
+	}
+}
+
+func TestApplySUIDefaultsTreatsMissingWebBasePathAsRoot(t *testing.T) {
+	rows := [][]string{{"webPort", "2095"}, {"subPort", "2096"}, {"subPath", "/sub/"}}
+	snapshot := panelSnapshot{}
+	applyPanelSettings(&snapshot, rows, "S-UI database")
+	applySUIDefaults(&snapshot, rows)
+
+	management, ok := managementEndpoint(snapshot)
+	if !ok || !management.PathKnown || !management.PathIsDefault || management.Source != "S-UI database + built-in default" {
+		t.Fatalf("management=%+v ok=%t", management, ok)
+	}
+
+	rows = append(rows, []string{"webBasePath", "/private/"})
+	snapshot = panelSnapshot{}
+	applyPanelSettings(&snapshot, rows, "S-UI database")
+	applySUIDefaults(&snapshot, rows)
+	management, ok = managementEndpoint(snapshot)
+	if !ok || !management.PathKnown || management.PathIsDefault || management.Source != "S-UI database" {
+		t.Fatalf("persisted management path was overwritten: %+v ok=%t", management, ok)
 	}
 }
 

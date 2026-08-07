@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -231,6 +232,82 @@ func TestHTMLIsSelfContainedAndUsable(t *testing.T) {
 	}
 }
 
+func TestActionLinksResolveToExactlyOneFinding(t *testing.T) {
+	r := sampleReport()
+	r.Findings = append(r.Findings,
+		model.Finding{ID: "WORK-009", Category: "workloads", Status: model.Risk, Severity: model.Medium, Evidence: []model.Evidence{{Source: "endpoint graph", Key: "endpoint_relation", Value: "configured-public-ingress-blocked-by-host-firewall"}}},
+		model.Finding{ID: "FW-002", Category: "firewall", Status: model.Risk, Severity: model.Medium},
+	)
+	r.Recount()
+
+	var htmlOut bytes.Buffer
+	if err := HTML(&htmlOut, r, Options{Locale: "en"}); err != nil {
+		t.Fatal(err)
+	}
+	html := htmlOut.String()
+	htmlLinks := regexp.MustCompile(`<a class="action-link" href="#([^"]+)">`).FindAllStringSubmatch(html, -1)
+	if got, want := len(htmlLinks), 4; got != want {
+		t.Fatalf("HTML action links=%d, want %d\n%s", got, want, html)
+	}
+	for _, match := range htmlLinks {
+		anchor := match[1]
+		if got := strings.Count(html, `id="`+anchor+`"`); got != 1 {
+			t.Errorf("HTML action target %q appears %d times, want exactly once", anchor, got)
+		}
+	}
+	for _, id := range []string{"SSH-001", "FW-001", "FW-002", "TLS-001", "WORK-009"} {
+		if got := strings.Count(html, `id="finding-`+id+`"`); got != 1 {
+			t.Errorf("HTML finding %s has %d stable IDs, want exactly one", id, got)
+		}
+	}
+	if !strings.Contains(html, `.action-link:focus-visible`) || !strings.Contains(html, `scroll-margin-top:6.5rem`) {
+		t.Error("HTML is missing keyboard-focus or anchored-scroll styling")
+	}
+
+	var markdownOut bytes.Buffer
+	if err := Markdown(&markdownOut, r, Options{Locale: "en"}); err != nil {
+		t.Fatal(err)
+	}
+	markdown := markdownOut.String()
+	markdownLinks := regexp.MustCompile(`\]\(#(finding-[^)]+)\)`).FindAllStringSubmatch(markdown, -1)
+	if got, want := len(markdownLinks), 4; got != want {
+		t.Fatalf("Markdown action links=%d, want %d\n%s", got, want, markdown)
+	}
+	for _, match := range markdownLinks {
+		anchor := match[1]
+		if got := strings.Count(markdown, `<a id="`+anchor+`"></a>`); got != 1 {
+			t.Errorf("Markdown action target %q appears %d times, want exactly once", anchor, got)
+		}
+	}
+	linkedVerdict := regexp.MustCompile("(?m)^- \\[\\*\\*.+\\*\\* \\(`FW-001`\\)\\]\\(#finding-FW-001\\) \\(`RISK/HIGH`\\): .+$")
+	if !linkedVerdict.MatchString(markdown) {
+		t.Fatalf("Markdown action summary did not preserve title, ID, and verdict:\n%s", markdown)
+	}
+}
+
+func TestFindingAnchorEncodesSpecialCharacters(t *testing.T) {
+	const id = `BAD id/#?&"<`
+	const want = "finding-BAD_20id_2f_23_3f_26_22_3c"
+	if got := findingAnchor(id); got != want {
+		t.Fatalf("findingAnchor(%q)=%q, want %q", id, got, want)
+	}
+
+	r := sampleReport()
+	r.Findings = []model.Finding{{ID: id, Category: "ssh", Status: model.Risk, Severity: model.High}}
+	r.Recount()
+	var out bytes.Buffer
+	if err := HTML(&out, r, Options{Locale: "en"}); err != nil {
+		t.Fatal(err)
+	}
+	html := out.String()
+	if strings.Count(html, `href="#`+want+`"`) != 1 || strings.Count(html, `id="`+want+`"`) != 1 {
+		t.Fatalf("encoded action link and target do not match exactly once:\n%s", html)
+	}
+	if strings.Contains(html, `id="finding-BAD id`) || strings.Contains(html, `href="#finding-BAD id`) {
+		t.Fatal("raw special characters reached an anchor attribute")
+	}
+}
+
 func TestPriorityRiskShowsEvidenceWithoutVerbose(t *testing.T) {
 	var out bytes.Buffer
 	if err := Text(&out, sampleReport(), Options{Locale: "en", Verbose: false}); err != nil {
@@ -385,5 +462,24 @@ func TestProxyOverviewShowsPostureActivityRuntimeAndDeployment(t *testing.T) {
 		if !strings.Contains(text, expected) {
 			t.Errorf("text missing %q:\n%s", expected, text)
 		}
+	}
+}
+
+func TestTypedProxyOverviewKeepsGenericHostListenersOutOfRuntimeMismatches(t *testing.T) {
+	r := sampleReport()
+	r.Deployment = &model.Deployment{
+		Coverage: model.DeploymentCoverage{Configuration: "complete", Runtime: "complete", Firewall: "complete", Panels: "complete", ReverseProxy: "not-applicable", Docker: "not-applicable"},
+		Endpoints: []model.ServiceEndpoint{
+			{ID: "endpoint-ssh", Role: "unclassified-listener", Product: "unknown-proxy", Port: 22, Transport: "tcp", Scope: "public-wildcard", Judgment: "listener-purpose-not-classified"},
+			{ID: "endpoint-core", Role: "unclassified-product-listener", Product: "xray", Port: 443, Transport: "tcp", Scope: "public-wildcard", Judgment: "listener-purpose-not-classified"},
+		},
+	}
+	overview := collectTopologyOverview(r, "en")
+	joined := fmt.Sprintf("%+v", overview)
+	if strings.Contains(joined, "22/tcp") {
+		t.Fatalf("generic host listener leaked into proxy runtime mismatches: %s", joined)
+	}
+	if !strings.Contains(joined, "443/tcp") || !strings.Contains(joined, "xray") {
+		t.Fatalf("recognized proxy listener missing from runtime mismatches: %s", joined)
 	}
 }

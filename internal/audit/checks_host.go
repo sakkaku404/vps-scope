@@ -142,7 +142,7 @@ func checkPanelManagement(ctx *Context) model.Finding {
 	// A loopback-bound panel can still be Internet-facing through Nginx,
 	// Caddy, or HAProxy. Treat that as management exposure here as well as in
 	// the detailed reverse-proxy relationship check.
-	reverseProxyRoutes, reverseProxyErr := discoverReverseProxyRoutes(ctx.Commander)
+	reverseProxyRoutes, reverseProxyErr := ctx.Facts.ReverseProxyRoutes()
 	for _, route := range reverseProxyRoutes {
 		frontend := matchingListener(listeners, route.FrontendPort, route.FrontendTransport)
 		if frontend == nil || (frontend.Scope != "public" && frontend.Scope != "public-wildcard") {
