@@ -323,20 +323,5 @@ func hasPasswordQualityPolicy(input string) bool {
 
 func checkActiveConnections(ctx *Context) model.Finding {
 	connections, err := ctx.Facts.EstablishedConnections()
-	if err != nil {
-		return unknown("NET-003", "network", "ss established", err.Error())
-	}
-	f := model.Finding{ID: "NET-003", Category: "network", Status: model.Info, Facts: map[string]string{}}
-	counts := map[string]int{}
-	for i, connection := range connections {
-		counts[connection.scope]++
-		if i < 80 {
-			f.Evidence = append(f.Evidence, model.Evidence{Source: "ss established", Key: "connection", Value: fmt.Sprintf("%s local=%s peer=%s peer_scope=%s process=%s", connection.protocol, connection.local, connection.peer, connection.scope, truncate(connection.process, 160))})
-		}
-	}
-	f.Facts["total"] = strconv.Itoa(len(connections))
-	for scope, count := range counts {
-		f.Facts["peer_"+scope] = strconv.Itoa(count)
-	}
-	return f
+	return evaluateActiveConnections(networkSnapshot{Connections: connections, ConnectionErr: err})
 }

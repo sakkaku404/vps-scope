@@ -6,9 +6,9 @@
   "required": ["schema_version", "tool_version", "locale", "started_at", "finished_at", "host", "profile", "summary", "findings"],
   "properties": {
     "schema_version": { "const": "1.0" },
-    "tool_version": { "type": "string" },
-    "tool_commit": { "type": "string" },
-    "locale": { "type": "string" },
+    "tool_version": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "tool_commit": { "type": "string", "maxLength": 128 },
+    "locale": { "enum": ["zh-CN", "en", "ru-RU", "fa-IR"] },
     "started_at": { "type": "string", "format": "date-time" },
     "finished_at": { "type": "string", "format": "date-time" },
     "log_since": { "type": "string" },
@@ -42,7 +42,7 @@
         "type": "object",
         "required": ["id", "category", "status"],
         "properties": {
-          "id": { "pattern": "^[A-Z]+-[0-9]{3}$" }, "reason_code": { "type": "string", "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$" }, "category": { "type": "string" },
+          "id": { "type": "string", "pattern": "^[A-Z]+-[0-9]{3}$" }, "reason_code": { "type": "string", "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$" }, "category": { "type": "string" },
           "status": { "enum": ["PASS", "RISK", "INFO", "UNKNOWN"] },
           "severity": { "enum": ["critical", "high", "medium", "low"] },
           "evidence": { "type": "array", "items": { "$ref": "#/$defs/evidence" } },
@@ -52,23 +52,12 @@
         "additionalProperties": true
       }
     },
-	"endpoints": {
-	  "type": "array",
-	  "items": {
-		"type": "object",
-		"required": ["protocol", "port", "family", "scope"],
-		"properties": {
-		  "protocol": { "enum": ["tcp", "udp"] },
-		  "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
-		  "family": { "enum": ["ipv4", "ipv6"] },
-		  "scope": { "enum": ["public", "public-wildcard", "private", "loopback"] },
-		  "process": { "type": "string", "maxLength": 256 },
-		  "role": { "enum": ["proxy-ingress", "management", "subscription", "control-api", "web", "ssh", "other"] },
-		  "expected_exposure": { "enum": ["public", "restricted", "private", "loopback", "blocked"] }
-		},
-		"additionalProperties": false
-	  }
-	},
+    "endpoints": {
+      "type": "array",
+      "maxItems": 65535,
+      "items": { "$ref": "#/$defs/listener" }
+    },
+    "deployment": { "$ref": "#/$defs/deployment" },
     "metadata": { "type": "object", "additionalProperties": { "type": "string" } }
   },
   "$defs": {
@@ -76,6 +65,135 @@
       "type": "object", "required": ["source", "value"],
       "properties": { "source": { "type": "string" }, "key": { "type": "string" }, "value": { "type": "string" } },
       "additionalProperties": true
+    },
+    "listener": {
+      "type": "object",
+      "required": ["protocol", "port", "family", "scope"],
+      "properties": {
+        "protocol": { "enum": ["tcp", "udp"] },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "family": { "enum": ["ipv4", "ipv6"] },
+        "scope": { "enum": ["public", "public-wildcard", "private", "loopback"] },
+        "process": { "type": "string", "maxLength": 256 },
+        "role": { "enum": ["proxy-ingress", "management", "subscription", "control-api", "web", "ssh", "other"] },
+        "expected_exposure": { "enum": ["public", "restricted", "private", "loopback", "blocked"] }
+      },
+      "additionalProperties": false
+    },
+    "deployment": {
+      "type": "object",
+      "required": ["coverage"],
+      "properties": {
+        "coverage": { "$ref": "#/$defs/deploymentCoverage" },
+        "components": {
+          "type": "array",
+          "maxItems": 512,
+          "items": { "$ref": "#/$defs/component" }
+        },
+        "endpoints": {
+          "type": "array",
+          "maxItems": 2048,
+          "items": { "$ref": "#/$defs/serviceEndpoint" }
+        },
+        "links": {
+          "type": "array",
+          "maxItems": 8192,
+          "items": { "$ref": "#/$defs/topologyLink" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "deploymentCoverage": {
+      "type": "object",
+      "required": ["configuration", "runtime", "firewall", "panels", "reverse_proxy", "docker"],
+      "properties": {
+        "configuration": { "$ref": "#/$defs/coverageState" },
+        "runtime": { "$ref": "#/$defs/coverageState" },
+        "firewall": { "$ref": "#/$defs/coverageState" },
+        "panels": { "$ref": "#/$defs/coverageState" },
+        "reverse_proxy": { "$ref": "#/$defs/coverageState" },
+        "docker": { "$ref": "#/$defs/coverageState" }
+      },
+      "additionalProperties": false
+    },
+    "coverageState": {
+      "enum": ["complete", "partial", "unavailable", "not-applicable"]
+    },
+    "component": {
+      "type": "object",
+      "required": ["id", "product", "kind", "confidence"],
+      "properties": {
+        "id": { "$ref": "#/$defs/componentID" },
+        "product": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "kind": { "$ref": "#/$defs/topologyToken" },
+        "source": { "type": "string", "maxLength": 1024 },
+        "runtime": { "type": "boolean" },
+        "deployment": { "type": "string", "maxLength": 256 },
+        "confidence": { "$ref": "#/$defs/confidence" }
+      },
+      "additionalProperties": false
+    },
+    "serviceEndpoint": {
+      "type": "object",
+      "required": ["id", "role", "transport", "port", "state", "confidence"],
+      "properties": {
+        "id": { "$ref": "#/$defs/endpointID" },
+        "component_id": { "$ref": "#/$defs/componentID" },
+        "product": { "type": "string", "maxLength": 256 },
+        "role": { "enum": ["proxy-ingress", "management", "subscription", "control-api", "web", "ssh", "other", "reverse-proxy-frontend", "reverse-proxy-backend", "container-publish", "unclassified-listener", "unclassified-product-listener"] },
+        "protocol": { "type": "string", "maxLength": 256 },
+        "transport": { "enum": ["tcp", "udp"] },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "address": { "type": "string", "maxLength": 512 },
+        "family": { "enum": ["ipv4", "ipv6", "any"] },
+        "scope": { "enum": ["public", "public-wildcard", "private", "loopback", "container", "unknown"] },
+        "process": { "type": "string", "maxLength": 256 },
+        "security": { "type": "string", "maxLength": 512 },
+        "firewall": { "type": "string", "maxLength": 512 },
+        "state": { "enum": ["configured", "live"] },
+        "judgment": { "type": "string", "maxLength": 512 },
+        "source": { "type": "string", "maxLength": 1024 },
+        "confidence": { "$ref": "#/$defs/confidence" },
+        "tls": { "enum": ["true", "false", "unknown"] },
+        "path_posture": { "enum": ["root-or-default", "non-default", "unknown"] },
+        "connection_count": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "topologyLink": {
+      "type": "object",
+      "required": ["from", "to", "kind"],
+      "properties": {
+        "from": { "$ref": "#/$defs/topologyID" },
+        "to": { "$ref": "#/$defs/topologyID" },
+        "kind": { "enum": ["declares", "owns", "published-as", "proxies-to", "routes-to"] }
+      },
+      "additionalProperties": false
+    },
+    "topologyID": {
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9-]{0,31}:[A-Za-z0-9][A-Za-z0-9_.:-]{0,95}$"
+    },
+    "componentID": {
+      "allOf": [
+        { "$ref": "#/$defs/topologyID" },
+        { "pattern": "^component:" }
+      ]
+    },
+    "endpointID": {
+      "allOf": [
+        { "$ref": "#/$defs/topologyID" },
+        { "pattern": "^endpoint:" }
+      ]
+    },
+    "topologyToken": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "confidence": {
+      "enum": ["confirmed", "inferred", "partial", "unknown"]
     }
   },
   "additionalProperties": true

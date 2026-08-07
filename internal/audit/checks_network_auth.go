@@ -14,27 +14,14 @@ import (
 )
 
 func checkNetwork(ctx *Context) []model.Finding {
-	listeners, err := ctx.Facts.Listeners()
-	if err != nil {
-		return []model.Finding{unknown("NET-001", "network", "ss -H -lntu[p]", err.Error()), unknown("NET-002", "network", "ss -H -lntu[p]", err.Error()), checkExternalObservation()}
+	snapshot := collectNetworkSnapshot(ctx)
+	policy := networkPolicyFromContext(ctx)
+	return []model.Finding{
+		evaluateListenerInventory(snapshot),
+		evaluateUnexpectedListeners(snapshot, policy),
+		evaluateActiveConnections(snapshot),
+		checkExternalObservation(),
 	}
-	f := model.Finding{ID: "NET-001", Category: "network", Status: model.Info, Facts: map[string]string{}}
-	counts := map[string]int{}
-	for _, listener := range listeners {
-		counts[listener.Scope]++
-		value := fmt.Sprintf("%s %s:%s scope=%s", listener.Protocol, listener.Address, listener.Port, listener.Scope)
-		if listener.Process != "" {
-			value += " process=" + truncate(listener.Process, 160)
-		}
-		if len(f.Evidence) < 80 {
-			f.Evidence = append(f.Evidence, model.Evidence{Source: "ss", Value: value})
-		}
-	}
-	for key, count := range counts {
-		f.Facts[key] = strconv.Itoa(count)
-	}
-	f.Facts["total"] = strconv.Itoa(len(listeners))
-	return []model.Finding{f, checkUnexpectedListeners(ctx, listeners), checkActiveConnections(ctx), checkExternalObservation()}
 }
 
 func checkExternalObservation() model.Finding {
@@ -46,52 +33,10 @@ func checkExternalObservation() model.Finding {
 }
 
 func checkUnexpectedListeners(ctx *Context, listeners []Listener) model.Finding {
-	f := model.Finding{ID: "NET-002", Category: "network", Status: model.Pass, Facts: map[string]string{}}
-	unexpected, uncertainRuntimeUDP := 0, 0
-	seen := map[string]bool{}
 	runtimeExpected, runtimeExpectedErr := runtimeExpectedPublicListeners(ctx)
-	for _, listener := range listeners {
-		if listener.Scope != "public" && listener.Scope != "public-wildcard" {
-			continue
-		}
-		proto := strings.TrimSuffix(strings.TrimSuffix(listener.Protocol, "6"), "4")
-		key := listener.Port + "/" + proto
-		if seen[key+"\x00"+listener.Process] {
-			continue
-		}
-		seen[key+"\x00"+listener.Process] = true
-		if runtimeExpected[key] || expectedListener(ctx, listener, key) {
-			continue
-		}
-		if runtimeExpectedErr != nil && proto == "udp" {
-			uncertainRuntimeUDP++
-			f.Evidence = append(f.Evidence, model.Evidence{Source: "ss + runtime listener discovery", Key: "unclassified_public_udp_listener", Value: fmt.Sprintf("%s %s:%s process=%s profile=%s", proto, listener.Address, listener.Port, truncate(listener.Process, 180), ctx.Profile.Effective)})
-			continue
-		}
-		unexpected++
-		f.Evidence = append(f.Evidence, model.Evidence{Source: "ss + profile policy", Key: "unexpected_public_listener", Value: fmt.Sprintf("%s %s:%s process=%s profile=%s", proto, listener.Address, listener.Port, truncate(listener.Process, 180), ctx.Profile.Effective)})
-	}
-	f.Facts["unexpected_public_listeners"] = strconv.Itoa(unexpected)
-	f.Facts["unclassified_public_udp_listeners"] = strconv.Itoa(uncertainRuntimeUDP)
-	if unexpected > 0 {
-		f.Status, f.Severity = model.Risk, model.Medium
-	}
-	if uncertainRuntimeUDP > 0 && unexpected == 0 {
-		f.Status, f.Severity, f.Unavailable = model.Unknown, "", true
-		f.Error = "runtime listener classification could not be completed"
-	}
-	if ctx.Profile.Requested == "auto" && ctx.ProfileDiscoveryError != nil {
-		f.Status, f.Severity, f.Unavailable = model.Unknown, "", true
-		f.Error = "automatic profile detection could not be completed"
-	}
-	f = withIncompleteEvidence(f, "runtime expected-listener discovery", runtimeExpectedErr)
-	f = withIncompleteEvidence(f, "automatic profile detection", func() error {
-		if ctx.Profile.Requested == "auto" {
-			return ctx.ProfileDiscoveryError
-		}
-		return nil
-	}())
-	return f
+	return evaluateUnexpectedListeners(networkSnapshot{
+		Listeners: listeners, RuntimeExpected: runtimeExpected, RuntimeExpectedErr: runtimeExpectedErr,
+	}, networkPolicyFromContext(ctx))
 }
 
 func runtimeExpectedPublicListeners(ctx *Context) (map[string]bool, error) {
@@ -114,194 +59,16 @@ func runtimeExpectedPublicListeners(ctx *Context) (map[string]bool, error) {
 }
 
 func expectedListener(ctx *Context, listener Listener, key string) bool {
-	if ctx.ExpectedPublic[key] {
-		return true
-	}
-	if ctx.Policy != nil && ctx.Policy.ExpectedPublicListeners()[key] {
-		return true
-	}
-	process := strings.ToLower(listener.Process)
-	port, _ := strconv.Atoi(listener.Port)
-	if (port == 68 || port == 546) && containsAny(process, "dhcp", "dhclient", "dhcpcd", "systemd-network") {
-		return true
-	}
-	// Time daemons commonly bind UDP/123 on every local address while their
-	// own access policy controls whether they serve remote clients. Treat the
-	// listener as expected infrastructure; firewall and daemon configuration
-	// remain independent evidence instead of a generic port-count alarm.
-	if port == 123 && strings.HasPrefix(strings.ToLower(listener.Protocol), "udp") && containsAny(process, "ntpd", "chronyd", "systemd-timesyncd") {
-		return true
-	}
-	if strings.Contains(process, "sshd") {
-		return true
-	}
-	switch ctx.Profile.Effective {
-	case "web":
-		return containsAny(process, "nginx", "caddy", "apache2")
-	case "proxy":
-		return containsAny(process, "sing-box", "xray", "sui", "s-ui", "x-ui", "hysteria", "tuic", "trojan", "ss-server", "outline-ss-server", "marzban", "hiddify", "haproxy", "dnstm")
-	case "mixed":
-		return containsAny(process, "nginx", "caddy", "apache2", "sing-box", "xray", "sui", "s-ui", "x-ui", "hysteria", "tuic", "trojan", "ss-server", "outline-ss-server", "marzban", "hiddify", "haproxy", "dnstm")
-	}
-	return false
+	return expectedListenerForPolicy(networkPolicyFromContext(ctx), listener, key)
 }
 
 func checkFirewall(ctx *Context) []model.Finding {
-	findings := checkFirewallBase(ctx)
-	return append(findings, checkFirewallExposure(ctx))
-}
-
-func checkFirewallBase(ctx *Context) []model.Finding {
-	normalized := ctx.Facts.HostFirewall()
-	if !normalized.available {
-		if normalized.collectionErr != nil {
-			return []model.Finding{unknown("FW-001", "firewall", "host firewall discovery", normalized.collectionErr.Error())}
-		}
-		return []model.Finding{{ID: "FW-001", Category: "firewall", Status: model.Risk, Severity: model.High, Evidence: []model.Evidence{{Source: "command lookup", Value: "ufw, firewalld, nft, and iptables-save not found"}}}}
-	}
-	f := model.Finding{ID: "FW-001", Category: "firewall", Facts: map[string]string{
-		"backend":               normalized.backend,
-		"active":                strconv.FormatBool(normalized.active),
-		"default_deny_incoming": strconv.FormatBool(normalized.defaultDeny),
-		"normalized_rules":      strconv.Itoa(len(normalized.rules)),
-	}}
-	isUFW := normalized.backend == "ufw" || strings.HasPrefix(normalized.backend, "ufw+")
-	emptyNFT := normalized.backend == "nftables" && len(normalized.lines) == 0
-	if !normalized.active || emptyNFT || isUFW && !normalized.defaultDeny {
-		f.Status, f.Severity = model.Risk, model.High
-	} else if normalized.defaultDeny {
-		f.Status = model.Pass
-	} else {
-		f.Status = model.Info
-	}
-	for i, line := range normalized.lines {
-		if i >= 60 {
-			break
-		}
-		f.Evidence = append(f.Evidence, model.Evidence{Source: firewallEvidenceSource(normalized), Value: line})
-	}
-	if len(f.Evidence) == 0 {
-		for _, rule := range normalized.rules {
-			if len(f.Evidence) >= 60 {
-				break
-			}
-			f.Evidence = append(f.Evidence, model.Evidence{Source: "normalized host firewall", Value: rule.Raw})
-		}
-	}
-	return []model.Finding{withIncompleteEvidence(f, "host firewall discovery", normalized.collectionErr)}
+	snapshot := collectFirewallAuditSnapshot(ctx)
+	return []model.Finding{evaluateFirewallBase(snapshot), evaluateFirewallExposure(snapshot)}
 }
 
 func checkFirewallExposure(ctx *Context) model.Finding {
-	normalized := ctx.Facts.HostFirewall()
-	if !normalized.available {
-		return withIncompleteEvidence(notApplicable("FW-002", "firewall", "backend", "no readable active host-firewall backend"), "host firewall discovery", normalized.collectionErr)
-	}
-	f := model.Finding{ID: "FW-002", Category: "firewall", Status: model.Pass, Facts: map[string]string{"backend": normalized.backend}}
-	type ruleGroup struct {
-		protocol, port, source string
-		families, origins      map[string]bool
-	}
-	groups := map[string]*ruleGroup{}
-	unrestricted := 0
-	for _, rule := range normalized.rules {
-		if rule.Action != "allow" || !includeFirewallExposureRule(normalized.backend, rule) {
-			continue
-		}
-		key := strings.Join([]string{rule.Protocol, rule.Port, rule.Source}, "\x00")
-		group := groups[key]
-		if group == nil {
-			group = &ruleGroup{protocol: rule.Protocol, port: rule.Port, source: rule.Source, families: map[string]bool{}, origins: map[string]bool{}}
-			groups[key] = group
-		}
-		group.families[rule.Family] = true
-		group.origins[rule.Origin] = true
-	}
-	groupKeys := make([]string, 0, len(groups))
-	for key := range groups {
-		groupKeys = append(groupKeys, key)
-	}
-	sort.Strings(groupKeys)
-	for _, key := range groupKeys {
-		group := groups[key]
-		if group.port == "any" && group.source == "any" {
-			unrestricted++
-		}
-		f.Evidence = append(f.Evidence, model.Evidence{Source: firewallEvidenceSource(normalized), Key: "allow_rule", Value: fmt.Sprintf("port=%s/%s families=%s source=%s origin=%s", group.port, group.protocol, sortedBoolKeys(group.families), group.source, sortedBoolKeys(group.origins))})
-	}
-	// UFW can express a completely unrestricted all-port rule that is not a
-	// normalized port rule. Preserve this high-risk check from its summary.
-	for _, line := range normalized.lines {
-		idx := strings.Index(line, "ALLOW IN")
-		if idx < 0 {
-			continue
-		}
-		target := strings.TrimSpace(line[:idx])
-		from := strings.TrimSpace(line[idx+len("ALLOW IN"):])
-		if (target == "Anywhere" || target == "Anywhere (v6)") && strings.HasPrefix(from, "Anywhere") {
-			if len(groups) == 0 {
-				unrestricted++
-			}
-		}
-	}
-	ipv6Enabled := false
-	if data, err := readSmall("/etc/default/ufw", 1<<20); err == nil {
-		for _, line := range lines(data) {
-			if strings.EqualFold(strings.TrimSpace(line), "IPV6=yes") {
-				ipv6Enabled = true
-			}
-		}
-	}
-	listeners, listenerErr := ctx.Facts.Listeners()
-	hasIPv6Listener := false
-	livePublic := map[string]bool{}
-	if listenerErr == nil {
-		for _, listener := range listeners {
-			if listener.Scope != "public" && listener.Scope != "public-wildcard" {
-				continue
-			}
-			protocol := strings.TrimSuffix(strings.TrimSuffix(listener.Protocol, "6"), "4")
-			livePublic[listener.Port+"/"+protocol] = true
-			if strings.Contains(listener.Address, ":") || listener.Address == "*" {
-				hasIPv6Listener = true
-			}
-		}
-	}
-	stale := map[string]bool{}
-	if listenerErr == nil {
-		for _, group := range groups {
-			if group.source != "any" || !validPort(group.port) {
-				continue
-			}
-			live := livePublic[group.port+"/"+group.protocol]
-			if group.protocol == "any" {
-				live = livePublic[group.port+"/tcp"] || livePublic[group.port+"/udp"]
-			}
-			if !live {
-				stale[group.port+"/"+group.protocol] = true
-			}
-		}
-	}
-	staleKeys := make([]string, 0, len(stale))
-	for key := range stale {
-		staleKeys = append(staleKeys, key)
-	}
-	sort.Strings(staleKeys)
-	for _, key := range staleKeys {
-		f.Evidence = append(f.Evidence, model.Evidence{Source: firewallEvidenceSource(normalized) + " + ss", Key: "stale_allow_rule", Value: key + " has no matching public listener"})
-	}
-	f.Facts["allow_in_rules"] = strconv.Itoa(len(groups))
-	f.Facts["unrestricted_all_port_rules"] = strconv.Itoa(unrestricted)
-	f.Facts["ipv6_enabled"] = strconv.FormatBool(ipv6Enabled)
-	f.Facts["public_ipv6_listener"] = strconv.FormatBool(hasIPv6Listener)
-	f.Facts["stale_allow_rules"] = strconv.Itoa(len(staleKeys))
-	if unrestricted > 0 || (strings.Contains(normalized.backend, "ufw") && hasIPv6Listener && !ipv6Enabled) {
-		f.Status, f.Severity = model.Risk, model.High
-	} else if len(staleKeys) > 0 {
-		f.Status, f.Severity = model.Risk, model.Medium
-	} else if !normalized.defaultDeny {
-		f.Status = model.Info
-	}
-	return withIncompleteEvidence(f, "host firewall discovery", normalized.collectionErr)
+	return evaluateFirewallExposure(collectFirewallAuditSnapshot(ctx))
 }
 
 func includeFirewallExposureRule(backend string, rule firewallRule) bool {

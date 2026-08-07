@@ -362,6 +362,23 @@ func TestScenarioUnreadableFirewallIsUnknownForBothFirewallFindings(t *testing.T
 	}
 }
 
+func TestFirewallMissingIPv6ConfigurationCannotBecomePass(t *testing.T) {
+	f := evaluateFirewallExposure(firewallAuditSnapshot{
+		Host: hostFirewallSnapshot{
+			available: true, active: true, defaultDeny: true, backend: "ufw",
+			defaultDenyByFamily: map[string]bool{"ipv4": true},
+		},
+		Listeners:        []Listener{{Protocol: "tcp6", Address: "::", Port: "443", Scope: "public-wildcard", Process: "sing-box"}},
+		UFWIPv6ConfigErr: fmt.Errorf("permission denied"),
+	})
+	if f.Status != model.Unknown || !f.Unavailable {
+		t.Fatalf("missing UFW IPv6 evidence became %s unavailable=%t: %+v", f.Status, f.Unavailable, f)
+	}
+	if f.Facts["evidence_discovery_incomplete"] != "true" {
+		t.Fatalf("missing UFW IPv6 evidence was not recorded: %+v", f.Facts)
+	}
+}
+
 func TestScenarioIncompleteFirewallFactsPropagateToWorkloadFindings(t *testing.T) {
 	cmd := newScenarioCommander([]string{"wg"}, map[string]CommandResult{
 		scenarioCommandKey("wg", "show", "interfaces"):               {Stdout: "wg0"},
@@ -645,6 +662,28 @@ func TestScenarioAutomaticProfileFailureInvalidatesPolicyPass(t *testing.T) {
 	workload := checkWorkloads(ctx)[0]
 	if workload.Status != model.Unknown || !workload.Unavailable {
 		t.Fatalf("workload status=%s unavailable=%t", workload.Status, workload.Unavailable)
+	}
+}
+
+func TestScenarioNetworkCollectionFailureKeepsIndependentFindings(t *testing.T) {
+	cmd := newScenarioCommander([]string{"ss"}, map[string]CommandResult{
+		scenarioCommandKey("ss", "-H", "-lntup"):                        {Err: fmt.Errorf("listener denied")},
+		scenarioCommandKey("ss", "-H", "-lntu"):                         {Err: fmt.Errorf("listener denied")},
+		scenarioCommandKey("ss", "-H", "-ntup", "state", "established"): {Stdout: "tcp ESTAB 0 0 10.0.0.2:22 198.51.100.10:40000\n"},
+	})
+	findings := checkNetwork(scenarioContext(cmd))
+	if len(findings) != 4 {
+		t.Fatalf("network category returned %d findings, want 4", len(findings))
+	}
+	requireStatus(t, findings, "NET-001", model.Unknown)
+	requireStatus(t, findings, "NET-002", model.Unknown)
+	requireStatus(t, findings, "NET-003", model.Info)
+	requireStatus(t, findings, "NET-004", model.Info)
+	if got := findingByID(t, findings, "NET-003").Facts["total"]; got != "1" {
+		t.Fatalf("independent connection evidence was lost: total=%q", got)
+	}
+	if cmd.calls[scenarioCommandKey("ss", "-H", "-ntup", "state", "established")] != 1 {
+		t.Fatalf("established connection inventory was not collected exactly once: calls=%v", cmd.calls)
 	}
 }
 

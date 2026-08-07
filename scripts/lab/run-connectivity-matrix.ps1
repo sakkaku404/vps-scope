@@ -8,6 +8,10 @@ param(
 
     [string] $IdentityFile,
 
+	[string] $SshConfigFile,
+
+	[string] $KnownHostsFile,
+
     [ValidatePattern('^[A-Za-z_][A-Za-z0-9_-]*$')]
     [string] $SshUser,
 
@@ -25,6 +29,18 @@ if ($IdentityFile) {
         throw "SSH identity file does not exist: $IdentityFile"
     }
     $script:SshArgs += @("-i", (Resolve-Path -LiteralPath $IdentityFile).Path)
+}
+if ($SshConfigFile) {
+	if (-not (Test-Path -LiteralPath $SshConfigFile -PathType Leaf)) {
+		throw "SSH config file does not exist: $SshConfigFile"
+	}
+	$script:SshArgs += @("-F", (Resolve-Path -LiteralPath $SshConfigFile).Path)
+}
+if ($KnownHostsFile) {
+	if (-not (Test-Path -LiteralPath $KnownHostsFile -PathType Leaf)) {
+		throw "SSH known-hosts file does not exist: $KnownHostsFile"
+	}
+	$script:SshArgs += @("-o", "UserKnownHostsFile=$((Resolve-Path -LiteralPath $KnownHostsFile).Path)")
 }
 $networks = @(
     @{ Name = "tcp4"; Port = 39081 },

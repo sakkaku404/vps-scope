@@ -219,6 +219,18 @@ func TestExpectedInfrastructureListeners(t *testing.T) {
 	}
 }
 
+func TestDockerProfileExpectedListenersRemainProcessScoped(t *testing.T) {
+	ctx := &Context{Profile: model.Profile{Effective: "docker"}}
+	for _, process := range []string{`users:(("docker-proxy"))`, `users:(("nginx"))`, `users:(("traefik"))`} {
+		if !expectedListener(ctx, Listener{Protocol: "tcp", Port: "8443", Process: process}, "8443/tcp") {
+			t.Errorf("Docker edge listener was rejected: %s", process)
+		}
+	}
+	if expectedListener(ctx, Listener{Protocol: "tcp", Port: "8443", Process: `users:(("unknown-admin"))`}, "8443/tcp") {
+		t.Fatal("Docker profile accepted an unrelated public process")
+	}
+}
+
 func TestRuntimeExpectedWireGuardListener(t *testing.T) {
 	cmd := newScenarioCommander([]string{"wg"}, map[string]CommandResult{
 		scenarioCommandKey("wg", "show", "all", "listen-port"): {Stdout: "hiddifywg\t32247\n"},
