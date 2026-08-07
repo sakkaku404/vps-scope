@@ -28,20 +28,7 @@ func checkResourceOverview(ctx *Context) model.Finding {
 		f.Evidence = append(f.Evidence, model.Evidence{Source: "/proc/stat", Key: "cpu_used_sample", Value: fmt.Sprintf("%d%% over 200ms", usedPercent)})
 	}
 	if data, err := readSmall("/proc/meminfo", 1<<20); err == nil {
-		memory := parseMemInfo(data)
-		total, available := memory["MemTotal"], memory["MemAvailable"]
-		if total > 0 {
-			usedPercent := (total - available) * 100 / total
-			f.Facts["memory_total_bytes"] = strconv.FormatInt(total, 10)
-			f.Facts["memory_available_bytes"] = strconv.FormatInt(available, 10)
-			f.Facts["memory_used_percent"] = strconv.FormatInt(usedPercent, 10)
-			f.Evidence = append(f.Evidence, model.Evidence{Source: "/proc/meminfo", Key: "memory", Value: fmt.Sprintf("total=%s available=%s used=%d%%", humanBytes(total), humanBytes(available), usedPercent)})
-		}
-		if swap := memory["SwapTotal"]; swap > 0 {
-			free := memory["SwapFree"]
-			f.Facts["swap_total_bytes"] = strconv.FormatInt(swap, 10)
-			f.Evidence = append(f.Evidence, model.Evidence{Source: "/proc/meminfo", Key: "swap", Value: fmt.Sprintf("total=%s used=%s", humanBytes(swap), humanBytes(swap-free))})
-		}
+		addMemoryOverview(&f, parseMemInfo(data))
 	}
 	if data, err := readSmall("/proc/uptime", 4<<10); err == nil {
 		fields := strings.Fields(data)
@@ -72,6 +59,21 @@ func checkResourceOverview(ctx *Context) model.Finding {
 		}
 	}
 	return f
+}
+
+func addMemoryOverview(f *model.Finding, memory map[string]int64) {
+	total, available := memory["MemTotal"], memory["MemAvailable"]
+	if total > 0 {
+		usedPercent := (total - available) * 100 / total
+		f.Facts["memory_total_bytes"] = strconv.FormatInt(total, 10)
+		f.Facts["memory_available_bytes"] = strconv.FormatInt(available, 10)
+		f.Facts["memory_used_percent"] = strconv.FormatInt(usedPercent, 10)
+		f.Evidence = append(f.Evidence, model.Evidence{Source: "/proc/meminfo", Key: "memory", Value: fmt.Sprintf("total=%s available=%s used=%d%%", humanBytes(total), humanBytes(available), usedPercent)})
+	}
+	swap, free := memory["SwapTotal"], memory["SwapFree"]
+	f.Facts["swap_total_bytes"] = strconv.FormatInt(swap, 10)
+	f.Facts["swap_free_bytes"] = strconv.FormatInt(free, 10)
+	f.Evidence = append(f.Evidence, model.Evidence{Source: "/proc/meminfo", Key: "swap", Value: fmt.Sprintf("total=%s used=%s", humanBytes(swap), humanBytes(swap-free))})
 }
 
 func parseCPUModel(input string) string {

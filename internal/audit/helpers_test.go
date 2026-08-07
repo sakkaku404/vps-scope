@@ -186,6 +186,17 @@ func TestParseKeyValues(t *testing.T) {
 	}
 }
 
+func TestMemoryOverviewReportsZeroSwapExplicitly(t *testing.T) {
+	f := model.Finding{Facts: map[string]string{}}
+	addMemoryOverview(&f, map[string]int64{"MemTotal": 512 << 20, "MemAvailable": 320 << 20})
+	if f.Facts["swap_total_bytes"] != "0" || f.Facts["swap_free_bytes"] != "0" {
+		t.Fatalf("zero swap was omitted or changed: facts=%v", f.Facts)
+	}
+	if f.Facts["memory_used_percent"] != "37" {
+		t.Fatalf("memory percentage=%q, want 37", f.Facts["memory_used_percent"])
+	}
+}
+
 func TestParseDPKGVerifyClassifiesExcludedDocs(t *testing.T) {
 	input := "missing     /usr/share/doc/pkg/README.gz\n??5?????? c /etc/example.conf\nmissing     /usr/bin/tool\n..5......   /usr/lib/libchanged.so\n"
 	got := parseDPKGVerify(input)
