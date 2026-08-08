@@ -37,13 +37,16 @@ type sqliteSession struct {
 // need the sqlite3 command. Queries are fixed by the program and select only
 // non-secret metadata.
 func querySQLite(database, query string) ([][]string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), sqliteQueryTimeout)
-	defer cancel()
-	return querySQLiteContext(ctx, database, query)
+	return querySQLiteContext(context.Background(), database, query)
 }
 
 func querySQLiteContext(ctx context.Context, database, query string) ([][]string, error) {
-	session, err := openSQLiteSessionContext(ctx, database)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	queryCtx, cancel := context.WithTimeout(ctx, sqliteQueryTimeout)
+	defer cancel()
+	session, err := openSQLiteSessionContext(queryCtx, database)
 	if err != nil {
 		return nil, err
 	}
@@ -52,7 +55,14 @@ func querySQLiteContext(ctx context.Context, database, query string) ([][]string
 }
 
 func openSQLiteSession(database string) (*sqliteSession, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), sqliteSessionTimeout)
+	return openSQLiteSessionForAudit(context.Background(), database)
+}
+
+func openSQLiteSessionForAudit(parent context.Context, database string) (*sqliteSession, error) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, sqliteSessionTimeout)
 	session, err := openSQLiteSessionContext(ctx, database)
 	if err != nil {
 		cancel()
@@ -63,6 +73,9 @@ func openSQLiteSession(database string) (*sqliteSession, error) {
 }
 
 func openSQLiteSessionContext(ctx context.Context, database string) (*sqliteSession, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	abs, err := filepath.Abs(database)
 	if err != nil {
 		return nil, err

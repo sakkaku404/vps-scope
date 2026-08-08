@@ -26,7 +26,7 @@ func collectFirewallAuditSnapshot(ctx *Context) firewallAuditSnapshot {
 	if host.backend != "ufw" && !strings.HasPrefix(host.backend, "ufw+") {
 		return snapshot
 	}
-	data, err := readSmall("/etc/default/ufw", 1<<20)
+	data, err := ctx.Facts.ReadSmall("/etc/default/ufw", 1<<20)
 	if err != nil {
 		snapshot.UFWIPv6ConfigErr = fmt.Errorf("read /etc/default/ufw: %w", err)
 		return snapshot

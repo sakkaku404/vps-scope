@@ -178,8 +178,19 @@ func stableEndpointNodeID(kind string, parts ...string) string {
 func configuredAddressMatchesListener(configured, live string) bool {
 	configured = strings.Trim(strings.TrimSpace(configured), "[]")
 	live = strings.Trim(strings.TrimSpace(live), "[]")
-	if configured == "" || configured == "*" || configured == "0.0.0.0" || configured == "::" {
-		return true
+	if configured == "" || configured == "*" {
+		return live == "*" || live == "0.0.0.0" || live == "::"
+	}
+	if configured == "0.0.0.0" {
+		// ss may render an unspecified listener as either its concrete
+		// address or "*". The latter no longer retains the address family,
+		// but it still proves that the configured wildcard endpoint is live.
+		// Treating those spellings as different leaves one panel socket both
+		// "missing" and "unclassified" in the same report.
+		return live == "0.0.0.0" || live == "*"
+	}
+	if configured == "::" {
+		return live == "::" || live == "*"
 	}
 	if strings.EqualFold(configured, "localhost") {
 		return classifyAddress(live) == "loopback"
@@ -189,4 +200,30 @@ func configuredAddressMatchesListener(configured, live string) bool {
 		return configuredIP.Equal(liveIP)
 	}
 	return strings.EqualFold(configured, live)
+}
+
+func configuredAddressesOverlap(left, right string) bool {
+	left = strings.Trim(strings.TrimSpace(left), "[]")
+	right = strings.Trim(strings.TrimSpace(right), "[]")
+	if left == "" || left == "*" || right == "" || right == "*" {
+		return true
+	}
+	if strings.EqualFold(left, "localhost") {
+		return classifyAddress(right) == "loopback"
+	}
+	if strings.EqualFold(right, "localhost") {
+		return classifyAddress(left) == "loopback"
+	}
+	leftIP, rightIP := net.ParseIP(left), net.ParseIP(right)
+	if leftIP != nil && rightIP != nil {
+		leftV4, rightV4 := leftIP.To4() != nil, rightIP.To4() != nil
+		if leftV4 != rightV4 {
+			return false
+		}
+		if left == "0.0.0.0" || left == "::" || right == "0.0.0.0" || right == "::" {
+			return true
+		}
+		return leftIP.Equal(rightIP)
+	}
+	return strings.EqualFold(left, right)
 }

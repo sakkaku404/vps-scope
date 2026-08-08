@@ -31,7 +31,7 @@ func proxyChecks(ctx *Context) []model.Finding {
 		checkProxyInventory(ctx, summaries),
 		checkProxyConfiguration(ctx, summaries),
 		checkProxyControlEndpoints(ctx, summaries),
-		checkProxySensitivePermissions(summaries),
+		checkProxySensitivePermissions(ctx, summaries),
 		checkProxyServiceIsolation(ctx),
 		checkProxyTransportContext(ctx, summaries),
 		checkProxyEndpointRelations(ctx, summaries),
@@ -161,7 +161,7 @@ func checkProxyConfiguration(ctx *Context, summaries []proxyConfigSummary) model
 		// Managed-panel summaries may represent an entire generated config tree
 		// or a database-derived runtime model. Passing such a directory to a
 		// single-file native self-test produces a false failure.
-		if strings.HasSuffix(summary.Path, ".db") || !regularFile(summary.Path) {
+		if strings.HasSuffix(summary.Path, ".db") || !snapshotRegularFile(ctx.Facts, summary.Path) {
 			continue
 		}
 		binary, args := proxySelfTest(summary.Product, summary.Path)
@@ -261,11 +261,15 @@ var defaultProxySensitivePaths = []string{
 	"/etc/hysteria/config.yaml", "/etc/hysteria/config.yml", "/etc/tuic/config.json", "/etc/trojan/config.json",
 }
 
-func checkProxySensitivePermissions(summaries []proxyConfigSummary) model.Finding {
-	return checkProxySensitivePermissionsWithDefaults(summaries, defaultProxySensitivePaths)
+func checkProxySensitivePermissions(ctx *Context, summaries []proxyConfigSummary) model.Finding {
+	return checkProxySensitivePermissionsWithStat(summaries, defaultProxySensitivePaths, ctx.Facts.Stat)
 }
 
 func checkProxySensitivePermissionsWithDefaults(summaries []proxyConfigSummary, defaultPaths []string) model.Finding {
+	return checkProxySensitivePermissionsWithStat(summaries, defaultPaths, os.Stat)
+}
+
+func checkProxySensitivePermissionsWithStat(summaries []proxyConfigSummary, defaultPaths []string, stat func(string) (fs.FileInfo, error)) model.Finding {
 	type candidate struct {
 		forbidden fs.FileMode
 		required  bool
@@ -301,7 +305,7 @@ func checkProxySensitivePermissionsWithDefaults(summaries []proxyConfigSummary, 
 	}
 	sort.Strings(ordered)
 	for _, path := range ordered {
-		info, err := os.Stat(path)
+		info, err := stat(path)
 		if err != nil {
 			if candidates[path].required || !errors.Is(err, fs.ErrNotExist) {
 				discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s: %w", path, err))
@@ -383,7 +387,7 @@ func checkProxyServiceIsolation(ctx *Context) model.Finding {
 		}
 		f.Evidence = append(f.Evidence, model.Evidence{Source: "systemctl show", Key: unit, Value: strings.Join(parts, " ")})
 		if path := values["FragmentPath"]; path != "" {
-			if info, err := os.Stat(path); err == nil && tooOpen(info, 0o022) {
+			if info, err := ctx.Facts.Stat(path); err == nil && tooOpen(info, 0o022) {
 				f.Status, f.Severity = model.Risk, model.High
 				f.Evidence = append(f.Evidence, model.Evidence{Source: "stat", Key: "writable_proxy_unit", Value: path + " mode=" + modeString(info)})
 			}
@@ -405,20 +409,35 @@ func checkProxyTransportContext(ctx *Context, summaries []proxyConfigSummary) mo
 		return notApplicable("WORK-008", "workloads", "proxy configuration and process inventory", "no supported UDP-heavy proxy transport detected")
 	}
 	f := model.Finding{ID: "WORK-008", Category: "workloads", Status: model.Info, Facts: map[string]string{"udp_transport_detected": "true"}}
-	for _, path := range []string{"/proc/sys/net/core/rmem_max", "/proc/sys/net/core/wmem_max", "/proc/sys/net/ipv4/udp_rmem_min", "/proc/sys/net/ipv4/udp_wmem_min"} {
-		if value, err := readSmall(path, 1024); err == nil {
-			f.Evidence = append(f.Evidence, model.Evidence{Source: path, Value: strings.TrimSpace(value)})
+	var requiredErr error
+	for index, path := range []string{"/proc/sys/net/core/rmem_max", "/proc/sys/net/core/wmem_max", "/proc/sys/net/ipv4/udp_rmem_min", "/proc/sys/net/ipv4/udp_wmem_min"} {
+		value, err := ctx.Facts.ReadSmall(path, 1024)
+		trimmed := strings.TrimSpace(value)
+		if err == nil {
+			if _, parseErr := strconv.ParseUint(trimmed, 10, 64); parseErr != nil {
+				err = fmt.Errorf("invalid numeric UDP buffer value")
+			}
+		}
+		if err == nil {
+			f.Evidence = append(f.Evidence, model.Evidence{Source: path, Value: trimmed})
+			f.Facts[filepath.Base(path)] = trimmed
+		} else if index < 2 {
+			requiredErr = errors.Join(requiredErr, fmt.Errorf("%s: %w", path, err))
 		}
 	}
 	if ctx.Commander.Exists("netstat") {
 		r := ctx.Commander.Run(8*time.Second, "netstat", "-su")
-		for _, line := range lines(r.Stdout) {
-			if containsAny(strings.ToLower(line), "packet receive errors", "receive buffer errors", "send buffer errors", "rcvbuferrors", "sndbuferrors") {
-				f.Evidence = append(f.Evidence, model.Evidence{Source: "netstat -su", Key: "udp_counter", Value: truncate(line, 180)})
+		if r.Err != nil || r.Truncated {
+			f.Evidence = append(f.Evidence, model.Evidence{Source: "netstat -su", Key: "unavailable", Value: commandError(r)})
+		} else {
+			for _, line := range lines(r.Stdout) {
+				if containsAny(strings.ToLower(line), "packet receive errors", "receive buffer errors", "send buffer errors", "rcvbuferrors", "sndbuferrors") {
+					f.Evidence = append(f.Evidence, model.Evidence{Source: "netstat -su", Key: "udp_counter", Value: truncate(line, 180)})
+				}
 			}
 		}
 	}
-	return f
+	return withIncompleteEvidence(f, "UDP buffer sysctls", requiredErr)
 }
 
 func checkProxyEndpointRelations(ctx *Context, summaries []proxyConfigSummary) model.Finding {
@@ -525,40 +544,25 @@ func sortedCountKeys(values map[string]int) []string {
 }
 
 func checkWireGuardRuntime(ctx *Context) model.Finding {
-	if !ctx.Commander.Exists("wg") {
+	interfaces, installed, interfaceErr := ctx.Facts.WireGuardInterfaces()
+	if !installed {
 		return notApplicable("WORK-011", "workloads", "wg", "WireGuard tools are not installed")
 	}
-	interfacesResult := ctx.Commander.Run(8*time.Second, "wg", "show", "interfaces")
-	if interfacesResult.Err != nil || interfacesResult.Truncated {
-		return unknown("WORK-011", "workloads", "wg show interfaces", commandError(interfacesResult))
+	if interfaceErr != nil {
+		return unknown("WORK-011", "workloads", "wg show all listen-port", interfaceErr.Error())
 	}
-	interfaces := strings.Fields(interfacesResult.Stdout)
 	if len(interfaces) == 0 {
-		return notApplicable("WORK-011", "workloads", "wg show interfaces", "no active WireGuard interface")
+		return notApplicable("WORK-011", "workloads", "wg show all listen-port", "no active WireGuard interface")
 	}
 	f := model.Finding{ID: "WORK-011", Category: "workloads", Status: model.Pass, Facts: map[string]string{"interfaces": strconv.Itoa(len(interfaces))}}
 	listeners, listenerErr := ctx.Facts.Listeners()
 	ufw := readPanelUFW(ctx)
 	peers, recentPeers := 0, 0
-	now := ctx.Now().Unix()
+	now := ctx.evidenceTime().Unix()
 	var discoveryErr error
 	discoveryErr = errors.Join(discoveryErr, listenerErr)
 	for _, iface := range interfaces {
-		if !validNetworkInterfaceName(iface) {
-			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("wg returned an invalid interface name"))
-			continue
-		}
-		portResult := ctx.Commander.Run(6*time.Second, "wg", "show", iface, "listen-port")
-		if portResult.Err != nil || portResult.Truncated {
-			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("wg show %s listen-port: %s", iface, commandError(portResult)))
-			f.Evidence = append(f.Evidence, model.Evidence{Source: "wg show", Key: "interface_unavailable", Value: fmt.Sprintf("interface=%s field=listen-port error=%s", iface, commandError(portResult))})
-			continue
-		}
-		port := strings.TrimSpace(portResult.Stdout)
-		if port != "0" && !validPort(port) {
-			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("wg show %s listen-port returned an invalid port", iface))
-			continue
-		}
+		port := iface.Port
 		live, scope, process := false, "none", "none"
 		for _, listener := range listeners {
 			if listener.Port == port && strings.HasPrefix(listener.Protocol, "udp") {
@@ -566,19 +570,19 @@ func checkWireGuardRuntime(ctx *Context) model.Finding {
 			}
 		}
 		firewall := endpointFirewallDisposition(ufw, port, "udp")
-		f.Evidence = append(f.Evidence, model.Evidence{Source: "wg + ss + ufw", Key: "wireguard_interface", Value: fmt.Sprintf("interface=%s port=%s/udp live=%t process=%s scope=%s firewall=%s", iface, port, live, truncate(process, 100), scope, firewall)})
+		f.Evidence = append(f.Evidence, model.Evidence{Source: "wg + ss + ufw", Key: "wireguard_interface", Value: fmt.Sprintf("interface=%s port=%s/udp live=%t process=%s scope=%s firewall=%s", iface.Name, port, live, truncate(process, 100), scope, firewall)})
 		if listenerErr == nil && port != "" && port != "0" && !live {
 			f.Status, f.Severity = model.Risk, model.Medium
 		}
-		peerResult := ctx.Commander.Run(6*time.Second, "wg", "show", iface, "peers")
+		peerResult := ctx.Commander.Run(6*time.Second, "wg", "show", iface.Name, "peers")
 		if peerResult.Err != nil || peerResult.Truncated {
-			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("wg show %s peers: %s", iface, commandError(peerResult)))
+			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("wg show %s peers: %s", iface.Name, commandError(peerResult)))
 		} else {
 			peers += len(strings.Fields(peerResult.Stdout))
 		}
-		handshakes := ctx.Commander.Run(6*time.Second, "wg", "show", iface, "latest-handshakes")
+		handshakes := ctx.Commander.Run(6*time.Second, "wg", "show", iface.Name, "latest-handshakes")
 		if handshakes.Err != nil || handshakes.Truncated {
-			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("wg show %s latest-handshakes: %s", iface, commandError(handshakes)))
+			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("wg show %s latest-handshakes: %s", iface.Name, commandError(handshakes)))
 		} else {
 			for _, line := range lines(handshakes.Stdout) {
 				fields := strings.Fields(line)
@@ -587,7 +591,7 @@ func checkWireGuardRuntime(ctx *Context) model.Finding {
 				}
 				when, parseErr := strconv.ParseInt(fields[1], 10, 64)
 				if parseErr != nil {
-					discoveryErr = errors.Join(discoveryErr, fmt.Errorf("wg show %s latest-handshakes returned malformed metadata", iface))
+					discoveryErr = errors.Join(discoveryErr, fmt.Errorf("wg show %s latest-handshakes returned malformed metadata", iface.Name))
 					continue
 				}
 				if when > 0 && now-when <= int64(ctx.LogSince.Seconds()) {

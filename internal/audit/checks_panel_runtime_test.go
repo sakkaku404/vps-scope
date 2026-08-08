@@ -13,6 +13,7 @@ func TestPanelRuntimeListenerCorrelationUsesTransportAndAddress(t *testing.T) {
 		{Protocol: "udp", Address: "0.0.0.0", Port: "2095", Scope: "public-wildcard", Process: "sing-box"},
 		{Protocol: "tcp4", Address: "127.0.0.1", Port: "2095", Scope: "loopback", Process: "sui"},
 		{Protocol: "tcp6", Address: "::1", Port: "2095", Scope: "loopback", Process: "sui"},
+		{Protocol: "tcp6", Address: "::", Port: "2095", Scope: "public-wildcard", Process: "sui"},
 		{Protocol: "tcp-extra", Address: "127.0.0.1", Port: "2095", Scope: "loopback", Process: "invalid"},
 		{Protocol: "udp", Address: "192.0.2.1", Port: "2095", Scope: "public", Process: "sing-box"},
 	}
@@ -24,8 +25,8 @@ func TestPanelRuntimeListenerCorrelationUsesTransportAndAddress(t *testing.T) {
 		{name: "explicit address mismatch", address: "10.0.0.1", transport: "tcp", want: nil},
 		{name: "exact IPv4 and normalized tcp4", address: "127.0.0.1", transport: "tcp", want: []int{1}},
 		{name: "bracketed IPv6", address: "[::1]", transport: "tcp", want: []int{2}},
-		{name: "wildcard accepts every compatible tcp listener", address: "::", transport: "tcp", want: []int{1, 2}},
-		{name: "IPv4 wildcard UDP", address: "0.0.0.0", transport: "udp", want: []int{0, 4}},
+		{name: "IPv6 wildcard stays in IPv6 family", address: "::", transport: "tcp", want: []int{3}},
+		{name: "IPv4 wildcard requires a wildcard listener", address: "0.0.0.0", transport: "udp", want: []int{0}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -34,6 +35,15 @@ func TestPanelRuntimeListenerCorrelationUsesTransportAndAddress(t *testing.T) {
 				t.Fatalf("indexes=%v, want %v", got, test.want)
 			}
 		})
+	}
+}
+
+func TestPanelRuntimeListenerCorrelationTreatsSSStarAsWildcard(t *testing.T) {
+	listeners := []Listener{{Protocol: "tcp", Address: "*", Port: "2095", Scope: "public-wildcard", Process: "sui"}}
+	for _, address := range []string{"0.0.0.0", "::", "*", ""} {
+		if got := panelRuntimeListenerIndexes(listeners, address, "2095", "tcp"); fmt.Sprint(got) != "[0]" {
+			t.Fatalf("address=%q indexes=%v, want [0]", address, got)
+		}
 	}
 }
 
@@ -50,6 +60,8 @@ func TestPanelRuntimeRoleCollisionUsesSocketIdentity(t *testing.T) {
 		{name: "same TCP socket conflicts", endpointAddress: "::", inboundAddress: "::", protocol: "vless", network: "tcp", wantStatus: model.Risk, wantCollisions: "1"},
 		{name: "TCP management and UDP ingress may share port", endpointAddress: "::", inboundAddress: "::", protocol: "hysteria2", network: "udp", wantStatus: model.Pass, wantCollisions: "0"},
 		{name: "different concrete addresses do not conflict", endpointAddress: "127.0.0.1", inboundAddress: "10.0.0.1", protocol: "vless", network: "tcp", wantStatus: model.Pass, wantCollisions: "0"},
+		{name: "same-family wildcard overlaps a concrete address", endpointAddress: "0.0.0.0", inboundAddress: "192.0.2.1", protocol: "vless", network: "tcp", wantStatus: model.Risk, wantCollisions: "1"},
+		{name: "IPv4 and IPv6 wildcards are different sockets", endpointAddress: "0.0.0.0", inboundAddress: "::", protocol: "vless", network: "tcp", wantStatus: model.Pass, wantCollisions: "0"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -83,8 +95,8 @@ func TestDisabledPanelInboundIsOnlyMaskedByTheSameRuntimeSocket(t *testing.T) {
 	}{
 		{
 			name:     "enabled TCP does not mask disabled UDP on the same port",
-			enabled:  panelInboundFact{Enabled: true, Listen: "::", Port: "8443", Protocol: "vless", Network: "tcp"},
-			disabled: panelInboundFact{Listen: "::", Port: "8443", Protocol: "hysteria2", Network: "udp"},
+			enabled:  panelInboundFact{Enabled: true, Listen: "*", Port: "8443", Protocol: "vless", Network: "tcp"},
+			disabled: panelInboundFact{Listen: "*", Port: "8443", Protocol: "hysteria2", Network: "udp"},
 			listeners: []Listener{
 				{Protocol: "tcp", Address: "0.0.0.0", Port: "8443", Scope: "public-wildcard", Process: "sing-box"},
 				{Protocol: "udp", Address: "0.0.0.0", Port: "8443", Scope: "public-wildcard", Process: "sing-box"},
@@ -103,8 +115,8 @@ func TestDisabledPanelInboundIsOnlyMaskedByTheSameRuntimeSocket(t *testing.T) {
 		},
 		{
 			name:             "duplicate disabled record shares an enabled socket",
-			enabled:          panelInboundFact{Enabled: true, Listen: "::", Port: "8443", Protocol: "vless", Network: "tcp"},
-			disabled:         panelInboundFact{Listen: "::", Port: "8443", Protocol: "vless", Network: "tcp"},
+			enabled:          panelInboundFact{Enabled: true, Listen: "*", Port: "8443", Protocol: "vless", Network: "tcp"},
+			disabled:         panelInboundFact{Listen: "*", Port: "8443", Protocol: "vless", Network: "tcp"},
 			listeners:        []Listener{{Protocol: "tcp", Address: "0.0.0.0", Port: "8443", Scope: "public-wildcard", Process: "sing-box"}},
 			wantStatus:       model.Pass,
 			wantStillRunning: "0",

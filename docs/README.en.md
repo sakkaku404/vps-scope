@@ -17,14 +17,14 @@ VPS Scope therefore joins the host and workload evidence into one view: panel da
 It is not just product detection and it is not a port scan with a Linux checklist attached. Ordinary VPS hosts still receive the full host baseline; proxy hosts receive the additional relationships among ingress, management, subscriptions, control APIs, containers, and reverse proxies.
 
 ```bash
-curl -fsSL https://sakkaku404.github.io/vps-scope/run.sh | sudo bash
+curl -fsSL https://github.com/sakkaku404/vps-scope/releases/latest/download/run.sh | sudo bash
 ```
 
 The prompt supports Simplified Chinese, English, Russian, and Persian. Non-interactive runs can use `--lang zh-CN`, `--lang en`, `--lang ru-RU`, or `--lang fa-IR`.
 
 By default, the terminal shows the conclusion and the VPS keeps a complete report bundle. VPS Scope has no repair mode and does not change SSH, firewall rules, services, accounts, or packages.
 
-The default audit also does not execute binaries belonging to S-UI, 3x-ui, sing-box, Xray, Nginx, or other audited workloads. It reads configuration, databases, and system runtime state. Only an explicit `--native-self-test` runs those local programs after ownership and permission checks; this mode executes third-party code already present on the server.
+The default audit also does not execute binaries belonging to S-UI, 3x-ui, sing-box, Xray, Nginx, or other audited workloads. It reads configuration, databases, and system runtime state. Only an explicit `--native-self-test` runs those local programs after ownership and permission checks; this executes third-party code with the audit process's privileges, which means root when the audit uses `sudo`.
 
 [![CI](https://github.com/sakkaku404/vps-scope/actions/workflows/ci.yml/badge.svg)](https://github.com/sakkaku404/vps-scope/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/sakkaku404/vps-scope/actions/workflows/codeql.yml/badge.svg)](https://github.com/sakkaku404/vps-scope/actions/workflows/codeql.yml)
@@ -77,24 +77,24 @@ There is no security score, and the tool does not make changes or offer an autom
 Run one audit without installing anything:
 
 ```bash
-curl -fsSL https://sakkaku404.github.io/vps-scope/run.sh | sudo bash
+curl -fsSL https://github.com/sakkaku404/vps-scope/releases/latest/download/run.sh | sudo bash
 ```
 
 The prompt supports Simplified Chinese, English, Russian, and Persian. For non-interactive use, pass `--lang zh-CN`, `--lang en`, `--lang ru-RU`, or `--lang fa-IR`.
 
 That one command downloads the current release, verifies its SHA-256, runs the audit, and removes the temporary binary. There is no second command.
 
-Both the temporary runner and installer always verify the checksum. When `cosign` is available, they also verify the GitHub Actions keyless signature. Without `cosign`, an interactive terminal must type `continue` before falling back to checksum-only mode, while non-interactive use stops by default. Automation should set `VPS_SCOPE_ALLOW_UNSIGNED=1` only after accepting that trade-off; set `VPS_SCOPE_REQUIRE_SIGNATURE=1` to forbid unsigned fallback entirely.
+The runner and installer are themselves signed Release assets. Once started, they always verify the downloaded binary's checksum and, when `cosign` is available, its GitHub Actions keyless signature. Without `cosign`, an interactive terminal must type `continue` before falling back to checksum-only mode, while non-interactive use stops by default. Automation should set `VPS_SCOPE_ALLOW_UNSIGNED=1` only after accepting that trade-off; set `VPS_SCOPE_REQUIRE_SIGNATURE=1` to forbid an unsigned binary fallback.
 
 To install `vps-scope` for repeated use:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sakkaku404/vps-scope/main/install.sh | sudo bash
+curl -fsSL https://github.com/sakkaku404/vps-scope/releases/latest/download/install.sh | sudo bash
 ```
 
-Then run `sudo vps-scope`. The installer detects amd64 or arm64 automatically. An explicitly selected version is bound to that exact tag identity during signature verification. Releases also include the project license and a third-party notice generated from the modules linked into the binary. See [release artifact verification](SUPPLY-CHAIN.md) for the trust model and manual verification command.
+Then run `sudo vps-scope`. The installer detects amd64 or arm64 automatically. An explicitly selected version is bound to that exact tag identity during signature verification. Releases also include the project license and a third-party notice generated from the modules linked into the binary.
 
-If you prefer to inspect scripts before running them, download them first or use the manual steps below.
+The one-line `curl | bash` command cannot authenticate its bootstrap script before execution. For a fully verified path, download a pinned script and its Sigstore bundle, verify the script, and then let it verify the binary. See [release artifact verification](SUPPLY-CHAIN.md) for the exact commands and trust boundary.
 
 ### Manual install
 
@@ -157,6 +157,8 @@ sudo ./vps-scope audit --format bundle --output ./reports/sgp
 ```
 
 A bundle contains the canonical JSON report, human-readable formats, and a SHA-256 manifest. The HTML report is a self-contained offline page with status filters, search, and collapsible evidence; it loads no external scripts or fonts. Report files are created with restrictive permissions on Linux.
+
+`report.json` is the common audit record behind every renderer. It contains the 55 stable check IDs, statuses, severities, and reason codes, plus a typed deployment view of components, service endpoints, proxy/reverse-proxy links, and evidence coverage. HTML, Markdown, history comparison, and baselines consume that structure instead of parsing terminal prose. Older schema-1.0 reports remain readable, while `vps-scope verify` checks both integrity and the semantic contract of current reports.
 
 JSON reports can be rendered again without reconnecting to the server:
 
@@ -252,11 +254,17 @@ version     show build information
 
 ## Support
 
-VPS Scope currently supports Ubuntu and Debian on Linux `amd64` and `arm64`. Some checks use system tools such as `ss`, `journalctl`, `ufw`, `firewall-cmd`, `nft`, `iptables`, `fail2ban-client`, `cscli`, `dpkg`, `docker`, `coredumpctl`, or `sqlite3`. If one is unavailable, the affected result is reported as unavailable rather than silently treated as safe.
+VPS Scope currently supports Ubuntu and Debian on Linux `amd64` and `arm64`. Some checks use system tools such as `ss`, `journalctl`, `ufw`, `firewall-cmd`, `nft`, `iptables`, `fail2ban-client`, `cscli`, `dpkg`, `docker`, or `coredumpctl`. If one is unavailable, the affected result is reported as unavailable rather than silently treated as safe. Panel databases are read by the embedded read-only SQLite implementation; the target does not need `sqlite3`.
 
 VPS Scope is useful for reviewing a server, but it cannot prove that a machine is clean or see cloud firewall rules from inside the guest. See [the design notes](DESIGN.md) for the current trust boundary and known limitations.
 
 The 1.x guarantees for report schemas, check IDs, reason codes, public commands, exit behavior, and older reports are documented in the [stability and compatibility policy](STABILITY.md). The complete policy/probe workflow is in [Deployment policy and external observation](POLICY-AND-PROBE.md). Human-readable layout may evolve; automation should consume canonical JSON.
+
+### How release candidates are validated
+
+Compilation is not the acceptance criterion. The current laboratory uses five independent VPS roles: Debian 13 with S-UI, Debian 12 with 3x-ui/Xray, Ubuntu 24.04 with Docker/Nginx, a near-stock Debian 13 host, and a constrained Debian 13 host with 512 MiB of memory. Every role runs a standard audit, deep audit, bundle verification, and redacted support bundle. The Docker role also exercises a 32-container inventory, DOCKER-USER/forwarding semantics, and a custom INPUT chain; the hosts then run a TCP/UDP reachability matrix.
+
+The latest candidate completed two consecutive rounds with 55 findings per host and no drift in finding status, severity, reason code, components, or endpoint relationships. All 16 cross-host TCP/UDP probes passed and the laboratory left no tagged firewall rules or helper processes behind. Deep audits took about 25–51 seconds, including the 512 MiB host. These are controlled laboratory observations, not performance guarantees for every distribution, panel version, or cloud network. See [Testing](TESTING.md) and [Release readiness](READINESS.md) for the reproducible contract.
 
 ## Why VPS Scope exists
 
@@ -269,8 +277,11 @@ Thanks to OpenAI Codex for writing most of the Go—it has currently written far
 ## Development
 
 ```bash
-go test ./...
+go test -count=1 ./...
 go vet ./...
+staticcheck ./...
+gosec -quiet ./...
+govulncheck ./...
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ./cmd/vps-scope
 ```
 

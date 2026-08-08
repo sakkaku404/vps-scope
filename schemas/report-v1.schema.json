@@ -16,9 +16,9 @@
       "type": "object",
       "required": ["stable_id", "hostname", "os", "os_version", "kernel", "architecture", "is_root"],
       "properties": {
-        "stable_id": { "type": "string" }, "hostname": { "type": "string" }, "os": { "enum": ["ubuntu", "debian"] },
-        "os_version": { "type": "string" }, "kernel": { "type": "string" }, "architecture": { "type": "string" },
-        "virtualization": { "type": "string" }, "is_root": { "type": "boolean" }
+        "stable_id": { "type": "string", "maxLength": 1024 }, "hostname": { "type": "string", "maxLength": 1024 }, "os": { "enum": ["ubuntu", "debian"] },
+        "os_version": { "type": "string", "maxLength": 1024 }, "kernel": { "type": "string", "maxLength": 1024 }, "architecture": { "type": "string", "maxLength": 1024 },
+        "virtualization": { "type": "string", "maxLength": 1024 }, "is_root": { "type": "boolean" }
       },
       "additionalProperties": true
     },
@@ -27,7 +27,7 @@
       "required": ["requested", "detected", "effective"],
       "properties": {
         "requested": { "type": "string" }, "detected": { "type": "string" }, "effective": { "type": "string" },
-        "reasons": { "type": "array", "items": { "type": "string" } }
+        "reasons": { "type": "array", "maxItems": 64, "items": { "type": "string", "maxLength": 256 } }
       },
       "additionalProperties": true
     },
@@ -38,6 +38,7 @@
     },
     "findings": {
       "type": "array",
+      "maxItems": 1024,
       "items": {
         "type": "object",
         "required": ["id", "category", "status"],
@@ -45,25 +46,25 @@
           "id": { "type": "string", "pattern": "^[A-Z]+-[0-9]{3}$" }, "reason_code": { "type": "string", "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$" }, "category": { "type": "string" },
           "status": { "enum": ["PASS", "RISK", "INFO", "UNKNOWN"] },
           "severity": { "enum": ["critical", "high", "medium", "low"] },
-          "evidence": { "type": "array", "items": { "$ref": "#/$defs/evidence" } },
-          "facts": { "type": "object", "additionalProperties": { "type": "string" } },
-          "unavailable": { "type": "boolean" }, "not_applicable": { "type": "boolean" }, "error": { "type": "string" }
+          "evidence": { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/evidence" } },
+          "facts": { "type": "object", "maxProperties": 256, "propertyNames": { "maxLength": 128 }, "additionalProperties": { "type": "string", "maxLength": 8192 } },
+          "unavailable": { "type": "boolean" }, "not_applicable": { "type": "boolean" }, "error": { "type": "string", "maxLength": 2048 }
         },
         "additionalProperties": true
       }
     },
     "endpoints": {
       "type": "array",
-      "maxItems": 65535,
+      "maxItems": 4096,
       "items": { "$ref": "#/$defs/listener" }
     },
     "deployment": { "$ref": "#/$defs/deployment" },
-    "metadata": { "type": "object", "additionalProperties": { "type": "string" } }
+    "metadata": { "type": "object", "maxProperties": 256, "propertyNames": { "minLength": 1, "maxLength": 128 }, "additionalProperties": { "type": "string", "maxLength": 4096 } }
   },
   "$defs": {
     "evidence": {
       "type": "object", "required": ["source", "value"],
-      "properties": { "source": { "type": "string" }, "key": { "type": "string" }, "value": { "type": "string" } },
+      "properties": { "source": { "type": "string", "maxLength": 256 }, "key": { "type": "string", "maxLength": 128 }, "value": { "type": "string", "maxLength": 8192 } },
       "additionalProperties": true
     },
     "listener": {

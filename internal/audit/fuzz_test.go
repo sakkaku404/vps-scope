@@ -13,9 +13,11 @@ func FuzzProxyConfigParsersDoNotPanic(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		_ = parseSingBoxSummary("/etc/sing-box/config.json", data)
 		_ = parseXraySummary("/etc/xray/config.json", data)
+		_ = parseHysteriaSummary("/etc/hysteria/config.yaml", string(data))
 		_ = parseTUICSummary("/etc/tuic/config.json", data)
 		_ = parseTrojanSummary("/etc/trojan/config.json", data)
 		_ = parseShadowsocksSummary("/etc/shadowsocks/config.json", data)
+		_, _ = parseOutlineState(data)
 	})
 }
 

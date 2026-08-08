@@ -2,6 +2,7 @@ package report
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -77,7 +78,10 @@ func TestOverallVerdictBreakdownConservesConfirmedFindings(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			verdict := overallVerdictFor(model.Report{Findings: test.findings}, "en")
-			wantHeadline := fmt.Sprintf("%d findings need attention", test.confirmed)
+			wantHeadline := fmt.Sprintf("%d confirmed risks need attention", test.confirmed)
+			if test.gaps > 0 {
+				wantHeadline = fmt.Sprintf("%d confirmed risks, plus %d evidence gaps", test.confirmed, test.gaps)
+			}
 			wantDetail := fmt.Sprintf("Handle now: %d · May affect availability: %d · Maintenance and review: %d · Evidence gaps requiring manual confirmation: %d", test.urgent, test.availability, test.maintenance, test.gaps)
 			if verdict.Headline != wantHeadline || verdict.Detail != wantDetail {
 				t.Fatalf("verdict=%#v want headline=%q detail=%q", verdict, wantHeadline, wantDetail)
@@ -86,5 +90,22 @@ func TestOverallVerdictBreakdownConservesConfirmedFindings(t *testing.T) {
 				t.Fatalf("invalid test fixture: confirmed=%d bands=%d", test.confirmed, test.urgent+test.availability+test.maintenance)
 			}
 		})
+	}
+}
+
+func TestActionSummaryUsesStableCheckOrderForEqualSeverity(t *testing.T) {
+	report := model.Report{Findings: []model.Finding{
+		{ID: "WORK-002", Status: model.Risk, Severity: model.High},
+		{ID: "SSH-001", Status: model.Risk, Severity: model.High},
+		{ID: "FW-001", Status: model.Risk, Severity: model.High},
+	}}
+	actions := summarizeActions(report, "en")
+	got := make([]string, 0, len(actions.Urgent))
+	for _, item := range actions.Urgent {
+		got = append(got, item.Localized.ID)
+	}
+	want := []string{"SSH-001", "FW-001", "WORK-002"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("urgent order=%v, want stable registry order %v", got, want)
 	}
 }

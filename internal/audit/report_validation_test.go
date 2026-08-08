@@ -5,12 +5,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sakkaku404/vps-scope/internal/contract"
 	"github.com/sakkaku404/vps-scope/internal/model"
 )
 
 func validContractReport() model.Report {
 	r := model.Report{
-		SchemaVersion: "1.0", ToolVersion: "0.13.0", Locale: "en",
+		SchemaVersion: "1.0", ToolVersion: "1.0.0", Locale: "en",
 		StartedAt: time.Unix(1, 0).UTC(), FinishedAt: time.Unix(2, 0).UTC(),
 		LogSince: "168h0m0s",
 		Host:     model.Host{StableID: "fixture-id", Hostname: "fixture", OS: "debian", OSVersion: "12", Kernel: "fixture-kernel", Architecture: "x86_64"},
@@ -155,15 +156,70 @@ func TestValidateReportFindsSemanticCorruption(t *testing.T) {
 	}
 }
 
+func TestValidateReportRejectsExcessiveLogLookback(t *testing.T) {
+	r := validContractReport()
+	r.LogSince = (MaxLogSince + time.Second).String()
+	if failures := ValidateReport(r); !strings.Contains(strings.Join(failures, "\n"), "invalid log_since") {
+		t.Fatalf("failures=%v", failures)
+	}
+}
+
 func TestValidateReportKeepsPre013ReasonCodesOptional(t *testing.T) {
 	r := validContractReport()
 	r.ToolVersion = "0.12.0"
+	r.Findings = findingsForVersion(r.Findings, 0, 12)
 	for i := range r.Findings {
 		r.Findings[i].ReasonCode = ""
 	}
+	r.Recount()
 	if failures := ValidateReport(r); len(failures) != 0 {
 		t.Fatalf("failures=%v", failures)
 	}
+}
+
+func TestValidateReportUsesTheContractPublishedByTheClaimedVersion(t *testing.T) {
+	r := validContractReport()
+	r.ToolVersion = "0.14.0"
+	r.Findings = findingsForVersion(r.Findings, 0, 14)
+	r.Recount()
+	if failures := ValidateReport(r); len(failures) != 0 {
+		t.Fatalf("authentic v0.14 contract rejected: %v", failures)
+	}
+	r.Findings = append(r.Findings, model.Finding{
+		ID: "NET-004", Category: "network", Status: model.Info,
+		ReasonCode: "net.004.observed",
+	})
+	r.Recount()
+	if failures := strings.Join(ValidateReport(r), "\n"); !strings.Contains(failures, `unexpected check ID "NET-004"`) {
+		t.Fatalf("post-v0.14 ID accepted in a v0.14 report: %s", failures)
+	}
+}
+
+func TestValidateReportKeepsPublishedV100ReleaseCandidateReadable(t *testing.T) {
+	r := validContractReport()
+	r.ToolVersion = "v1.0.0-rc.1"
+	r.Findings = findingsForVersion(r.Findings, 0, 14)
+	r.Recount()
+	if failures := ValidateReport(r); len(failures) != 0 {
+		t.Fatalf("authentic v1.0.0-rc.1 contract rejected: %v", failures)
+	}
+	if !versionNewerThan("v1.0.0", "v1.0.0-rc.1") {
+		t.Fatal("final v1.0.0 was not ordered after its release candidate")
+	}
+}
+
+func findingsForVersion(findings []model.Finding, major, minor int) []model.Finding {
+	wanted := make(map[string]bool)
+	for _, id := range contract.StableIDsForVersion(major, minor) {
+		wanted[id] = true
+	}
+	filtered := make([]model.Finding, 0, len(wanted))
+	for _, finding := range findings {
+		if wanted[finding.ID] {
+			filtered = append(filtered, finding)
+		}
+	}
+	return filtered
 }
 
 func TestValidateReportKeepsPre012PartialContractsReadable(t *testing.T) {
@@ -192,16 +248,16 @@ func TestValidateReportRequiresCurrentDevelopmentContract(t *testing.T) {
 
 func TestValidateReportAllowsAppendOnlyIDsFromNewerTools(t *testing.T) {
 	r := validContractReport()
-	r.ToolVersion = "0.15.0"
+	r.ToolVersion = "2.0.0"
 	r.Findings = append(r.Findings, model.Finding{
 		ID: "FUTURE-001", Category: "future", Status: model.Info,
 		ReasonCode: "future.001.observed",
 	})
 	r.Recount()
-	if failures := ValidateReport(r, "0.14.0"); len(failures) != 0 {
+	if failures := ValidateReport(r, "1.0.0"); len(failures) != 0 {
 		t.Fatalf("future append-only report rejected: %v", failures)
 	}
-	if failures := strings.Join(ValidateReport(r, "0.15.0"), "\n"); !strings.Contains(failures, "unexpected check ID") {
+	if failures := strings.Join(ValidateReport(r, "2.0.0"), "\n"); !strings.Contains(failures, "unexpected check ID") {
 		t.Fatalf("same-version unexpected ID was not rejected: %s", failures)
 	}
 }

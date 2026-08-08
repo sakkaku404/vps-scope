@@ -2,8 +2,6 @@ package app
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"net"
 	"os"
@@ -51,6 +49,19 @@ func TestProbePlanRunImportRoundTrip(t *testing.T) {
 	if err := Run([]string{"probe", "plan", "--target", "127.0.0.1", "--allow-private-target", "--output", planPath, "--management", strconv.Itoa(port) + "/tcp", reportPath}, nil, &output, &output, BuildInfo{Version: "test"}); err != nil {
 		t.Fatal(err)
 	}
+	// Whitespace is not part of the logical plan identity. A harmless
+	// reformat must not make the tool reject its own observation at import.
+	planData, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, planData); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(planPath, compact.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := Run([]string{"probe", "run", "--allow-private-target", "--output", observationPath, planPath}, nil, &output, &output, BuildInfo{Version: "test"}); err != nil {
 		t.Fatal(err)
 	}
@@ -91,13 +102,11 @@ func TestProbeRejectsMismatchedHost(t *testing.T) {
 
 func TestProbeRejectsResultPolicyMutation(t *testing.T) {
 	plan := probePlan{SchemaVersion: probeSchemaVersion, ReportStableID: "fixture", Target: "127.0.0.1", CreatedAt: time.Now().UTC(), Nonce: strings.Repeat("0", 32), Endpoints: []model.Endpoint{{Protocol: "tcp", Port: 22, Family: "ipv4", Scope: "public", Role: "ssh", ExpectedExposure: "public"}}}
-	encoded, err := json.MarshalIndent(plan, "", "  ")
+	digest, err := canonicalProbePlanSHA256(plan)
 	if err != nil {
 		t.Fatal(err)
 	}
-	encoded = append(encoded, '\n')
-	digest := sha256.Sum256(encoded)
-	observation := probeObservation{SchemaVersion: probeSchemaVersion, PlanSHA256: hex.EncodeToString(digest[:]), Plan: plan, ObservedAt: time.Now().UTC(), Results: []probeResult{{Protocol: "tcp", Port: 22, Family: "ipv4", Role: "management", ExpectedExposure: "blocked", State: "reachable"}}}
+	observation := probeObservation{SchemaVersion: probeSchemaVersion, PlanSHA256: digest, Plan: plan, ObservedAt: time.Now().UTC(), Results: []probeResult{{Protocol: "tcp", Port: 22, Family: "ipv4", Role: "management", ExpectedExposure: "blocked", State: "reachable"}}}
 	if err := validateProbeObservation(observation, model.Report{Host: model.Host{StableID: "fixture"}}); err == nil {
 		t.Fatal("mutated role and exposure were accepted")
 	}
@@ -119,6 +128,15 @@ func TestUnclassifiedUDPDoesNotOverrideExplicitTCPMatch(t *testing.T) {
 	applyProbeObservation(&report, observation)
 	if report.Findings[0].Status != model.Pass {
 		t.Fatalf("status=%s, want PASS", report.Findings[0].Status)
+	}
+}
+
+func TestProbeObservationAddsMissingLegacyFinding(t *testing.T) {
+	report := model.Report{}
+	observation := probeObservation{ObservedAt: time.Now(), PlanSHA256: "fixture", Results: []probeResult{{Protocol: "tcp", Port: 443, Family: "ipv4", Role: "proxy-ingress", ExpectedExposure: "public", State: "reachable"}}}
+	applyProbeObservation(&report, observation)
+	if len(report.Findings) != 1 || report.Findings[0].ID != "NET-004" || report.Findings[0].Status != model.Pass {
+		t.Fatalf("legacy enrichment=%#v", report.Findings)
 	}
 }
 
@@ -192,5 +210,13 @@ func TestPolicyCommandRoundTrip(t *testing.T) {
 	}
 	if err := Run([]string{"policy", "init", path}, nil, &output, &output, BuildInfo{Version: "test"}); err == nil {
 		t.Fatal("policy init overwrote an existing file")
+	}
+}
+
+func TestStrictProbeDocumentsRejectDuplicateMembers(t *testing.T) {
+	var destination map[string]any
+	err := decodeStrictJSON([]byte(`{"schema_version":"one","schema_version":"two"}`), &destination)
+	if err == nil || !strings.Contains(err.Error(), "duplicate JSON object member") {
+		t.Fatalf("err=%v", err)
 	}
 }

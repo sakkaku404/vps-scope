@@ -29,12 +29,24 @@ jobs:
             exit 1
           fi
 
-      - name: Test
+      - name: Run release regression suite
         run: |
-          go vet ./...
+          bash scripts/regression.sh
           go test -race -count=1 ./...
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          actionlint .github/workflows/*.yml
+          go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
+          staticcheck ./...
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.22.4
+          gosec -quiet ./...
           go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
           govulncheck ./...
+
+      - name: Fuzz release parser trust boundaries
+        run: |
+          go test ./internal/audit -run=^$ -fuzz=FuzzProxyConfigParsersDoNotPanic -fuzztime=5s
+          go test ./internal/audit -run=^$ -fuzz=FuzzEvidenceTextParsersDoNotPanic -fuzztime=5s
+          go test ./internal/report -run=^$ -fuzz=FuzzSafeBundleFileName -fuzztime=5s
 
   release:
     needs: test
@@ -68,9 +80,10 @@ jobs:
               -o "dist/vps-scope_linux_${arch}" ./cmd/vps-scope
           done
           cp LICENSE dist/LICENSE
+          cp run.sh install.sh dist/
           bash scripts/generate-third-party-notices.sh dist/THIRD_PARTY_NOTICES.txt
           cd dist
-          sha256sum vps-scope_linux_amd64 vps-scope_linux_arm64 LICENSE THIRD_PARTY_NOTICES.txt > SHA256SUMS
+          sha256sum vps-scope_linux_amd64 vps-scope_linux_arm64 run.sh install.sh LICENSE THIRD_PARTY_NOTICES.txt > SHA256SUMS
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
@@ -78,7 +91,7 @@ jobs:
       - name: Keylessly sign release assets
         shell: bash
         run: |
-          for asset in dist/vps-scope_linux_amd64 dist/vps-scope_linux_arm64 dist/SHA256SUMS dist/LICENSE dist/THIRD_PARTY_NOTICES.txt; do
+          for asset in dist/vps-scope_linux_amd64 dist/vps-scope_linux_arm64 dist/run.sh dist/install.sh dist/SHA256SUMS dist/LICENSE dist/THIRD_PARTY_NOTICES.txt; do
             cosign sign-blob --yes --bundle "${asset}.sigstore.json" "$asset"
           done
 
@@ -98,7 +111,7 @@ jobs:
           cd dist
           sha256sum -c SHA256SUMS
           identity="https://github.com/sakkaku404/vps-scope/.github/workflows/release.yml@refs/tags/${GITHUB_REF_NAME}"
-          for asset in vps-scope_linux_amd64 vps-scope_linux_arm64 SHA256SUMS LICENSE THIRD_PARTY_NOTICES.txt; do
+          for asset in vps-scope_linux_amd64 vps-scope_linux_arm64 run.sh install.sh SHA256SUMS LICENSE THIRD_PARTY_NOTICES.txt; do
             cosign verify-blob --bundle "${asset}.sigstore.json" \
               --certificate-identity "$identity" \
               --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
@@ -108,6 +121,8 @@ jobs:
             LICENSE LICENSE.sigstore.json \
             SHA256SUMS SHA256SUMS.sigstore.json \
             THIRD_PARTY_NOTICES.txt THIRD_PARTY_NOTICES.txt.sigstore.json \
+            install.sh install.sh.sigstore.json \
+            run.sh run.sh.sigstore.json \
             vps-scope_linux_amd64 vps-scope_linux_amd64.sigstore.json \
             vps-scope_linux_arm64 vps-scope_linux_arm64.sigstore.json | sort)"
           actual="$(find . -maxdepth 1 -type f -printf '%f\n' | sort)"
@@ -125,22 +140,97 @@ jobs:
           sudo dist/vps-scope_linux_amd64 audit --lang en --profile general \
             --format bundle --output /tmp/vps-scope-release-candidate --quiet
           dist/vps-scope_linux_amd64 verify /tmp/vps-scope-release-candidate
+          jq -e '
+            (.findings | length) == 55 and
+            .metadata.collector_contract_repairs == "0" and
+            .metadata.collector_command_budget_rejections == "0" and
+            .metadata.collector_file_budget_rejections == "0" and
+            .metadata.collector_topology_budget_rejections == "0" and
+            .metadata.collection_timed_out == "false" and
+            .metadata.native_self_test == "disabled-by-default"
+          ' /tmp/vps-scope-release-candidate/report.json
 
-      - name: Create GitHub Release
+      - name: Create draft GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh release create "$GITHUB_REF_NAME"
-          dist/vps-scope_linux_amd64
-          dist/vps-scope_linux_arm64
-          dist/SHA256SUMS
-          dist/LICENSE
-          dist/THIRD_PARTY_NOTICES.txt
-          dist/vps-scope_linux_amd64.sigstore.json
-          dist/vps-scope_linux_arm64.sigstore.json
-          dist/SHA256SUMS.sigstore.json
-          dist/LICENSE.sigstore.json
-          dist/THIRD_PARTY_NOTICES.txt.sigstore.json
-          --verify-tag
-          --title "VPS Scope $GITHUB_REF_NAME"
-          --generate-notes
+        shell: bash
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/vps-scope_linux_amd64 \
+            dist/vps-scope_linux_arm64 \
+            dist/SHA256SUMS \
+            dist/LICENSE \
+            dist/THIRD_PARTY_NOTICES.txt \
+            dist/run.sh \
+            dist/install.sh \
+            dist/vps-scope_linux_amd64.sigstore.json \
+            dist/vps-scope_linux_arm64.sigstore.json \
+            dist/SHA256SUMS.sigstore.json \
+            dist/LICENSE.sigstore.json \
+            dist/THIRD_PARTY_NOTICES.txt.sigstore.json \
+            dist/run.sh.sigstore.json \
+            dist/install.sh.sigstore.json \
+            --verify-tag \
+            --draft \
+            --title "VPS Scope $GITHUB_REF_NAME" \
+            --generate-notes
+          draft_id="$(gh release view "$GITHUB_REF_NAME" --json databaseId,isDraft \
+            --jq 'select(.isDraft == true) | .databaseId')"
+          [[ -n "$draft_id" ]] || {
+            echo "newly created release is not a draft" >&2
+            exit 1
+          }
+          printf '%s\n' "$draft_id" > "$RUNNER_TEMP/vps-scope-draft-release-id"
+
+      - name: Verify uploaded draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          uploaded="$(mktemp -d)"
+          trap 'rm -rf "$uploaded"' EXIT
+          gh release download "$GITHUB_REF_NAME" --dir "$uploaded"
+          cd "$uploaded"
+          expected="$(printf '%s\n' \
+            LICENSE LICENSE.sigstore.json \
+            SHA256SUMS SHA256SUMS.sigstore.json \
+            THIRD_PARTY_NOTICES.txt THIRD_PARTY_NOTICES.txt.sigstore.json \
+            install.sh install.sh.sigstore.json \
+            run.sh run.sh.sigstore.json \
+            vps-scope_linux_amd64 vps-scope_linux_amd64.sigstore.json \
+            vps-scope_linux_arm64 vps-scope_linux_arm64.sigstore.json | sort)"
+          actual="$(find . -maxdepth 1 -type f -printf '%f\n' | sort)"
+          [[ "$actual" == "$expected" ]] || {
+            echo "uploaded draft release file set is incomplete or unexpected" >&2
+            diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$actual") || true
+            exit 1
+          }
+          sha256sum -c SHA256SUMS
+          identity="https://github.com/sakkaku404/vps-scope/.github/workflows/release.yml@refs/tags/${GITHUB_REF_NAME}"
+          for asset in vps-scope_linux_amd64 vps-scope_linux_arm64 run.sh install.sh SHA256SUMS LICENSE THIRD_PARTY_NOTICES.txt; do
+            cosign verify-blob --bundle "${asset}.sigstore.json" \
+              --certificate-identity "$identity" \
+              --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+              "$asset"
+          done
+
+      - name: Publish verified GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false
+
+      - name: Remove this run's failed draft Release
+        if: ${{ failure() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          marker="$RUNNER_TEMP/vps-scope-draft-release-id"
+          [[ -s "$marker" ]] || exit 0
+          expected_id="$(cat "$marker")"
+          state="$(gh release view "$GITHUB_REF_NAME" --json databaseId,isDraft \
+            --jq '[.databaseId, .isDraft] | @tsv' 2>/dev/null || true)"
+          IFS=$'\t' read -r current_id is_draft <<<"$state"
+          if [[ "$current_id" == "$expected_id" && "$is_draft" == "true" ]]; then
+            gh release delete "$GITHUB_REF_NAME" --yes
+          fi

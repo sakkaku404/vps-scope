@@ -17,20 +17,20 @@ func checkResourceOverview(ctx *Context) model.Finding {
 	f.Facts["cpu_logical_cores"] = strconv.Itoa(runtime.NumCPU())
 	f.Evidence = append(f.Evidence, model.Evidence{Source: "runtime", Key: "logical_cpu_cores", Value: strconv.Itoa(runtime.NumCPU())})
 
-	if data, err := readSmall("/proc/cpuinfo", 4<<20); err == nil {
+	if data, err := ctx.Facts.ReadSmall("/proc/cpuinfo", 4<<20); err == nil {
 		if modelName := parseCPUModel(data); modelName != "" {
 			f.Facts["cpu_model"] = modelName
 			f.Evidence = append(f.Evidence, model.Evidence{Source: "/proc/cpuinfo", Key: "model", Value: modelName})
 		}
 	}
-	if usedPercent, ok := sampleCPUUsage(200 * time.Millisecond); ok {
+	if usedPercent, ok := sampleCPUUsage(ctx, 200*time.Millisecond); ok {
 		f.Facts["cpu_used_percent"] = strconv.Itoa(usedPercent)
 		f.Evidence = append(f.Evidence, model.Evidence{Source: "/proc/stat", Key: "cpu_used_sample", Value: fmt.Sprintf("%d%% over 200ms", usedPercent)})
 	}
-	if data, err := readSmall("/proc/meminfo", 1<<20); err == nil {
+	if data, err := ctx.Facts.ReadSmall("/proc/meminfo", 1<<20); err == nil {
 		addMemoryOverview(&f, parseMemInfo(data))
 	}
-	if data, err := readSmall("/proc/uptime", 4<<10); err == nil {
+	if data, err := ctx.Facts.ReadSmall("/proc/uptime", 4<<10); err == nil {
 		fields := strings.Fields(data)
 		if len(fields) > 0 {
 			if seconds, err := strconv.ParseFloat(fields[0], 64); err == nil {
@@ -39,7 +39,7 @@ func checkResourceOverview(ctx *Context) model.Finding {
 			}
 		}
 	}
-	if data, err := readSmall("/proc/loadavg", 4<<10); err == nil {
+	if data, err := ctx.Facts.ReadSmall("/proc/loadavg", 4<<10); err == nil {
 		fields := strings.Fields(data)
 		if len(fields) >= 3 {
 			value := strings.Join(fields[:3], " ")
@@ -116,8 +116,8 @@ func parseCPUStat(input string) (cpuTicks, bool) {
 	return cpuTicks{}, false
 }
 
-func sampleCPUUsage(interval time.Duration) (int, bool) {
-	firstData, err := readSmall("/proc/stat", 8<<20)
+func sampleCPUUsage(ctx *Context, interval time.Duration) (int, bool) {
+	firstData, err := ctx.Facts.ReadSmall("/proc/stat", 8<<20)
 	if err != nil {
 		return 0, false
 	}
@@ -125,8 +125,14 @@ func sampleCPUUsage(interval time.Duration) (int, bool) {
 	if !ok {
 		return 0, false
 	}
-	time.Sleep(interval)
-	secondData, err := readSmall("/proc/stat", 8<<20)
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+	select {
+	case <-ctx.auditContext().Done():
+		return 0, false
+	case <-timer.C:
+	}
+	secondData, err := ctx.Facts.ReadFreshSmall("/proc/stat", 8<<20)
 	if err != nil {
 		return 0, false
 	}
@@ -229,9 +235,11 @@ func checkPasswordPolicy(ctx *Context, entries []passwdEntry) model.Finding {
 	if err != nil {
 		return unknown("ACC-003", "accounts", "sshd -T", err.Error())
 	}
-	passwordEnabled := strings.ToLower(settings["passwordauthentication"]) != "no"
+	passwordAuthEnabled := strings.ToLower(settings["passwordauthentication"]) != "no"
+	keyboardAuthEnabled := strings.ToLower(settings["kbdinteractiveauthentication"]) != "no"
+	passwordEnabled := passwordAuthEnabled || keyboardAuthEnabled
 	f.Facts["ssh_password_path_enabled"] = strconv.FormatBool(passwordEnabled)
-	f.Facts["ssh_keyboard_interactive_enabled"] = strconv.FormatBool(strings.ToLower(settings["kbdinteractiveauthentication"]) != "no")
+	f.Facts["ssh_keyboard_interactive_enabled"] = strconv.FormatBool(keyboardAuthEnabled)
 	f.Evidence = append(f.Evidence,
 		model.Evidence{Source: "sshd -T", Key: "passwordauthentication", Value: settings["passwordauthentication"]},
 		model.Evidence{Source: "sshd -T", Key: "kbdinteractiveauthentication", Value: settings["kbdinteractiveauthentication"]},
@@ -245,10 +253,14 @@ func checkPasswordPolicy(ctx *Context, entries []passwdEntry) model.Finding {
 	}
 	passwordUsers := []string{}
 	shadowReadable := false
-	if data, err := readSmall("/etc/shadow", 4<<20); err == nil {
+	var shadowErr error
+	if data, err := ctx.Facts.ReadSmall("/etc/shadow", 4<<20); err == nil {
 		var parseErr error
 		passwordUsers, parseErr = parseShadowPasswordUsers(data, loginUsers)
 		shadowReadable = parseErr == nil
+		shadowErr = parseErr
+	} else {
+		shadowErr = err
 	}
 	f.Facts["shadow_readable"] = strconv.FormatBool(shadowReadable)
 	f.Facts["login_accounts_with_password_hash"] = strconv.Itoa(len(passwordUsers))
@@ -256,21 +268,29 @@ func checkPasswordPolicy(ctx *Context, entries []passwdEntry) model.Finding {
 		f.Evidence = append(f.Evidence, model.Evidence{Source: "/etc/shadow", Key: "password_bearing_login_account", Value: name})
 	}
 
-	policyConfigured := false
-	if data, err := readSmall("/etc/pam.d/common-password", 2<<20); err == nil {
+	policyConfigured, policyReadable := false, false
+	var policyErr error
+	if data, err := ctx.Facts.ReadSmall("/etc/pam.d/common-password", 2<<20); err == nil {
+		policyReadable = true
 		policyConfigured = hasPasswordQualityPolicy(data)
+	} else {
+		policyErr = err
 	}
+	f.Facts["pam_password_policy_readable"] = strconv.FormatBool(policyReadable)
 	f.Facts["pam_password_quality_enforced"] = strconv.FormatBool(policyConfigured)
 	f.Evidence = append(f.Evidence, model.Evidence{Source: "/etc/pam.d/common-password", Key: "quality_module_active", Value: strconv.FormatBool(policyConfigured)})
 	if !passwordEnabled {
 		return f
 	}
 	if !shadowReadable {
-		return unknown("ACC-003", "accounts", "/etc/shadow", "SSH password authentication is enabled but password-bearing login accounts could not be determined")
+		return withIncompleteEvidence(f, "/etc/shadow", fmt.Errorf("SSH password authentication is enabled but password-bearing login accounts could not be determined: %w", shadowErr))
 	}
 	if len(passwordUsers) == 0 {
 		f.Status = model.Pass
 		return f
+	}
+	if !policyReadable {
+		return withIncompleteEvidence(f, "/etc/pam.d/common-password", fmt.Errorf("password-bearing SSH login accounts exist but the PAM password policy could not be read: %w", policyErr))
 	}
 	if policyConfigured {
 		f.Status = model.Pass

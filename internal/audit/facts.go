@@ -1,8 +1,11 @@
 package audit
 
 import (
+	"context"
 	"fmt"
+	"io/fs"
 	"maps"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +29,8 @@ type FactStore struct {
 	cmd            Commander
 	nativeSelfTest bool
 	auditTime      time.Time
+	ctx            context.Context
+	files          *fileEvidenceSnapshot
 
 	listenersOnce sync.Once
 	listeners     []Listener
@@ -65,6 +70,47 @@ type FactStore struct {
 	proxyUnitsOnce sync.Once
 	proxyUnits     []string
 	proxyUnitsErr  error
+
+	wireGuardOnce       sync.Once
+	wireGuardInterfaces []wireGuardInterface
+	wireGuardInstalled  bool
+	wireGuardErr        error
+}
+
+type wireGuardInterface struct {
+	Name string
+	Port string
+}
+
+// WireGuardInterfaces returns one interface/listen-port inventory shared by
+// generic listener policy and the WireGuard workload check. Using one snapshot
+// prevents an interface reload between `wg show all listen-port` and per-
+// interface queries from producing contradictory conclusions.
+func (f *FactStore) WireGuardInterfaces() ([]wireGuardInterface, bool, error) {
+	f.wireGuardOnce.Do(func() {
+		if !f.cmd.Exists("wg") {
+			return
+		}
+		f.wireGuardInstalled = true
+		r := f.cmd.Run(8*time.Second, "wg", "show", "all", "listen-port")
+		if r.Err != nil || r.Truncated {
+			f.wireGuardErr = fmt.Errorf("wg listen-port inventory: %s", commandError(r))
+			return
+		}
+		seen := map[string]bool{}
+		for _, line := range lines(r.Stdout) {
+			fields := strings.Fields(line)
+			if len(fields) != 2 || !validNetworkInterfaceName(fields[0]) || fields[1] != "0" && !validPort(fields[1]) || seen[fields[0]] {
+				f.wireGuardInterfaces = nil
+				f.wireGuardErr = fmt.Errorf("wg listen-port inventory returned malformed or duplicate interface metadata")
+				return
+			}
+			seen[fields[0]] = true
+			f.wireGuardInterfaces = append(f.wireGuardInterfaces, wireGuardInterface{Name: fields[0], Port: fields[1]})
+		}
+		sort.Slice(f.wireGuardInterfaces, func(i, j int) bool { return f.wireGuardInterfaces[i].Name < f.wireGuardInterfaces[j].Name })
+	})
+	return append([]wireGuardInterface(nil), f.wireGuardInterfaces...), f.wireGuardInstalled, f.wireGuardErr
 }
 
 // Panels returns native panel facts plus container-backed panel facts. Docker
@@ -73,7 +119,7 @@ type FactStore struct {
 // error is returned so a Docker-only panel is never mistaken for no panel.
 func (f *FactStore) Panels() ([]panelSnapshot, error) {
 	f.panelsOnce.Do(func() {
-		f.panels = collectPanelSnapshots(f.cmd, f.nativeSelfTest, f.auditTime)
+		f.panels = collectPanelSnapshotsFromInventoryContext(f.ctx, f.cmd, f.nativeSelfTest, f.auditTime, snapshotPanelInventory{files: f.files}, panelAdapters(), f.files)
 		if !f.cmd.Exists("docker") {
 			return
 		}
@@ -82,7 +128,7 @@ func (f *FactStore) Panels() ([]panelSnapshot, error) {
 			f.panelsErr = fmt.Errorf("docker-backed panel discovery: %w", err)
 			return
 		}
-		f.panels = append(f.panels, collectContainerPanelSnapshots(containers)...)
+		f.panels = append(f.panels, collectContainerPanelSnapshotsFromFiles(containers, f.files)...)
 	})
 	return append([]panelSnapshot(nil), f.panels...), f.panelsErr
 }
@@ -93,7 +139,7 @@ func (f *FactStore) Panels() ([]panelSnapshot, error) {
 // reload.
 func (f *FactStore) ReverseProxyRoutes() ([]reverseProxyRoute, error) {
 	f.reverseProxyOnce.Do(func() {
-		f.reverseProxy, f.reverseProxyErr = discoverReverseProxyRoutes(f.cmd, f.nativeSelfTest)
+		f.reverseProxy, f.reverseProxyErr = discoverReverseProxyRoutesFromFiles(f.cmd, f.nativeSelfTest, f.files)
 	})
 	return append([]reverseProxyRoute(nil), f.reverseProxy...), f.reverseProxyErr
 }
@@ -124,8 +170,56 @@ func NewFactStore(cmd Commander, nativeSelfTest bool) *FactStore {
 }
 
 func NewFactStoreAt(cmd Commander, nativeSelfTest bool, auditTime time.Time) *FactStore {
-	return &FactStore{cmd: cmd, nativeSelfTest: nativeSelfTest, auditTime: auditTime.UTC(), firewallProgram: newFirewallProgram(cmd)}
+	return newFactStoreAt(cmd, nativeSelfTest, auditTime, osFileEvidenceSource{})
 }
+
+func newFactStoreAt(cmd Commander, nativeSelfTest bool, auditTime time.Time, source fileEvidenceSource) *FactStore {
+	return newFactStoreAtContext(context.Background(), cmd, nativeSelfTest, auditTime, source)
+
+}
+
+func newFactStoreAtContext(ctx context.Context, cmd Commander, nativeSelfTest bool, auditTime time.Time, source fileEvidenceSource) *FactStore {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return &FactStore{ctx: ctx, cmd: cmd, nativeSelfTest: nativeSelfTest, auditTime: auditTime.UTC(), files: newFileEvidenceSnapshot(source), firewallProgram: newFirewallProgram(cmd)}
+}
+
+func (f *FactStore) ReadSmall(path string, limit int64) (string, error) {
+	return f.files.ReadSmall(path, limit)
+}
+
+// ReadFreshSmall is reserved for an explicitly time-varying sample. It uses
+// the same injected, bounded source as the sealed snapshot but deliberately
+// bypasses the cache, so a second /proc/stat observation can measure a delta
+// without silently reaching around test or collection boundaries.
+func (f *FactStore) ReadFreshSmall(path string, limit int64) (string, error) {
+	if limit < 0 {
+		return "", fmt.Errorf("invalid fresh file read limit")
+	}
+	if limit > maxSnapshotFileReadBytes {
+		limit = maxSnapshotFileReadBytes
+	}
+	return snapshotReadSmall(f.files.source, path, limit)
+}
+
+func (f *FactStore) Readlink(path string) (string, error) {
+	return f.files.Readlink(path)
+}
+
+func (f *FactStore) ReadDirectory(path string, limit int) ([]fs.DirEntry, error) {
+	return f.files.ReadDirectory(path, limit)
+}
+
+func (f *FactStore) Stat(path string) (fs.FileInfo, error) {
+	return f.files.Stat(path)
+}
+
+func (f *FactStore) Lstat(path string) (fs.FileInfo, error) {
+	return f.files.Lstat(path)
+}
+
+func (f *FactStore) FileStats() fileSnapshotStats { return f.files.Stats() }
 
 func (f *FactStore) Listeners() ([]Listener, error) {
 	f.listenersOnce.Do(func() {

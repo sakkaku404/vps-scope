@@ -27,12 +27,20 @@ tool can prove a host uncompromised.
 
 ## Installer trust boundary
 
-Release binaries have SHA-256 manifests and Sigstore bundles. When Cosign is
-available, `install.sh` and `run.sh` verify the GitHub Actions OIDC identity. If
-Cosign is absent, non-interactive execution stops unless checksum-only mode was
-explicitly requested; an interactive terminal must type `continue`. A checksum
-downloaded from the same release detects corruption but does not authenticate a
-compromised release account, so signed verification remains the stronger path.
+Release binaries, `install.sh`, and `run.sh` have SHA-256 manifest entries and
+independent Sigstore bundles. The release workflow uploads them to a draft,
+downloads the complete draft asset set again, and republishes only after all
+checksums and GitHub Actions OIDC identities verify. Once started, the scripts
+apply the same verification to the selected binary. If Cosign is absent,
+non-interactive execution stops unless checksum-only mode was explicitly
+requested; an interactive terminal must type `continue`.
+
+The short `curl | bash` form executes its bootstrap script before that script
+can verify anything. It therefore trusts the HTTPS Release download for the
+bootstrap step. The strict documented path pins a tag, verifies the script's
+bundle first, and only then runs it with binary signature verification required.
+A checksum downloaded from the same release detects corruption but does not by
+itself authenticate a compromised release account.
 
 ## Validation performed
 

@@ -44,7 +44,11 @@ func overallVerdictFor(r model.Report, locale string) overallVerdict {
 		choose(locale, "例行维护与复核", "Maintenance and review"), len(actions.Maintenance),
 		choose(locale, "证据不足，需要人工确认", "Evidence gaps requiring manual confirmation"), gaps,
 	)
-	return overallVerdict{fmt.Sprintf(choose(locale, "发现 %d 项需要处理的问题", "%d findings need attention"), confirmed), detail}
+	headline := fmt.Sprintf(choose(locale, "发现 %d 项明确风险", "%d confirmed risks need attention"), confirmed)
+	if gaps > 0 {
+		headline = fmt.Sprintf(choose(locale, "发现 %d 项明确风险，另有 %d 项证据不足", "%d confirmed risks, plus %d evidence gaps"), confirmed, gaps)
+	}
+	return overallVerdict{headline, detail}
 }
 
 func summarizeActions(r model.Report, locale string) actionSummary {
@@ -91,7 +95,7 @@ func actionBandForFinding(f model.Finding) string {
 
 func actionRank(f model.Finding) int {
 	ranks := map[model.Severity]int{model.Critical: 0, model.High: 1, model.Medium: 2, model.Low: 3}
-	return ranks[f.Severity]*10000 + int(f.ID[0])
+	return ranks[f.Severity]*10000 + contract.Order(f.ID)
 }
 
 func verdictForFinding(f model.Finding, locale string) string {

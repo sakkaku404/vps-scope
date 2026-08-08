@@ -72,6 +72,8 @@ jobs:
 
       - name: Static analysis
         run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          actionlint .github/workflows/*.yml
           go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
           staticcheck ./...
           go install github.com/securego/gosec/v2/cmd/gosec@v2.22.4
@@ -100,3 +102,12 @@ jobs:
         run: |
           /tmp/vps-scope-amd64 audit --lang en --profile general --format bundle --output /tmp/vps-scope-smoke --quiet
           /tmp/vps-scope-amd64 verify /tmp/vps-scope-smoke
+          jq -e '
+            (.findings | length) == 55 and
+            .metadata.collector_contract_repairs == "0" and
+            .metadata.collector_command_budget_rejections == "0" and
+            .metadata.collector_file_budget_rejections == "0" and
+            .metadata.collector_topology_budget_rejections == "0" and
+            .metadata.collection_timed_out == "false" and
+            .metadata.native_self_test == "disabled-by-default"
+          ' /tmp/vps-scope-smoke/report.json

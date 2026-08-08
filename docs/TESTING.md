@@ -16,11 +16,27 @@ CI installs the pinned Staticcheck version declared in `.github/workflows/ci.yml
 
 Tests cover address classification, listener parsing, dpkg verification classification, explicit port intent, bilingual catalogs, redaction stability, all renderers, report manifests, tamper detection, command-output limits, fact caching, sudo evidence privacy, and CLI parsing. CI also performs bounded fuzz runs for proxy parser panic safety and report-bundle file-name boundaries; longer local fuzz runs remain part of release-candidate review.
 
-CI also runs the freshly cross-built Linux amd64 binary on the GitHub Ubuntu runner, produces a complete bundle through a real standard audit, and verifies both the manifest and the report semantic contract. This catches collector panics, missing stable IDs, malformed summaries, and development-build reason-code gaps that package-level tests alone cannot prove absent.
+The offline command matrix runs both a current 55-ID typed-topology report and the retained legacy schema-1.0 golden through verification, text/Markdown/HTML/JSON rendering, redaction plus re-verification, support-bundle generation plus verification, fleet display, and self-diff in Chinese, English, Russian, and Persian. A separate non-empty diff fixture requires semantic change messages themselves—not only table headings and finding titles—to be localized in Russian and Persian; Persian HTML must retain RTL document direction. The HTML template contract rejects untranslated literal labels, including accessibility text, and the human-renderer parity test requires actionable findings to retain their IDs, evidence, and localized suggestions in terminal, Markdown, and HTML output.
 
-The release-script gate installs Cosign in a standard system path, then exercises both the temporary runner and installer against the pinned public `v1.0.0` release with signature verification required. This proves the explicit-version certificate identity, checksum path, architecture selection, installation path, and executable handoff rather than checking shell syntax alone. The third-party notice generator runs twice and must produce byte-identical output containing the linked SQLite module.
+The collection contract has deterministic full-run fixtures as well as parser tests. They require one complete 55-ID report from an injected Linux command/file snapshot, prove that identical command, lookup, file, link, and directory requests execute only once under concurrency, and prove that one file path remains one snapshot even when callers request different byte limits. WireGuard listener policy and workload evaluation consume the same interface/port inventory. The suite exercises cached failures and panicking evidence providers. The full-run fixture rejects every evidence-starved `PASS`; only the audit-privilege and extra-UID-0 results proven directly by its injected EUID and passwd snapshot may pass. Missing or duplicate category results must be repaired to `UNKNOWN`, while the ordinary run must record zero contract repairs. A forced internal audit deadline preserves completed evidence and fills every unrun stable ID with unavailable `UNKNOWN`; a separate test proves that operator cancellation still returns no report. Injected `/proc` directory and executable-link evidence drives both deleted-program and temporary-execution decisions without touching the developer host. Finding-budget tests cover per-run command/file/directory memory ceilings, overlong and excessive report evidence, UTF-8-safe truncation, terminal-control removal on generated reports, and fail-closed validation of unsafe imported text. Typed-topology render tests also prove that current reports do not fall back to parsing forged human-readable `key=value` evidence.
 
-`scripts/check-coverage.sh` enforces per-package ratchets rather than one misleading repository-wide percentage. It deliberately requires Linux: standard Windows development environments skip filesystem-symlink cases that are part of the Linux audit contract, so their partial percentage is not comparable to CI. Run it in WSL/Linux or rely on the GitHub CI gate. The current Linux CI floors are app 56%, audit 54%, redact 86%, and report 82%; they may only move upward as more OS collectors gain deterministic fixtures.
+The sealed full-run fixture also injects hostname and effective UID. It checks the resulting stable host identity, requires the `SYS-001` status and EUID evidence to agree, and runs the same evidence twice to require byte-identical canonical JSON. This prevents a test from quietly inheriting its developer workstation's hostname or privilege state.
+
+Deployment tests build a mixed sing-box, Reality, Clash API, S-UI, Nginx, and firewall fixture, then reverse the independent collector result orders. Both inputs must produce an identical validated typed topology with the same stable components, endpoints, and links. This guards the topology model against accidental slice-order identity and against reintroducing report-text parsing.
+
+Cancellation tests cover an already-canceled audit, cancellation during a context-aware evidence command, and the no-partial-report guarantee. Linux command-runner coverage additionally checks descendant process-group termination; Windows development runs verify context propagation and leave the operating-system process-group behavior to Linux CI.
+
+Panel adapter tests require the audit cancellation context to reach the adapter input, while SQLite tests require expired parent contexts to stop metadata queries explicitly. Probe round-trip tests reformat a valid plan before execution, proving that logical plan hashes do not depend on whitespace and that the generated observation remains importable.
+
+`BenchmarkRunFromDeterministicIncompleteSnapshot` is a small architecture benchmark, not a VPS performance claim. It exercises all 55 IDs from sealed evidence and reports time, bytes, and allocations so large collection-layer regressions are visible during review.
+
+CI also runs the freshly cross-built Linux amd64 binary on the GitHub Ubuntu runner, produces a complete bundle through a real standard audit, and verifies both the manifest and the report semantic contract. It additionally requires exactly 55 current findings, zero category-contract repairs, zero command/file/topology budget rejections, and the default no-workload-execution policy. This catches collector panics, missing stable IDs, malformed summaries, development-build reason-code gaps, and silent evidence-budget regressions that package-level tests alone cannot prove absent.
+
+The release-script gate installs Cosign in a standard system path, then exercises both the temporary runner and installer against the pinned public `v1.0.0` release with signature verification required. This proves the explicit-version certificate identity, checksum path, architecture selection, installation path, and executable handoff rather than checking shell syntax alone. The tag workflow separately places the current `run.sh` and `install.sh` in `SHA256SUMS`, signs both scripts, verifies all seven signed assets, and rejects anything other than the exact fourteen-file staged set. It uploads those files to a draft Release, downloads the draft assets again, repeats the exact-set, checksum, and seven-signature verification, and publishes only after that round trip succeeds. A failed round trip removes only the still-draft Release ID created by that workflow run, leaving tags, pre-existing drafts, and published releases untouched. The third-party notice generator runs twice and must produce byte-identical output containing the linked SQLite module.
+
+`scripts/check-coverage.sh` enforces per-package ratchets rather than one misleading repository-wide percentage. It deliberately requires Linux: standard Windows development environments skip filesystem-symlink cases that are part of the Linux audit contract, so their partial percentage is not comparable to CI. Run it in WSL/Linux or rely on the GitHub CI gate. The current Linux CI floors are app 66%, audit 68%, redact 92%, and report 85%; they may only move upward as more OS collectors gain deterministic fixtures.
+
+`internal/app/report_contract_test.go` also compares JSON Schema count and string budgets with the executable's canonical contract constants. Changing a runtime limit without updating the published schema, or changing the schema without updating runtime validation, fails the test suite.
 
 Proxy-specific fixtures also verify that configuration summaries never retain UUIDs, passwords, API secrets, inbound tags, SSH key comments, APT URL credentials, or complete process arguments.
 
@@ -61,14 +77,15 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o dist/vps-scope-linux
 
 Real-host tests must use disposable release candidates and explicitly chosen report paths. Read the resulting JSON and human report; a successful exit code alone is not acceptance.
 
-The active fixed live laboratory currently consists of three disposable amd64,
-1 vCPU / 1 GB VPS instances: Debian 13 with S-UI 1.5.3, Debian 12 with 3x-ui
-3.4.2 and its embedded Xray, and Ubuntu 24.04 with Docker and Nginx. The current
-matrix deliberately includes public and loopback listeners, UFW, a public
-Docker publication whose forwarding path differs from host INPUT, a loopback
-container backend, and an Nginx frontend/backend route. Broader protocol,
-panel, TLS, VPN, and failure cases remain deterministic fixtures or retained
-historical evidence; deleted hosts are never described as active.
+The current fixed live laboratory consists of five disposable amd64 VPS roles:
+Debian 13 with S-UI 1.5.3, Debian 12 with 3x-ui 3.4.2 and its embedded Xray,
+Ubuntu 24.04 with Docker and Nginx, a near-stock Debian 13 role, and a
+constrained Debian 13 role with 512 MiB of memory. It includes public and
+loopback listeners, UFW, a public Docker publication whose forwarding path
+differs from host INPUT, a loopback container backend, and an Nginx
+frontend/backend route. Addresses and credentials are not retained in the
+repository. A release candidate must record a newly assigned disposable
+inventory before documentation calls any laboratory active.
 
 Regression review should verify:
 
@@ -139,6 +156,16 @@ were removed, the public Docker fixture was deleted, panel databases were set
 to mode 0600, and effective SSH password authentication was disabled. A final
 audit confirmed those findings changed from risk to pass while the services
 remained active.
+
+The subsequent five-role regression ran the current candidate twice on every
+host. Each run produced all 55 findings, and comparisons found no change in
+status, severity, reason code, components, or endpoint relationships. All
+reports passed manifest and semantic verification with zero contract repairs
+or command/file/topology budget rejections. The 32-container Docker inventory,
+DOCKER-USER/forwarding semantics, custom INPUT-chain case, and all 16 cross-host
+TCP/UDP probes passed with verified cleanup. Deep audits completed in about
+25–51 seconds, including the 512 MiB role. These figures are laboratory
+observations, not general performance promises.
 
 Earlier mixed-workload standard runs completed in about 4 to 8 seconds with the
 expanded workload graph. Deep runs on the two busiest lab hosts took about 37 to

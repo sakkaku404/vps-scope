@@ -282,14 +282,11 @@ func unclaimedPanelRuntimeListeners(indexes []int, enabled map[int]bool) []int {
 }
 
 func panelConfiguredAddressesOverlap(left, right string) bool {
-	return configuredAddressMatchesListener(left, right) || configuredAddressMatchesListener(right, left)
+	return configuredAddressesOverlap(left, right)
 }
 
 func panelConfiguredAddressesEquivalent(left, right string) bool {
 	left, right = canonicalIngressListen(left), canonicalIngressListen(right)
-	if left == "wildcard" || right == "wildcard" {
-		return left == right
-	}
 	if strings.EqualFold(left, right) {
 		return true
 	}

@@ -23,7 +23,14 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$script:SshArgs = @("-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes")
+$script:SshArgs = @(
+    "-o", "BatchMode=yes",
+    "-o", "StrictHostKeyChecking=yes",
+    "-o", "ConnectTimeout=15",
+    "-o", "ConnectionAttempts=1",
+    "-o", "ServerAliveInterval=15",
+    "-o", "ServerAliveCountMax=3"
+)
 if ($IdentityFile) {
     if (-not (Test-Path -LiteralPath $IdentityFile -PathType Leaf)) {
         throw "SSH identity file does not exist: $IdentityFile"

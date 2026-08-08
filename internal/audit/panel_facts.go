@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -63,12 +64,24 @@ type panelSnapshot struct {
 	SensitiveFiles           []string
 }
 
-func collectPanelSnapshots(cmd Commander, nativeSelfTest bool, auditTime time.Time) []panelSnapshot {
+func collectPanelSnapshotsFromInventory(cmd Commander, nativeSelfTest bool, auditTime time.Time, inventory panelInventory, adapters []panelAdapter, files *fileEvidenceSnapshot) []panelSnapshot {
+	return collectPanelSnapshotsFromInventoryContext(context.Background(), cmd, nativeSelfTest, auditTime, inventory, adapters, files)
+}
+
+func collectPanelSnapshotsFromInventoryContext(ctx context.Context, cmd Commander, nativeSelfTest bool, auditTime time.Time, inventory panelInventory, adapters []panelAdapter, files *fileEvidenceSnapshot) []panelSnapshot {
 	var out []panelSnapshot
-	for _, adapter := range panelAdapters() {
-		if adapter.Detect() {
-			snapshot := adapter.Collect(cmd, nativeSelfTest, auditTime)
-			snapshot.Adapter = adapter.ID()
+	if files == nil {
+		files = newFileEvidenceSnapshot(osFileEvidenceSource{})
+	}
+	input := panelAdapterInput{Context: ctx, Commander: cmd, NativeSelfTest: nativeSelfTest, AuditTime: auditTime, Files: files}
+	for _, adapter := range adapters {
+		if adapter.Detect(inventory) {
+			descriptor := adapter.Descriptor()
+			snapshot := adapter.Collect(input)
+			snapshot.Adapter = descriptor.ID
+			if snapshot.Product == "" {
+				snapshot.Product = descriptor.Product
+			}
 			out = append(out, snapshot)
 		}
 	}
@@ -80,6 +93,14 @@ func collectSUIFacts(cmd Commander, nativeSelfTest bool) panelSnapshot {
 }
 
 func collectSUIFactsAt(cmd Commander, nativeSelfTest bool, _ time.Time) panelSnapshot {
+	return collectSUIFactsAtSource(cmd, nativeSelfTest, time.Time{}, newFileEvidenceSnapshot(osFileEvidenceSource{}))
+}
+
+func collectSUIFactsAtSource(cmd Commander, nativeSelfTest bool, _ time.Time, files *fileEvidenceSnapshot) panelSnapshot {
+	return collectSUIFactsAtSourceContext(context.Background(), cmd, nativeSelfTest, time.Time{}, files)
+}
+
+func collectSUIFactsAtSourceContext(ctx context.Context, cmd Commander, nativeSelfTest bool, _ time.Time, files *fileEvidenceSnapshot) panelSnapshot {
 	s := panelSnapshot{Product: "S-UI", Binary: "/usr/local/s-ui/sui", Database: "/usr/local/s-ui/db/s-ui.db"}
 	if nativeSelfTest {
 		binary, trustErr := trustedExecutable(cmd, s.Binary)
@@ -94,20 +115,20 @@ func collectSUIFactsAt(cmd Commander, nativeSelfTest bool, _ time.Time) panelSna
 			} else {
 				if port, ok := parseNamedPort(settings.Stdout, "Panel port"); ok {
 					path, pathKnown := parseNamedTextKnown(settings.Stdout, "Panel path")
-					s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "management", Listen: "::", Port: port, Source: "sui setting -show", PathKnown: pathKnown, PathIsDefault: panelPathIsDefault(path)})
+					s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "management", Listen: "*", Port: port, Source: "sui setting -show", PathKnown: pathKnown, PathIsDefault: panelPathIsDefault(path)})
 				}
 				if port, ok := parseNamedPort(settings.Stdout, "Sub port"); ok {
 					path, pathKnown := parseNamedTextKnown(settings.Stdout, "Sub path")
-					s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "subscription", Listen: "::", Port: port, Source: "sui setting -show", PathKnown: pathKnown, PathIsDefault: subscriptionPathIsDefault(path)})
+					s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "subscription", Listen: "*", Port: port, Source: "sui setting -show", PathKnown: pathKnown, PathIsDefault: subscriptionPathIsDefault(path)})
 				}
 			}
 		}
 	}
-	if !regularFile(s.Database) {
+	if info, err := files.Stat(s.Database); err != nil || !info.Mode().IsRegular() {
 		s.DatabaseError = "S-UI database missing"
 		return s
 	}
-	session, err := openSQLiteSession(s.Database)
+	session, err := openSQLiteSessionForAudit(ctx, s.Database)
 	if err != nil {
 		s.DatabaseError = err.Error()
 		return s
@@ -168,6 +189,14 @@ func collectXUIFacts(cmd Commander, nativeSelfTest bool) panelSnapshot {
 }
 
 func collectXUIFactsAt(cmd Commander, nativeSelfTest bool, auditTime time.Time) panelSnapshot {
+	return collectXUIFactsAtSource(cmd, nativeSelfTest, auditTime, newFileEvidenceSnapshot(osFileEvidenceSource{}))
+}
+
+func collectXUIFactsAtSource(cmd Commander, nativeSelfTest bool, auditTime time.Time, files *fileEvidenceSnapshot) panelSnapshot {
+	return collectXUIFactsAtSourceContext(context.Background(), cmd, nativeSelfTest, auditTime, files)
+}
+
+func collectXUIFactsAtSourceContext(ctx context.Context, cmd Commander, nativeSelfTest bool, auditTime time.Time, files *fileEvidenceSnapshot) panelSnapshot {
 	s := panelSnapshot{Product: "x-ui", Binary: "/usr/local/x-ui/x-ui", Database: "/etc/x-ui/x-ui.db"}
 	var binary string
 	trustErr := error(nil)
@@ -183,7 +212,7 @@ func collectXUIFactsAt(cmd Commander, nativeSelfTest bool, auditTime time.Time) 
 			}
 		}
 	}
-	if script, err := readSmall("/usr/local/x-ui/x-ui.sh", 1<<20); err == nil && containsAny(script, "MHSanaei/3x-ui", "3X-UI", "3x-ui") {
+	if script, err := files.ReadSmall("/usr/local/x-ui/x-ui.sh", 1<<20); err == nil && containsAny(script, "MHSanaei/3x-ui", "3X-UI", "3x-ui") {
 		s.Product = "3x-ui"
 	}
 	if nativeSelfTest && trustErr == nil {
@@ -196,7 +225,7 @@ func collectXUIFactsAt(cmd Commander, nativeSelfTest bool, auditTime time.Time) 
 		} else {
 			if port, ok := parsePanelPort(s.Product, settings.Stdout); ok {
 				path, pathKnown := parseNamedTextKnown(settings.Stdout, "webBasePath")
-				s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "management", Listen: "::", Port: port, Source: "x-ui setting -show", PathKnown: pathKnown, PathIsDefault: panelPathIsDefault(path)})
+				s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "management", Listen: "*", Port: port, Source: "x-ui setting -show", PathKnown: pathKnown, PathIsDefault: panelPathIsDefault(path)})
 			}
 			if match := regexp.MustCompile(`(?mi)^\s*hasDefaultCredential\s*:\s*(true|false)\s*$`).FindStringSubmatch(settings.Stdout); len(match) == 2 {
 				s.DefaultCredentialKnown = true
@@ -221,11 +250,11 @@ func collectXUIFactsAt(cmd Commander, nativeSelfTest bool, auditTime time.Time) 
 			setPanelEndpointListen(&s, "management", value)
 		}
 	}
-	if !regularFile(s.Database) {
+	if info, err := files.Stat(s.Database); err != nil || !info.Mode().IsRegular() {
 		s.DatabaseError = "x-ui database missing"
 		return s
 	}
-	session, err := openSQLiteSession(s.Database)
+	session, err := openSQLiteSessionForAudit(ctx, s.Database)
 	if err != nil {
 		s.DatabaseError = err.Error()
 		return s
@@ -291,7 +320,7 @@ func apply3XUIDefaults(snapshot *panelSnapshot) {
 	// subscription server is enabled and listening. Seed the documented
 	// defaults, then let persisted settings override or disable them.
 	upsertPanelEndpoint(snapshot, panelEndpoint{
-		Role: "subscription", Listen: "::", Port: "2096",
+		Role: "subscription", Listen: "*", Port: "2096",
 		TLS: false, TLSKnown: true, Source: "3x-ui built-in defaults",
 		PathKnown: true, PathIsDefault: true,
 	})
@@ -325,27 +354,6 @@ func applySUIDefaults(snapshot *panelSnapshot, rows [][]string) {
 	endpoint.PathIsDefault = true
 	endpoint.Source = "S-UI database + built-in default"
 	upsertPanelEndpoint(snapshot, endpoint)
-}
-
-func sqliteTSV(cmd Commander, database, query string) ([][]string, error) {
-	rows, embeddedErr := querySQLite(database, query)
-	if embeddedErr == nil {
-		return rows, nil
-	}
-	// Keep the system command as a compatibility fallback for unusual SQLite
-	// files or platforms, while normal Linux builds remain dependency-free.
-	if !cmd.Exists("sqlite3") {
-		return nil, fmt.Errorf("embedded SQLite reader: %v; sqlite3 fallback unavailable", embeddedErr)
-	}
-	r := cmd.Run(10*time.Second, "sqlite3", "-readonly", "-separator", "\t", database, query)
-	if r.Err != nil {
-		return nil, fmt.Errorf("sqlite metadata query: %s", commandError(r))
-	}
-	var fallbackRows [][]string
-	for _, line := range lines(r.Stdout) {
-		fallbackRows = append(fallbackRows, strings.Split(line, "\t"))
-	}
-	return fallbackRows, nil
 }
 
 func parsePanelInboundRows(rows [][]string) ([]panelInboundFact, error) {

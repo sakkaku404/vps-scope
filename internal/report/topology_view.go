@@ -18,12 +18,12 @@ func collectTopologyOverview(r model.Report, locale string) proxyOverview {
 	}
 	components := topologyComponentNames(r.Deployment.Components)
 	groups := []proxyOverviewGroup{
-		{Title: choose(locale, "管理面板", "Management panels")},
-		{Title: choose(locale, "代理入口", "Proxy ingress")},
-		{Title: choose(locale, "控制接口", "Control APIs")},
-		{Title: choose(locale, "需要关注的暴露与运行问题", "Exposure and runtime issues")},
-		{Title: choose(locale, "部署关系", "Deployment relationships")},
-		{Title: choose(locale, "证据覆盖", "Evidence coverage")},
+		{Title: i18n.Message(locale, i18n.MessageManagementPanels)},
+		{Title: i18n.Message(locale, i18n.MessageProxyIngress)},
+		{Title: i18n.Message(locale, i18n.MessageControlAPIs)},
+		{Title: i18n.Message(locale, i18n.MessageExposureAndRuntimeIssues)},
+		{Title: i18n.Message(locale, i18n.MessageDeploymentRelationships)},
+		{Title: i18n.Message(locale, i18n.MessageEvidenceCoverage)},
 	}
 	for _, endpoint := range r.Deployment.Endpoints {
 		line := topologyEndpointLine(endpoint, locale) + " " + topologyFindingLabel(r, endpoint.Role)
@@ -75,7 +75,7 @@ func topologyComponentNames(components []model.Component) []string {
 func topologyEndpointLine(endpoint model.ServiceEndpoint, locale string) string {
 	product := endpoint.Product
 	if product == "" || product == "unknown-proxy" {
-		product = choose(locale, "未识别进程", "unclassified process")
+		product = i18n.Message(locale, i18n.MessageUnclassifiedProcess)
 	}
 	purpose := product
 	if endpoint.Protocol != "" {

@@ -41,7 +41,7 @@ temp_dir="$(mktemp -d)"
 trap 'rm -rf "$temp_dir"' EXIT
 cd "$temp_dir"
 
-curl_args=(--proto '=https' --tlsv1.2 --fail --location --silent --show-error --retry 3)
+curl_args=(--proto '=https' --proto-redir '=https' --tlsv1.2 --fail --location --silent --show-error --connect-timeout 10 --max-time 120 --retry 3 --retry-all-errors)
 curl "${curl_args[@]}" -o "$asset" "${base_url}/${asset}"
 curl "${curl_args[@]}" -o SHA256SUMS "${base_url}/SHA256SUMS"
 

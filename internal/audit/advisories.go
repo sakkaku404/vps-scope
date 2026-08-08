@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"bytes"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sakkaku404/vps-scope/internal/model"
+	"github.com/sakkaku404/vps-scope/internal/safejson"
 )
 
 //go:embed advisory_db.json
@@ -52,7 +54,10 @@ var versionTokenPattern = regexp.MustCompile(`(?i)\bv?([0-9]+\.[0-9]+(?:\.[0-9]+
 
 func loadEmbeddedAdvisories() (advisoryDatabase, error) {
 	var db advisoryDatabase
-	decoder := json.NewDecoder(strings.NewReader(string(embeddedAdvisoryJSON)))
+	if err := safejson.RejectDuplicateMembers(bytes.NewReader(embeddedAdvisoryJSON)); err != nil {
+		return db, fmt.Errorf("invalid embedded advisory JSON: %w", err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(embeddedAdvisoryJSON))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&db); err != nil {
 		return db, err
@@ -156,7 +161,7 @@ func checkProxyAdvisories(ctx *Context, summaries []proxyConfigSummary) model.Fi
 	}
 	f.Facts["matched_advisories"] = strconv.Itoa(matched)
 	f.Facts["unknown_product_versions"] = strconv.Itoa(unknownVersions)
-	stale := ctx.Now().Sub(db.GeneratedAt) > 120*24*time.Hour
+	stale := ctx.evidenceTime().Sub(db.GeneratedAt) > 120*24*time.Hour
 	f.Facts["database_stale"] = strconv.FormatBool(stale)
 	if matched == 0 && (unknownVersions > 0 || stale) {
 		f.Status, f.Unavailable = model.Unknown, true

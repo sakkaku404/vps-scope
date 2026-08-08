@@ -25,7 +25,7 @@ func validNetworkInterfaceName(value string) bool {
 }
 
 func discoverProxyConfigs(ctx *Context) ([]proxyConfigSummary, error) {
-	paths, discoveryErr := discoverExistingFiles(512,
+	paths, discoveryErr := discoverExistingFilesFromSnapshot(ctx.Facts.files, 512,
 		"/etc/sing-box/config.json", "/etc/sing-box/*.json", "/usr/local/etc/sing-box/config.json", "/usr/local/etc/sing-box/*.json",
 		"/etc/xray/config.json", "/etc/xray/*.json", "/usr/local/etc/xray/config.json", "/usr/local/etc/xray/*.json",
 		"/usr/local/x-ui/bin/config.json", "/usr/local/s-ui/bin/config.json",
@@ -35,7 +35,7 @@ func discoverProxyConfigs(ctx *Context) ([]proxyConfigSummary, error) {
 	)
 	out := make([]proxyConfigSummary, 0, len(paths))
 	for _, path := range paths {
-		data, err := readSmall(path, 16<<20)
+		data, err := ctx.Facts.ReadSmall(path, 16<<20)
 		if err != nil {
 			out = append(out, proxyConfigSummary{Product: proxyProductFromPath(path), Path: path, Err: err})
 			continue
@@ -272,12 +272,12 @@ func proxyProcessIdentity(comm, fullLine string) (string, bool) {
 func proxySelfTest(product, path string) (string, []string) {
 	switch product {
 	case "sing-box":
-		if strings.Contains(path, "/usr/local/s-ui/") && regularFile("/usr/local/s-ui/bin/sing-box") {
+		if strings.Contains(path, "/usr/local/s-ui/") {
 			return "/usr/local/s-ui/bin/sing-box", []string{"check", "-c", path}
 		}
 		return "sing-box", []string{"check", "-c", path}
 	case "Xray":
-		if strings.Contains(path, "/usr/local/x-ui/") && regularFile("/usr/local/x-ui/bin/xray-linux-amd64") {
+		if strings.Contains(path, "/usr/local/x-ui/") {
 			return "/usr/local/x-ui/bin/xray-linux-amd64", []string{"run", "-test", "-config", path}
 		}
 		return "xray", []string{"run", "-test", "-config", path}
@@ -285,10 +285,18 @@ func proxySelfTest(product, path string) (string, []string) {
 	return "", nil
 }
 
+func snapshotRegularFile(facts *FactStore, path string) bool {
+	if facts == nil {
+		return false
+	}
+	info, err := facts.Stat(path)
+	return err == nil && info.Mode().IsRegular()
+}
+
 func normalizeListen(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return "::"
+		return "*"
 	}
 	return strings.Trim(value, "[]")
 }
@@ -300,13 +308,13 @@ func splitEndpoint(value string) (string, string, bool) {
 	}
 	if strings.HasPrefix(value, ":") {
 		port := strings.TrimPrefix(value, ":")
-		return "::", port, validPort(port)
+		return "*", port, validPort(port)
 	}
 	if host, port, err := net.SplitHostPort(value); err == nil {
 		return normalizeListen(host), port, validPort(port)
 	}
 	if !strings.Contains(value, ":") && validPort(value) {
-		return "::", value, true
+		return "*", value, true
 	}
 	host, port := splitHostPortLoose(value)
 	return normalizeListen(host), port, validPort(port)
@@ -348,9 +356,5 @@ func uniqueProxyInbounds(summaries []proxyConfigSummary) []configuredProxyInboun
 }
 
 func canonicalIngressListen(value string) string {
-	value = normalizeListen(value)
-	if value == "0.0.0.0" || value == "::" {
-		return "wildcard"
-	}
-	return value
+	return strings.ToLower(normalizeListen(value))
 }

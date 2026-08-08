@@ -1,6 +1,9 @@
 package contract
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestRegistryIsComplete(t *testing.T) {
 	if err := Validate(); err != nil {
@@ -40,6 +43,25 @@ func TestRegistryRejectsDuplicateIDsAndCategories(t *testing.T) {
 	}
 }
 
+func TestStableIDsForVersionPreservesPublishedContracts(t *testing.T) {
+	legacy := StableIDsForVersion(0, 12)
+	if len(legacy) != 51 {
+		t.Fatalf("v0.12 contract has %d IDs; want 51", len(legacy))
+	}
+	current := StableIDsForVersion(1, 0)
+	if len(current) != 55 {
+		t.Fatalf("v1.0 contract has %d IDs; want 55", len(current))
+	}
+	for _, added := range []string{"NET-004", "WORK-015", "WORK-016", "WORK-017"} {
+		if slices.Contains(legacy, added) {
+			t.Fatalf("v0.12 contract unexpectedly contains %s", added)
+		}
+		if !slices.Contains(current, added) {
+			t.Fatalf("v1.0 contract is missing %s", added)
+		}
+	}
+}
+
 func TestSpecialActionBands(t *testing.T) {
 	for _, id := range []string{"PROC-001", "TLS-001", "WORK-009", "WORK-010", "REL-001"} {
 		if got := SpecialActionBand(id); got != ActionBandAvailability {
@@ -48,5 +70,16 @@ func TestSpecialActionBands(t *testing.T) {
 	}
 	if got := SpecialActionBand("SSH-001"); got != ActionBandDefault {
 		t.Fatalf("SSH-001 action band = %q, want default", got)
+	}
+}
+
+func TestOrderFollowsStableIDsAndPlacesUnknownLast(t *testing.T) {
+	for index, id := range StableIDs() {
+		if got := Order(id); got != index {
+			t.Fatalf("Order(%q)=%d, want %d", id, got, index)
+		}
+	}
+	if got := Order("FUTURE-999"); got != len(StableIDs()) {
+		t.Fatalf("unknown ID order=%d, want %d", got, len(StableIDs()))
 	}
 }

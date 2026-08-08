@@ -89,3 +89,14 @@ func TestOutlineAdapterWhitelistsEnvironmentAndState(t *testing.T) {
 		t.Fatalf("port=%q ok=%t", port, ok)
 	}
 }
+
+func TestSortPanelFactsUsesNumericPortOrder(t *testing.T) {
+	snapshot := panelSnapshot{
+		Endpoints: []panelEndpoint{{Role: "management", Port: "10000"}, {Role: "management", Port: "443"}},
+		Inbounds:  []panelInboundFact{{Port: "10000", Protocol: "vless"}, {Port: "443", Protocol: "trojan"}},
+	}
+	sortPanelFacts(&snapshot)
+	if snapshot.Endpoints[0].Port != "443" || snapshot.Inbounds[0].Port != "443" {
+		t.Fatalf("ports were sorted lexically: endpoints=%+v inbounds=%+v", snapshot.Endpoints, snapshot.Inbounds)
+	}
+}

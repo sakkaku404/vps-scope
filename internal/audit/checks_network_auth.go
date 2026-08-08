@@ -1,12 +1,9 @@
 package audit
 
 import (
-	"errors"
 	"fmt"
-	"os"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -41,19 +38,17 @@ func checkUnexpectedListeners(ctx *Context, listeners []Listener) model.Finding 
 
 func runtimeExpectedPublicListeners(ctx *Context) (map[string]bool, error) {
 	out := map[string]bool{}
-	if !ctx.Commander.Exists("wg") {
+	interfaces, installed, err := ctx.Facts.WireGuardInterfaces()
+	if !installed {
 		return out, nil
 	}
-	r := ctx.Commander.Run(8*time.Second, "wg", "show", "all", "listen-port")
-	if r.Err != nil || r.Truncated {
-		return out, fmt.Errorf("wg listen-port inventory: %s", commandError(r))
+	if err != nil {
+		return out, err
 	}
-	for _, line := range lines(r.Stdout) {
-		fields := strings.Fields(line)
-		if len(fields) < 2 || !validPort(fields[len(fields)-1]) {
-			return nil, fmt.Errorf("wg listen-port inventory returned malformed output")
+	for _, iface := range interfaces {
+		if iface.Port != "0" {
+			out[iface.Port+"/udp"] = true
 		}
-		out[fields[len(fields)-1]+"/udp"] = true
 	}
 	return out, nil
 }
@@ -147,7 +142,12 @@ func parseFirewalldZone(output string) firewalldZone {
 }
 
 func checkAuth(ctx *Context) []model.Finding {
-	return []model.Finding{checkFailedLogins(ctx), checkSudoAudit(ctx), checkIntrusionPrevention(ctx)}
+	snapshot := collectAuthAuditSnapshot(ctx)
+	return []model.Finding{
+		evaluateFailedLogins(snapshot.FailedLogins),
+		evaluateSudoAudit(snapshot.Sudo),
+		evaluateIntrusionPrevention(snapshot.Intrusion),
+	}
 }
 
 // sshFailureJournalPattern makes journald perform the broad text filter before
@@ -259,7 +259,7 @@ func collectSSHFailureJournal(ctx *Context) (failedLoginActivity, int, error) {
 		activity.add(r.Stdout)
 		return activity, 1, nil
 	}
-	windows := sshFailureJournalWindows(ctx.Now(), ctx.LogSince)
+	windows := sshFailureJournalWindows(ctx.evidenceTime(), ctx.LogSince)
 	for index, window := range windows {
 		args := []string{"--since", journalTimestamp(window.since), "--until", journalTimestamp(window.until), "--no-pager", "-o", "cat", "--grep", sshFailureJournalPattern, "-u", "ssh.service", "-u", "sshd.service"}
 		r := ctx.Commander.Run(15*time.Second, "journalctl", args...)
@@ -269,62 +269,6 @@ func collectSSHFailureJournal(ctx *Context) (failedLoginActivity, int, error) {
 		activity.add(r.Stdout)
 	}
 	return activity, len(windows), nil
-}
-
-func checkFailedLogins(ctx *Context) model.Finding {
-	f := model.Finding{ID: "AUTH-001", Category: "auth", Status: model.Info, Facts: map[string]string{}}
-	activity := newFailedLoginActivity()
-	var source string
-	var journalErr error
-	if ctx.Commander.Exists("journalctl") {
-		var slices int
-		activity, slices, journalErr = collectSSHFailureJournal(ctx)
-		if journalErr == nil {
-			suffix := ""
-			if slices != 1 {
-				suffix = "s"
-			}
-			source = fmt.Sprintf("journalctl filtered SSH units (%d slice%s)", slices, suffix)
-		} else {
-			// Do not count a journal prefix as a complete lookback window. A
-			// traditional log file can still provide independent full evidence.
-			activity = newFailedLoginActivity()
-		}
-	}
-	if source == "" {
-		for _, path := range []string{"/var/log/auth.log", "/var/log/secure"} {
-			if data, err := readSmall(path, 100<<20); err == nil {
-				activity.add(data)
-				source = path
-				break
-			}
-		}
-	}
-	if source == "" {
-		if journalErr != nil {
-			return unknown("AUTH-001", "auth", "journalctl SSH units", journalErr.Error())
-		}
-		return unknown("AUTH-001", "auth", "journal/auth log", "no readable SSH authentication log source")
-	}
-	// Categories can overlap on the same attempt, so expose each count rather
-	// than adding them into a misleading single total.
-	f.Facts["failed_password_or_key"] = strconv.Itoa(activity.failedPassword)
-	f.Facts["invalid_user_lines"] = strconv.Itoa(activity.invalidUser)
-	f.Facts["pam_auth_failure_lines"] = strconv.Itoa(activity.pamFailure)
-	f.Facts["max_attempt_lines"] = strconv.Itoa(activity.maxAttempts)
-	f.Facts["unique_sources"] = strconv.Itoa(len(activity.ips))
-	f.Facts["targeted_users"] = strconv.Itoa(len(activity.users))
-	f.Evidence = []model.Evidence{
-		{Source: source, Key: "failed_password_or_key", Value: strconv.Itoa(activity.failedPassword)},
-		{Source: source, Key: "invalid_user_lines", Value: strconv.Itoa(activity.invalidUser)},
-		{Source: source, Key: "pam_auth_failure_lines", Value: strconv.Itoa(activity.pamFailure)},
-		{Source: source, Key: "max_attempt_lines", Value: strconv.Itoa(activity.maxAttempts)},
-		{Source: source, Key: "unique_sources", Value: strconv.Itoa(len(activity.ips))},
-	}
-	for _, entry := range topCounts(activity.ips, 10) {
-		f.Evidence = append(f.Evidence, model.Evidence{Source: source, Key: "source_count", Value: entry})
-	}
-	return f
 }
 
 func topCounts(values map[string]int, limit int) []string {
@@ -352,95 +296,8 @@ func topCounts(values map[string]int, limit int) []string {
 	return out
 }
 
-func checkSudoAudit(ctx *Context) model.Finding {
-	if !ctx.Commander.Exists("journalctl") {
-		return unknown("AUTH-002", "auth", "journalctl", "command not found")
-	}
-	r := ctx.Commander.Run(15*time.Second, "journalctl", "--since", sinceArg(ctx.LogSince), "--no-pager", "-o", "cat", "_COMM=sudo")
-	if r.Err != nil || r.Truncated {
-		return unknown("AUTH-002", "auth", "journalctl _COMM=sudo", commandError(r))
-	}
-	count := len(lines(r.Stdout))
-	status := model.Pass
-	if count == 0 {
-		status = model.Info
-	}
-	return model.Finding{ID: "AUTH-002", Category: "auth", Status: status,
-		Facts:    map[string]string{"sudo_journal_lines": strconv.Itoa(count)},
-		Evidence: []model.Evidence{{Source: "journalctl _COMM=sudo", Key: "lines", Value: strconv.Itoa(count)}}}
-}
-
 func checkIntrusionPrevention(ctx *Context) model.Finding {
-	f := model.Finding{ID: "AUTH-003", Category: "auth", Status: model.Info, Facts: map[string]string{}}
-	fail2banInstalled := ctx.Commander.Exists("fail2ban-client")
-	crowdSecInstalled := ctx.Commander.Exists("cscli")
-	f.Facts["fail2ban_installed"] = strconv.FormatBool(fail2banInstalled)
-	f.Facts["crowdsec_installed"] = strconv.FormatBool(crowdSecInstalled)
-	if !fail2banInstalled && !crowdSecInstalled {
-		f.NotApplicable = true
-		f.Evidence = []model.Evidence{{Source: "command lookup", Value: "neither fail2ban-client nor cscli is installed"}}
-		return f
-	}
-
-	protected := false
-	knownUnprotected := false
-	var discoveryErr error
-	if fail2banInstalled {
-		active := ctx.Commander.Run(8*time.Second, "systemctl", "is-active", "fail2ban")
-		if active.Truncated || (active.Err != nil && active.Code != 3) {
-			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("systemctl is-active fail2ban: %s", commandError(active)))
-			f.Evidence = append(f.Evidence, model.Evidence{Source: "systemctl is-active", Key: "fail2ban_unavailable", Value: commandError(active)})
-		} else if isActive := strings.TrimSpace(active.Stdout) == "active"; isActive {
-			f.Facts["fail2ban_active"] = "true"
-			f.Evidence = append(f.Evidence, model.Evidence{Source: "systemctl is-active", Key: "fail2ban", Value: "active"})
-			status := ctx.Commander.Run(12*time.Second, "fail2ban-client", "status")
-			if status.Err == nil && !status.Truncated {
-				hasSSHD := regexp.MustCompile(`(?i)jail list:.*\bsshd\b`).MatchString(status.Stdout)
-				f.Facts["fail2ban_sshd_jail"] = strconv.FormatBool(hasSSHD)
-				f.Evidence = append(f.Evidence, model.Evidence{Source: "fail2ban-client status", Value: truncate(status.Stdout, 600)})
-				protected = protected || hasSSHD
-				knownUnprotected = knownUnprotected || !hasSSHD
-			} else {
-				discoveryErr = errors.Join(discoveryErr, fmt.Errorf("fail2ban-client status: %s", commandError(status)))
-				f.Evidence = append(f.Evidence, model.Evidence{Source: "fail2ban-client status", Key: "unavailable", Value: commandError(status)})
-			}
-		} else {
-			f.Facts["fail2ban_active"] = "false"
-			f.Evidence = append(f.Evidence, model.Evidence{Source: "systemctl is-active", Key: "fail2ban", Value: valueOr(strings.TrimSpace(active.Stdout), "inactive")})
-			knownUnprotected = true
-		}
-	}
-	if crowdSecInstalled {
-		active := ctx.Commander.Run(8*time.Second, "systemctl", "is-active", "crowdsec")
-		if active.Truncated || (active.Err != nil && active.Code != 3) {
-			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("systemctl is-active crowdsec: %s", commandError(active)))
-			f.Evidence = append(f.Evidence, model.Evidence{Source: "systemctl is-active", Key: "crowdsec_unavailable", Value: commandError(active)})
-		} else if isActive := strings.TrimSpace(active.Stdout) == "active"; isActive {
-			f.Facts["crowdsec_active"] = "true"
-			f.Evidence = append(f.Evidence, model.Evidence{Source: "systemctl is-active", Key: "crowdsec", Value: "active"})
-			bouncers := ctx.Commander.Run(12*time.Second, "cscli", "bouncers", "list", "-o", "json")
-			if bouncers.Err == nil && !bouncers.Truncated {
-				hasBouncer := crowdSecHasBouncer(bouncers.Stdout)
-				f.Facts["crowdsec_bouncer_configured"] = strconv.FormatBool(hasBouncer)
-				f.Evidence = append(f.Evidence, model.Evidence{Source: "cscli bouncers list", Key: "configured", Value: strconv.FormatBool(hasBouncer)})
-				protected = protected || hasBouncer
-				knownUnprotected = knownUnprotected || !hasBouncer
-			} else {
-				discoveryErr = errors.Join(discoveryErr, fmt.Errorf("cscli bouncers list: %s", commandError(bouncers)))
-				f.Evidence = append(f.Evidence, model.Evidence{Source: "cscli bouncers list", Key: "unavailable", Value: commandError(bouncers)})
-			}
-		} else {
-			f.Facts["crowdsec_active"] = "false"
-			f.Evidence = append(f.Evidence, model.Evidence{Source: "systemctl is-active", Key: "crowdsec", Value: valueOr(strings.TrimSpace(active.Stdout), "inactive")})
-			knownUnprotected = true
-		}
-	}
-	if protected {
-		f.Status = model.Pass
-	} else if knownUnprotected {
-		f.Status, f.Severity = model.Risk, model.Medium
-	}
-	return withIncompleteEvidence(f, "intrusion-prevention discovery", discoveryErr)
+	return evaluateIntrusionPrevention(collectIntrusionPreventionSnapshot(ctx))
 }
 
 func crowdSecHasBouncer(output string) bool {
@@ -449,92 +306,6 @@ func crowdSecHasBouncer(output string) bool {
 }
 
 func checkUpdates(ctx *Context) []model.Finding {
-	return []model.Finding{checkPendingUpdates(ctx), checkUnattended(ctx)}
-}
-
-func checkPendingUpdates(ctx *Context) model.Finding {
-	if !ctx.Commander.Exists("apt-get") {
-		return unknown("UPD-001", "updates", "apt-get", "command not found")
-	}
-	r := ctx.Commander.Run(45*time.Second, "apt-get", "-s", "-o", "Debug::NoLocking=true", "upgrade")
-	if r.Truncated || r.Err != nil {
-		return unknown("UPD-001", "updates", "apt-get -s upgrade", commandError(r))
-	}
-	regular, security, phased := 0, 0, 0
-	var packages []string
-	for _, line := range lines(r.Stdout) {
-		if !strings.HasPrefix(line, "Inst ") {
-			if strings.Contains(strings.ToLower(line), "phased") {
-				phased++
-			}
-			continue
-		}
-		regular++
-		if containsAny(strings.ToLower(line), "-security", "security.ubuntu.com", "debian-security") {
-			security++
-		}
-		fields := strings.Fields(line)
-		if len(fields) > 1 {
-			packages = append(packages, fields[1])
-		}
-	}
-	f := model.Finding{ID: "UPD-001", Category: "updates", Status: model.Pass,
-		Facts: map[string]string{"pending_total": strconv.Itoa(regular), "pending_security": strconv.Itoa(security), "phased_mentions": strconv.Itoa(phased)}}
-	if security > 0 {
-		f.Status, f.Severity = model.Risk, model.High
-	} else if regular > 0 {
-		f.Status = model.Info
-	}
-	f.Evidence = []model.Evidence{{Source: "apt-get -s upgrade", Key: "pending_total", Value: strconv.Itoa(regular)}, {Source: "apt-get -s upgrade", Key: "pending_security", Value: strconv.Itoa(security)}}
-	for i, pkg := range packages {
-		if i >= 30 {
-			break
-		}
-		f.Evidence = append(f.Evidence, model.Evidence{Source: "apt-get -s upgrade", Key: "package", Value: pkg})
-	}
-	if _, err := os.Stat("/var/run/reboot-required"); err == nil {
-		f.Evidence = append(f.Evidence, model.Evidence{Source: "/var/run/reboot-required", Value: "present"})
-		if f.Status == model.Pass {
-			f.Status, f.Severity = model.Risk, model.Medium
-		}
-	}
-	return f
-}
-
-func checkUnattended(ctx *Context) model.Finding {
-	f := model.Finding{ID: "UPD-002", Category: "updates", Status: model.Pass}
-	installed := false
-	installedKnown := false
-	var discoveryErr error
-	if ctx.Commander.Exists("dpkg-query") {
-		r := ctx.Commander.Run(8*time.Second, "dpkg-query", "-W", "-f=${Status}", "unattended-upgrades")
-		if r.Err != nil || r.Truncated {
-			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("dpkg-query unattended-upgrades: %s", commandError(r)))
-		} else {
-			installedKnown = true
-			installed = strings.Contains(r.Stdout, "install ok installed")
-		}
-	} else {
-		discoveryErr = errors.Join(discoveryErr, errors.New("dpkg-query command not found"))
-	}
-	timerState := "unavailable"
-	enabled := false
-	enabledKnown := false
-	if ctx.Commander.Exists("systemctl") {
-		timer := ctx.Commander.Run(8*time.Second, "systemctl", "is-enabled", "apt-daily-upgrade.timer")
-		timerState = strings.TrimSpace(timer.Stdout)
-		if timer.Err != nil || timer.Truncated {
-			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("systemctl is-enabled apt-daily-upgrade.timer: %s", commandError(timer)))
-		} else {
-			enabledKnown = true
-			enabled = timerState == "enabled" || timerState == "static"
-		}
-	} else {
-		discoveryErr = errors.Join(discoveryErr, errors.New("systemctl command not found"))
-	}
-	f.Evidence = []model.Evidence{{Source: "dpkg-query", Key: "unattended-upgrades_installed", Value: strconv.FormatBool(installed)}, {Source: "systemctl is-enabled", Key: "apt-daily-upgrade.timer", Value: timerState}}
-	if (installedKnown && !installed) || (enabledKnown && !enabled) {
-		f.Status, f.Severity = model.Risk, model.Medium
-	}
-	return withIncompleteEvidence(f, "automatic security update discovery", discoveryErr)
+	snapshot := collectUpdateAuditSnapshot(ctx)
+	return []model.Finding{evaluatePendingUpdates(snapshot), evaluateUnattended(snapshot)}
 }

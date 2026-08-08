@@ -1,6 +1,9 @@
 package redact
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"regexp"
@@ -35,6 +38,8 @@ var (
 	privateKeyBlockRE      = regexp.MustCompile(`(?s)-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----.*?-----END (?:[A-Z0-9 ]+ )?PRIVATE KEY-----`)
 	privateKeyHeaderRE     = regexp.MustCompile(`-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----`)
 	redactionPlaceholderRE = regexp.MustCompile(`(?i)^(?:CREDENTIAL|TOKEN|SECRET|PRIVATE_KEY|SUBSCRIPTION|REDACTED)(?:_\d+)?$`)
+	stableHostPseudonymRE  = regexp.MustCompile(`^HOST_ID_[0-9a-f]{32}$`)
+	legacyStableHostRE     = regexp.MustCompile(`^HOST_ID_[0-9]+$`)
 )
 
 func New() *Redactor {
@@ -43,8 +48,13 @@ func New() *Redactor {
 
 func (r *Redactor) Report(in model.Report) model.Report {
 	out := in
+	alreadyRedacted := in.Metadata["redacted"] == "true"
 	out.Host.Hostname = r.sensitiveToken("HOST", in.Host.Hostname)
-	out.Host.StableID = r.sensitiveToken("HOST_ID", in.Host.StableID)
+	if alreadyRedacted && (stableHostPseudonymRE.MatchString(in.Host.StableID) || legacyStableHostRE.MatchString(in.Host.StableID)) {
+		out.Host.StableID = in.Host.StableID
+	} else {
+		out.Host.StableID = r.stableHostToken(in.Host.StableID)
+	}
 	out.Profile.Reasons = make([]string, len(in.Profile.Reasons))
 	for i, reason := range in.Profile.Reasons {
 		out.Profile.Reasons[i] = r.text(reason)
@@ -54,7 +64,7 @@ func (r *Redactor) Report(in model.Report) model.Report {
 		out.Endpoints[i] = endpoint
 		out.Endpoints[i].Process = r.text(endpoint.Process)
 	}
-	out.Deployment = r.deployment(in.Deployment)
+	out.Deployment = r.deployment(in.Deployment, in.Host.StableID, !alreadyRedacted)
 	out.Findings = make([]model.Finding, len(in.Findings))
 	for i, finding := range in.Findings {
 		out.Findings[i] = finding
@@ -95,16 +105,40 @@ func (r *Redactor) Report(in model.Report) model.Report {
 	return out
 }
 
-func (r *Redactor) deployment(in *model.Deployment) *model.Deployment {
+// stableHostToken preserves equality across independently redacted reports
+// without exposing the host's original stable identifier. Diff and baseline
+// safety depend on two different hosts never collapsing to HOST_ID_1 merely
+// because each report was redacted in a fresh process.
+func (r *Redactor) stableHostToken(value string) string {
+	if value == "" {
+		return ""
+	}
+	key := "HOST_ID\x00" + value
+	if token, ok := r.values[key]; ok {
+		return token
+	}
+	sum := sha256.Sum256([]byte("vps-scope/redacted-host-id/v1\x00" + value))
+	token := "HOST_ID_" + hex.EncodeToString(sum[:16])
+	r.values[key] = token
+	if len(value) >= 3 {
+		r.literal[value] = token
+	}
+	return token
+}
+
+func (r *Redactor) deployment(in *model.Deployment, stableID string, remapIDs bool) *model.Deployment {
 	if in == nil {
 		return nil
 	}
 	out := &model.Deployment{Coverage: in.Coverage}
+	nodeIDs := make(map[string]string, len(in.Components)+len(in.Endpoints))
 	out.Components = make([]model.Component, len(in.Components))
 	for i, component := range in.Components {
 		out.Components[i] = component
-		// IDs are opaque relationship keys. Recomputing or redacting them would
-		// break links, so only human-readable attributes are transformed.
+		if remapIDs {
+			out.Components[i].ID = redactedTopologyID("component", component.ID, stableID)
+		}
+		nodeIDs[component.ID] = out.Components[i].ID
 		out.Components[i].Product = r.text(component.Product)
 		out.Components[i].Source = r.text(component.Source)
 		out.Components[i].Deployment = r.text(component.Deployment)
@@ -112,6 +146,11 @@ func (r *Redactor) deployment(in *model.Deployment) *model.Deployment {
 	out.Endpoints = make([]model.ServiceEndpoint, len(in.Endpoints))
 	for i, endpoint := range in.Endpoints {
 		out.Endpoints[i] = endpoint
+		if remapIDs {
+			out.Endpoints[i].ID = redactedTopologyID("endpoint", endpoint.ID, stableID)
+			out.Endpoints[i].ComponentID = nodeIDs[endpoint.ComponentID]
+		}
+		nodeIDs[endpoint.ID] = out.Endpoints[i].ID
 		out.Endpoints[i].Product = r.text(endpoint.Product)
 		out.Endpoints[i].Protocol = r.text(endpoint.Protocol)
 		out.Endpoints[i].Address = r.text(endpoint.Address)
@@ -125,10 +164,24 @@ func (r *Redactor) deployment(in *model.Deployment) *model.Deployment {
 			out.Endpoints[i].ConnectionCount = &count
 		}
 	}
-	// Link endpoints and node IDs are copied exactly to preserve referential
-	// integrity in the redacted topology.
-	out.Links = append([]model.TopologyLink(nil), in.Links...)
+	out.Links = make([]model.TopologyLink, len(in.Links))
+	for i, link := range in.Links {
+		out.Links[i] = link
+		if remapIDs {
+			out.Links[i].From = nodeIDs[link.From]
+			out.Links[i].To = nodeIDs[link.To]
+		}
+	}
 	return out
+}
+
+// redactedTopologyID uses the unshared host identity as a key, so relationship
+// IDs remain stable for one host without exposing a plain hash that can be
+// brute-forced over the IPv4 address space and known endpoint fields.
+func redactedTopologyID(kind, original, stableID string) string {
+	mac := hmac.New(sha256.New, []byte("vps-scope/redacted-topology/v1\x00"+stableID))
+	_, _ = mac.Write([]byte(kind + "\x00" + original))
+	return kind + ":" + hex.EncodeToString(mac.Sum(nil)[:8])
 }
 
 func accountEvidenceKey(id, key string) bool {
@@ -202,14 +255,14 @@ func (r *Redactor) text(value string) string {
 	value = r.replaceKnownLiterals(value)
 	value = ipv4RE.ReplaceAllStringFunc(value, func(candidate string) string {
 		ip := net.ParseIP(candidate)
-		if ip == nil || ip.IsLoopback() {
+		if ip == nil || preserveNetworkSemanticAddress(ip) {
 			return candidate
 		}
 		return r.token("IP", candidate)
 	})
 	value = ipv6RE.ReplaceAllStringFunc(value, func(candidate string) string {
 		ip := net.ParseIP(candidate)
-		if ip == nil || ip.IsLoopback() {
+		if ip == nil || preserveNetworkSemanticAddress(ip) {
 			return candidate
 		}
 		return r.token("IP", candidate)
@@ -235,6 +288,14 @@ func (r *Redactor) text(value string) string {
 		return parts[0] + "=" + r.token("USER", parts[1])
 	})
 	return value
+}
+
+// Loopback and unspecified addresses describe exposure semantics rather than
+// host identity. Preserving them keeps a support report useful: 127.0.0.1 is
+// local-only while 0.0.0.0 and :: are wildcard listeners. None identifies the
+// audited VPS on the public Internet.
+func preserveNetworkSemanticAddress(ip net.IP) bool {
+	return ip.IsLoopback() || ip.IsUnspecified()
 }
 
 func (r *Redactor) replaceKnownLiterals(value string) string {

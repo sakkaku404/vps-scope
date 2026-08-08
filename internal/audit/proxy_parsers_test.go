@@ -56,3 +56,44 @@ func TestNativeProxyParserMatrix(t *testing.T) {
 		})
 	}
 }
+
+func TestProxyJSONParsersRejectAmbiguousDuplicateMembers(t *testing.T) {
+	input := []byte(`{"server":"[::]:443","server":"secret-value","inbounds":[]}`)
+	for name, summary := range map[string]proxyConfigSummary{
+		"sing-box":    parseSingBoxSummary("fixture.json", input),
+		"xray":        parseXraySummary("fixture.json", input),
+		"tuic":        parseTUICSummary("fixture.json", input),
+		"trojan":      parseTrojanSummary("fixture.json", input),
+		"shadowsocks": parseShadowsocksSummary("fixture.json", input),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if summary.Err == nil || summary.Parseable {
+				t.Fatalf("ambiguous JSON was accepted: %+v", summary)
+			}
+			if strings.Contains(summary.Err.Error(), "secret-value") {
+				t.Fatal("parse error disclosed duplicate-member content")
+			}
+		})
+	}
+	if port, ok := parseOutlineState(input); ok || port != "" {
+		t.Fatalf("Outline accepted ambiguous JSON: port=%q ok=%t", port, ok)
+	}
+}
+
+func TestHysteriaParserUsesOnlyOneValidTopLevelListen(t *testing.T) {
+	valid := parseHysteriaSummary("config.yaml", "listen: :443\nquic:\n  listen: ignored\n")
+	if valid.Err != nil || !valid.Parseable || len(valid.Inbounds) != 1 || valid.Inbounds[0].Port != "443" {
+		t.Fatalf("valid summary=%+v", valid)
+	}
+	for name, input := range map[string]string{
+		"duplicate": "listen: :443\nlisten: :8443\n",
+		"invalid":   "listen: not-an-endpoint\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			summary := parseHysteriaSummary("config.yaml", input)
+			if summary.Err == nil || summary.Parseable || len(summary.Inbounds) != 0 {
+				t.Fatalf("ambiguous or invalid listen was accepted: %+v", summary)
+			}
+		})
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sakkaku404/vps-scope/internal/model"
 )
@@ -54,6 +55,27 @@ func TestProxyNativeSelfTestOptInExecutesWorkloadBinary(t *testing.T) {
 	}
 	if finding.Facts["native_self_test_mode"] != "enabled_executes_local_workload_code" || finding.Facts["native_self_tests"] != "1" {
 		t.Fatalf("unexpected native self-test facts: %#v", finding.Facts)
+	}
+}
+
+func TestProxyNativeSelfTestUsesInjectedFileSnapshot(t *testing.T) {
+	const (
+		config = "/usr/local/s-ui/config.json"
+		binary = "/usr/local/s-ui/bin/sing-box"
+	)
+	key := scenarioCommandKey(binary, "check", "-c", config)
+	cmd := newScenarioCommander([]string{binary}, map[string]CommandResult{key: {}})
+	source := &recordingFileEvidence{}
+	ctx := scenarioContext(cmd)
+	ctx.Options.NativeSelfTest = true
+	ctx.Facts = newFactStoreAt(cmd, true, time.Unix(1, 0), source)
+
+	finding := checkProxyConfiguration(ctx, []proxyConfigSummary{{Product: "sing-box", Path: config, Parseable: true}})
+	if finding.Status != model.Pass || cmd.calls[key] != 1 {
+		t.Fatalf("status=%s calls=%d, want PASS and one injected self-test", finding.Status, cmd.calls[key])
+	}
+	if source.stats != 1 {
+		t.Fatalf("file snapshot stat calls=%d, want 1", source.stats)
 	}
 }
 

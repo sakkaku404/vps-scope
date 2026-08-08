@@ -3,12 +3,14 @@ package app
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/sakkaku404/vps-scope/internal/audit"
+	"github.com/sakkaku404/vps-scope/internal/contract"
 	"github.com/sakkaku404/vps-scope/internal/i18n"
 	"github.com/sakkaku404/vps-scope/internal/model"
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
@@ -112,6 +114,93 @@ func TestPublishedReportSchemaRejectsMalformedTypedDeployment(t *testing.T) {
 			t.Fatalf("schema accepted malformed deployment: %s", body)
 		}
 	}
+}
+
+func TestPublishedReportSchemaEnforcesFindingResourceBudgets(t *testing.T) {
+	schema := compilePublishedReportSchema(t)
+	tests := []struct {
+		name   string
+		mutate func(*model.Report)
+	}{
+		{
+			name: "evidence entries",
+			mutate: func(report *model.Report) {
+				report.Findings[0].Evidence = make([]model.Evidence, 257)
+			},
+		},
+		{
+			name: "fact entries",
+			mutate: func(report *model.Report) {
+				report.Findings[0].Facts = make(map[string]string, 257)
+				for index := 0; index < 257; index++ {
+					report.Findings[0].Facts[fmt.Sprintf("fact_%03d", index)] = "value"
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			report := appContractReport()
+			test.mutate(&report)
+			payload, err := json.Marshal(report)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var value any
+			if err := json.Unmarshal(payload, &value); err != nil {
+				t.Fatal(err)
+			}
+			if err := schema.Validate(value); err == nil {
+				t.Fatal("published schema accepted an over-budget report")
+			}
+		})
+	}
+}
+
+func TestPublishedReportSchemaBudgetsMatchRuntimeContract(t *testing.T) {
+	root := readPublishedReportSchema(t)
+	tests := []struct {
+		want int
+		path []string
+	}{
+		{contract.MaxReportFindings, []string{"properties", "findings", "maxItems"}},
+		{contract.MaxReportEndpoints, []string{"properties", "endpoints", "maxItems"}},
+		{contract.MaxReportMetadataEntries, []string{"properties", "metadata", "maxProperties"}},
+		{contract.MaxReportProfileReasons, []string{"properties", "profile", "properties", "reasons", "maxItems"}},
+		{contract.MaxFindingEvidenceEntries, []string{"properties", "findings", "items", "properties", "evidence", "maxItems"}},
+		{contract.MaxFindingFactEntries, []string{"properties", "findings", "items", "properties", "facts", "maxProperties"}},
+		{contract.MaxDeploymentComponents, []string{"$defs", "deployment", "properties", "components", "maxItems"}},
+		{contract.MaxDeploymentEndpoints, []string{"$defs", "deployment", "properties", "endpoints", "maxItems"}},
+		{contract.MaxDeploymentLinks, []string{"$defs", "deployment", "properties", "links", "maxItems"}},
+		{contract.MaxEvidenceSourceBytes, []string{"$defs", "evidence", "properties", "source", "maxLength"}},
+		{contract.MaxEvidenceKeyBytes, []string{"$defs", "evidence", "properties", "key", "maxLength"}},
+		{contract.MaxEvidenceValueBytes, []string{"$defs", "evidence", "properties", "value", "maxLength"}},
+	}
+	for _, test := range tests {
+		if got := schemaInteger(t, root, test.path...); got != test.want {
+			t.Errorf("schema %s=%d want runtime contract %d", strings.Join(test.path, "."), got, test.want)
+		}
+	}
+}
+
+func schemaInteger(t *testing.T, root map[string]any, path ...string) int {
+	t.Helper()
+	var current any = root
+	for _, segment := range path {
+		object, ok := current.(map[string]any)
+		if !ok {
+			t.Fatalf("schema path %s is not an object", strings.Join(path, "."))
+		}
+		current, ok = object[segment]
+		if !ok {
+			t.Fatalf("schema path %s is missing", strings.Join(path, "."))
+		}
+	}
+	number, ok := current.(float64)
+	if !ok || number != float64(int(number)) {
+		t.Fatalf("schema path %s is not an integer: %#v", strings.Join(path, "."), current)
+	}
+	return int(number)
 }
 
 func readPublishedReportSchema(t *testing.T) map[string]any {

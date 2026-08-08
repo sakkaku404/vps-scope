@@ -59,6 +59,39 @@ func TestFactStoreSharesRawFirewallProgramAcrossInputAndForwardViews(t *testing.
 	}
 }
 
+func TestFactStoreSharesWireGuardInterfaceAndPortInventory(t *testing.T) {
+	key := scenarioCommandKey("wg", "show", "all", "listen-port")
+	cmd := newScenarioCommander([]string{"wg"}, map[string]CommandResult{
+		key: {Stdout: "wg1\t0\nwg0\t51820"},
+	})
+	facts := NewFactStore(cmd, false)
+	for range 2 {
+		interfaces, installed, err := facts.WireGuardInterfaces()
+		if err != nil || !installed || len(interfaces) != 2 {
+			t.Fatalf("interfaces=%v installed=%t err=%v", interfaces, installed, err)
+		}
+		if interfaces[0].Name != "wg0" || interfaces[0].Port != "51820" || interfaces[1].Name != "wg1" {
+			t.Fatalf("interfaces are not deterministic: %+v", interfaces)
+		}
+		interfaces[0].Port = "1"
+	}
+	if got := cmd.calls[key]; got != 1 {
+		t.Fatalf("wg listen-port calls=%d, want one shared snapshot", got)
+	}
+}
+
+func TestWireGuardInterfaceInventoryRejectsMalformedOrDuplicateRows(t *testing.T) {
+	for _, output := range []string{"wg0", "bad/interface\t51820", "wg0\t51820\nwg0\t51821", "wg0\t70000"} {
+		cmd := newScenarioCommander([]string{"wg"}, map[string]CommandResult{
+			scenarioCommandKey("wg", "show", "all", "listen-port"): {Stdout: output},
+		})
+		interfaces, installed, err := NewFactStore(cmd, false).WireGuardInterfaces()
+		if !installed || err == nil || len(interfaces) != 0 {
+			t.Fatalf("output=%q interfaces=%v installed=%t err=%v", output, interfaces, installed, err)
+		}
+	}
+}
+
 func TestSSHDSettingsRejectsIncompleteEffectiveConfiguration(t *testing.T) {
 	cmd := newScenarioCommander([]string{"sshd"}, map[string]CommandResult{
 		scenarioCommandKey("sshd", "-T"): {Stdout: "passwordauthentication no\nkbdinteractiveauthentication no\npubkeyauthentication yes"},

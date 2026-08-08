@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/sakkaku404/vps-scope/internal/i18n"
 	"github.com/sakkaku404/vps-scope/internal/model"
 )
 
@@ -31,10 +32,10 @@ func writeProxyAssessmentText(w io.Writer, assessment proxyAssessment, locale st
 	if !assessment.HasContent() {
 		return
 	}
-	fmt.Fprintln(w, choose(locale, "代理 VPS 结论", "Proxy VPS assessment"))
+	fmt.Fprintln(w, i18n.Message(locale, i18n.MessageProxyAssessment))
 	fmt.Fprintln(w, line)
 	if len(assessment.Components) > 0 {
-		fmt.Fprintf(w, "%s: %s\n", choose(locale, "识别到", "Detected"), strings.Join(assessment.Components, ", "))
+		fmt.Fprintf(w, "%s: %s\n", i18n.Message(locale, i18n.MessageDetectedComponents), strings.Join(assessment.Components, ", "))
 	}
 	for _, item := range assessment.Lines {
 		fmt.Fprintf(w, "[%s] %s\n  %s\n", item.Status, item.Label, item.Message)
@@ -46,9 +47,9 @@ func writeProxyAssessmentMarkdown(w io.Writer, assessment proxyAssessment, local
 	if !assessment.HasContent() {
 		return
 	}
-	fmt.Fprintf(w, "## %s\n\n", choose(locale, "代理 VPS 结论", "Proxy VPS assessment"))
+	fmt.Fprintf(w, "## %s\n\n", i18n.Message(locale, i18n.MessageProxyAssessment))
 	if len(assessment.Components) > 0 {
-		fmt.Fprintf(w, "**%s%s** %s\n\n", choose(locale, "识别到", "Detected"), choose(locale, "：", ":"), escapeMD(strings.Join(assessment.Components, ", ")))
+		fmt.Fprintf(w, "**%s%s** %s\n\n", i18n.Message(locale, i18n.MessageDetectedComponents), choose(locale, "：", ":"), escapeMD(strings.Join(assessment.Components, ", ")))
 	}
 	fmt.Fprintf(w, "| %s | %s | %s |\n|---|---|---|\n", choose(locale, "你需要知道的事", "Question"), choose(locale, "结论", "Result"), choose(locale, "说明", "Explanation"))
 	for _, item := range assessment.Lines {
@@ -259,8 +260,15 @@ func proxyRuntimeAssessment(config model.Finding, configOK bool, runtime model.F
 		line.Message = choose(locale, "面板数据库、生成配置和实际监听之间存在无法解释的差异。", "The panel database, generated configuration, and live listeners contain an unexplained mismatch.")
 	case status == model.Unknown:
 		line.Message = choose(locale, "配置校验或面板运行态证据不完整，不能确认重启后的可恢复性。", "Configuration validation or panel runtime evidence is incomplete; restart recovery cannot be confirmed.")
+	case status == model.Pass && configOK && config.NotApplicable:
+		// A panel-runtime PASS cannot prove a configuration that was not found
+		// or parsed. Keep the combined user-facing claim contextual.
+		line.Status = "INFO"
+		line.Message = choose(locale, "没有可执行的原生配置自检；运行信息仅作上下文。", "No native configuration check was available; runtime information is context only.")
 	case status == model.Pass:
 		line.Message = choose(locale, "配置自检和面板运行态关系未发现异常。", "Configuration validation and panel runtime relationships show no problem.")
+	case status == model.Info && configOK && config.Facts["native_self_test_mode"] == "disabled_by_default":
+		line.Message = choose(locale, "已记录静态配置解析和面板运行态；默认未执行第三方工作负载的原生自检，因此不标记为 PASS。", "Static configuration parsing and panel runtime were recorded; native self-tests for third-party workloads were not executed by default, so this is not marked PASS.")
 	default:
 		line.Message = choose(locale, "没有可执行的原生配置自检；运行信息仅作上下文。", "No native configuration check was available; runtime information is context only.")
 	}
@@ -268,9 +276,8 @@ func proxyRuntimeAssessment(config model.Finding, configOK bool, runtime model.F
 }
 
 func proxyAvailabilityAssessment(r model.Report, locale string) proxyAssessmentLine {
-	ids := []string{"PROC-001", "TLS-001", "REL-001", "WORK-010"}
-	findings := make([]model.Finding, 0, len(ids))
-	for _, id := range ids {
+	findings := make([]model.Finding, 0, len(availabilityAssessmentIDs))
+	for _, id := range availabilityAssessmentIDs {
 		if finding, ok := findingByID(r, id); ok && !finding.NotApplicable {
 			findings = append(findings, finding)
 		}
@@ -292,7 +299,7 @@ func proxyAvailabilityAssessment(r model.Report, locale string) proxyAssessmentL
 func hostBaselineAssessment(r model.Report, locale string) proxyAssessmentLine {
 	var findings []model.Finding
 	for _, finding := range r.Findings {
-		if finding.Category == "workloads" || finding.Category == "docker" || finding.NotApplicable || finding.Status == model.Info {
+		if finding.Category == "workloads" || finding.Category == "docker" || finding.NotApplicable || finding.Status == model.Info || isAvailabilityAssessmentFinding(finding.ID) {
 			continue
 		}
 		findings = append(findings, finding)
@@ -302,13 +309,24 @@ func hostBaselineAssessment(r model.Report, locale string) proxyAssessmentLine {
 	riskCount, unknownCount := countStatus(findings, model.Risk), countStatus(findings, model.Unknown)
 	switch {
 	case riskCount > 0:
-		line.Message = fmt.Sprintf(choose(locale, "另有 %d 项 SSH、账户、防火墙、更新或持久化风险；它们不是节点协议问题，但仍需要处理。", "%d SSH, account, firewall, update, or persistence risks remain; they are not proxy-protocol problems but still need attention."), riskCount)
+		line.Message = fmt.Sprintf(choose(locale, "另有 %d 项 Linux 主机基线风险；它们不是节点协议问题，但仍需要处理。", "%d Linux host-baseline risks remain; they are not proxy-protocol problems but still need attention."), riskCount)
 	case unknownCount > 0:
 		line.Message = fmt.Sprintf(choose(locale, "通用 Linux 基线没有明确风险，但有 %d 项证据不足。", "The Linux baseline has no confirmed risk, but %d checks lack evidence."), unknownCount)
 	default:
 		line.Message = choose(locale, "SSH、账户、防火墙、更新和持久化基线未触发风险；INFO 项只是状态清单。", "SSH, account, firewall, update, and persistence checks triggered no risk; INFO items are inventory only.")
 	}
 	return line
+}
+
+var availabilityAssessmentIDs = []string{"PROC-001", "TLS-001", "REL-001", "WORK-010"}
+
+func isAvailabilityAssessmentFinding(id string) bool {
+	for _, candidate := range availabilityAssessmentIDs {
+		if id == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func compactEndpointRelation(value string, locale string) string {
@@ -341,25 +359,39 @@ func combinedAssessmentStatus(first model.Finding, firstOK bool, second model.Fi
 }
 
 func combinedAssessmentFindings(findings []model.Finding) (model.Status, model.Severity) {
-	status := model.Info
 	severity := model.Severity("")
+	hasRisk, hasUnknown, hasInfo, hasPass := false, false, false, false
 	for _, finding := range findings {
-		if finding.Status == model.Risk {
-			if status != model.Risk || severityRank(finding.Severity) < severityRank(severity) {
-				status, severity = model.Risk, finding.Severity
+		switch finding.Status {
+		case model.Risk:
+			if !hasRisk || severityRank(finding.Severity) < severityRank(severity) {
+				severity = finding.Severity
 			}
-			continue
-		}
-		if status != model.Risk && finding.Status == model.Unknown {
-			status = model.Unknown
-			severity = ""
-			continue
-		}
-		if status == model.Info && finding.Status == model.Pass {
-			status = model.Pass
+			hasRisk = true
+		case model.Unknown:
+			hasUnknown = true
+		case model.Info:
+			hasInfo = true
+		case model.Pass:
+			hasPass = true
 		}
 	}
-	return status, severity
+	if hasRisk {
+		return model.Risk, severity
+	}
+	if hasUnknown {
+		return model.Unknown, ""
+	}
+	// A combined PASS promises that every applicable sub-conclusion passed.
+	// INFO is intentionally sticky: one contextual or deliberately unexecuted
+	// check must not borrow a PASS badge from a different check.
+	if hasInfo {
+		return model.Info, ""
+	}
+	if hasPass {
+		return model.Pass, ""
+	}
+	return model.Info, ""
 }
 
 func severityRank(severity model.Severity) int {

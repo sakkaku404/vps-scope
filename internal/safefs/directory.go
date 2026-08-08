@@ -7,6 +7,8 @@ import (
 	"os"
 )
 
+var ErrDirectoryLimit = errors.New("directory entry safety limit exceeded")
+
 // ReadDirectoryBounded returns a complete directory snapshot or an error. It
 // never exposes a prefix when the directory exceeds the caller's entry budget.
 func ReadDirectoryBounded(path string, maxEntries int) ([]os.DirEntry, error) {
@@ -22,7 +24,7 @@ func ReadDirectoryBounded(path string, maxEntries int) ([]os.DirEntry, error) {
 	defer dir.Close()
 	entries, readErr := dir.ReadDir(maxEntries + 1)
 	if len(entries) > maxEntries {
-		return nil, fmt.Errorf("directory %q exceeds %d-entry safety limit", path, maxEntries)
+		return nil, fmt.Errorf("%w: directory %q exceeds %d-entry safety limit", ErrDirectoryLimit, path, maxEntries)
 	}
 	if readErr != nil && !errors.Is(readErr, io.EOF) {
 		return nil, readErr

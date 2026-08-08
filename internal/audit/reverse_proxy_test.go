@@ -86,6 +86,17 @@ func TestReverseProxyPolicyDetectsBroadBackend(t *testing.T) {
 	}
 }
 
+func TestReverseProxyRoutesSortPortsNumerically(t *testing.T) {
+	routes := uniqueReverseProxyRoutes([]reverseProxyRoute{
+		{Product: "nginx", FrontendPort: "10000", BackendPort: "9000"},
+		{Product: "nginx", FrontendPort: "443", BackendPort: "10000"},
+		{Product: "nginx", FrontendPort: "443", BackendPort: "9000"},
+	})
+	if len(routes) != 3 || routes[0].FrontendPort != "443" || routes[0].BackendPort != "9000" || routes[1].BackendPort != "10000" || routes[2].FrontendPort != "10000" {
+		t.Fatalf("routes are not in numeric endpoint order: %+v", routes)
+	}
+}
+
 func TestExternalReverseProxyBackendNeverMatchesLocalPort(t *testing.T) {
 	listeners := []Listener{{Protocol: "tcp", Address: "0.0.0.0", Port: "80", Scope: "public-wildcard", Process: "haproxy"}}
 	if got := matchingBackendListener(listeners, "example.com", "80", "tcp"); got != nil {

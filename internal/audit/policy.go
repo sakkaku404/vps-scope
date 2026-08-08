@@ -9,6 +9,8 @@ import (
 	"os"
 	"sort"
 	"strings"
+
+	"github.com/sakkaku404/vps-scope/internal/safejson"
 )
 
 const PolicySchemaVersion = "1.0"
@@ -64,6 +66,9 @@ func LoadPolicy(path string) (*Policy, error) {
 	data, err := io.ReadAll(io.LimitReader(file, (1<<20)+1))
 	if err != nil || len(data) > 1<<20 {
 		return nil, fmt.Errorf("read policy: input exceeds the 1 MiB limit")
+	}
+	if err := safejson.RejectDuplicateMembers(bytes.NewReader(data)); err != nil {
+		return nil, fmt.Errorf("decode policy: %w", err)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()

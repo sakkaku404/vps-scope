@@ -1,10 +1,28 @@
 package audit
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sakkaku404/vps-scope/internal/model"
 )
+
+func TestLoadPolicyRejectsDuplicateJSONMembersWithoutEchoingName(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "policy.json")
+	input := `{"schema_version":"1.0","schema_version":"secret-member","endpoints":[]}`
+	if err := os.WriteFile(path, []byte(input), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadPolicy(path)
+	if err == nil || !strings.Contains(err.Error(), "duplicate JSON object member") {
+		t.Fatalf("LoadPolicy error=%v", err)
+	}
+	if strings.Contains(err.Error(), "secret-member") {
+		t.Fatal("error disclosed attacker-controlled JSON content")
+	}
+}
 
 func TestPolicyValidationAndEndpointLookup(t *testing.T) {
 	policy := &Policy{SchemaVersion: PolicySchemaVersion, Endpoints: []EndpointPolicy{

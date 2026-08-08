@@ -5,15 +5,14 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/sakkaku404/vps-scope/internal/model"
-	"github.com/sakkaku404/vps-scope/internal/safefs"
 )
 
 func checkWorkloads(ctx *Context) []model.Finding {
@@ -36,132 +35,175 @@ func checkWorkloads(ctx *Context) []model.Finding {
 }
 
 func checkPanelManagement(ctx *Context) model.Finding {
-	panels, panelDiscoveryErr := ctx.Facts.Panels()
-	containerPanels, containerDiscoveryErr := discoverContainerPanels(ctx)
-	if panelDiscoveryErr == nil {
-		panelDiscoveryErr = containerDiscoveryErr
+	evidence := collectPanelManagementEvidence(ctx)
+	if len(evidence.panels) == 0 && len(evidence.containerPanels) == 0 {
+		return withIncompleteEvidence(notApplicable("WORK-002", "workloads", "binary and container discovery", "no supported S-UI, 3x-ui, x-ui, Hiddify, Marzban, or Outline panel found"), "panel and container discovery", evidence.panelDiscoveryErr)
 	}
-	if len(panels) == 0 && len(containerPanels) == 0 {
-		return withIncompleteEvidence(notApplicable("WORK-002", "workloads", "binary and container discovery", "no supported S-UI, 3x-ui, x-ui, Hiddify, Marzban, or Outline panel found"), "panel and container discovery", panelDiscoveryErr)
+	f := model.Finding{ID: "WORK-002", Category: "workloads", Status: model.Pass, Facts: map[string]string{"panel_count": strconv.Itoa(len(evidence.panels) + len(evidence.containerPanels))}}
+	if evidence.listenerErr != nil {
+		f.Evidence = append(f.Evidence, model.Evidence{Source: "ss -H -lntup", Key: "error", Value: evidence.listenerErr.Error()})
+	}
+	counts := panelManagementCounts{}
+	for _, panel := range evidence.panels {
+		evaluateNativePanelManagement(&f, panel, evidence, &counts)
+	}
+	evaluateReverseProxyPanelManagement(&f, evidence, &counts)
+	for _, panel := range evidence.containerPanels {
+		recordContainerPanelManagement(&f, panel, &counts)
+	}
+	counts.writeFacts(&f)
+	if f.Status != model.Risk {
+		if counts.unsupportedSchemas > 0 {
+			f.Status, f.Unavailable = model.Unknown, true
+			f.Error = "one or more panel database schemas are not supported; management-panel conclusions are incomplete"
+		} else if counts.unknowns > 0 {
+			f.Status, f.Unavailable = model.Unknown, true
+			f.Error = "management-panel exposure could not be determined from the available port, listener, and firewall evidence"
+		} else if counts.inactive == len(evidence.panels) && len(evidence.containerPanels) == 0 {
+			f.Status = model.Info
+		}
+	}
+	f = withIncompleteEvidence(f, "host firewall discovery", evidence.firewall.collectionErr)
+	f = withIncompleteEvidence(f, "panel and container discovery", evidence.panelDiscoveryErr)
+	return withIncompleteEvidence(f, "reverse-proxy configuration discovery", evidence.routeErr)
+}
+
+type panelManagementEvidence struct {
+	panels            []panelSnapshot
+	containerPanels   []containerPanelInstall
+	panelDiscoveryErr error
+	listeners         []Listener
+	listenerErr       error
+	firewall          hostFirewallSnapshot
+	routes            []reverseProxyRoute
+	routeErr          error
+}
+
+type panelManagementCounts struct {
+	products                                               []string
+	unknowns, inactive, unsupportedSchemas                 int
+	publicUnrestricted, publicPlaintext, publicDefaultPath int
+	pathUnknown, publicReverseProxy                        int
+}
+
+func collectPanelManagementEvidence(ctx *Context) panelManagementEvidence {
+	e := panelManagementEvidence{}
+	e.panels, e.panelDiscoveryErr = ctx.Facts.Panels()
+	containerPanels, containerErr := discoverContainerPanels(ctx)
+	e.containerPanels = containerPanels
+	if e.panelDiscoveryErr == nil {
+		e.panelDiscoveryErr = containerErr
 	}
 	nativeProducts := map[string]bool{}
-	for _, panel := range panels {
+	for _, panel := range e.panels {
 		nativeProducts[strings.ToLower(panel.Product)] = true
 	}
-	filteredContainers := containerPanels[:0]
-	for _, panel := range containerPanels {
+	filtered := e.containerPanels[:0]
+	for _, panel := range e.containerPanels {
 		if !nativeProducts[strings.ToLower(panel.product)] {
-			filteredContainers = append(filteredContainers, panel)
+			filtered = append(filtered, panel)
 		}
 	}
-	containerPanels = filteredContainers
-	f := model.Finding{ID: "WORK-002", Category: "workloads", Status: model.Pass, Facts: map[string]string{"panel_count": strconv.Itoa(len(panels) + len(containerPanels))}}
+	e.containerPanels = filtered
+	e.listeners, e.listenerErr = ctx.Facts.Listeners()
+	e.firewall = readPanelUFW(ctx)
+	e.routes, e.routeErr = ctx.Facts.ReverseProxyRoutes()
+	return e
+}
 
-	listeners, listenerErr := ctx.Facts.Listeners()
-	ssAvailable := listenerErr == nil
-	if listenerErr != nil {
-		f.Evidence = append(f.Evidence, model.Evidence{Source: "ss -H -lntup", Key: "error", Value: listenerErr.Error()})
+func evaluateNativePanelManagement(f *model.Finding, panel panelSnapshot, evidence panelManagementEvidence, counts *panelManagementCounts) {
+	counts.products = append(counts.products, panel.Product)
+	f.Evidence = append(f.Evidence, model.Evidence{Source: "panel discovery", Key: "product", Value: fmt.Sprintf("product=%s version=%s adapter=%s schema=%s schema_supported=%t schema_fingerprint=%s capabilities=%s binary=%s", panel.Product, panel.Version, panel.Adapter, panel.SchemaVersion, panel.SchemaSupported, panel.SchemaFingerprint, strings.Join(panel.SchemaCapabilities, ","), panel.Binary)})
+	if panel.Database != "" && !panel.SchemaSupported && panel.SchemaFingerprint != "" {
+		counts.unsupportedSchemas++
+		f.Evidence = append(f.Evidence, model.Evidence{Source: panel.Database, Key: "unsupported_schema", Value: "panel database layout is not supported; database-derived management metadata is incomplete"})
 	}
-	ufw := readPanelUFW(ctx)
-	products := make([]string, 0, len(panels))
-	unknowns, inactive, unsupportedSchemas := 0, 0, 0
-	publicUnrestricted, publicPlaintext, publicDefaultPath, pathUnknown, publicReverseProxy := 0, 0, 0, 0, 0
-	for _, panel := range panels {
-		products = append(products, panel.Product)
-		f.Evidence = append(f.Evidence, model.Evidence{Source: "panel discovery", Key: "product", Value: fmt.Sprintf("product=%s version=%s adapter=%s schema=%s schema_supported=%t schema_fingerprint=%s capabilities=%s binary=%s", panel.Product, panel.Version, panel.Adapter, panel.SchemaVersion, panel.SchemaSupported, panel.SchemaFingerprint, strings.Join(panel.SchemaCapabilities, ","), panel.Binary)})
-		if panel.Database != "" && !panel.SchemaSupported && panel.SchemaFingerprint != "" {
-			unsupportedSchemas++
-			f.Evidence = append(f.Evidence, model.Evidence{Source: panel.Database, Key: "unsupported_schema", Value: "panel database layout is not supported; database-derived management metadata is incomplete"})
-		}
-		if panel.RuntimeCommandError != "" {
-			unknowns++
-			f.Evidence = append(f.Evidence, model.Evidence{Source: panel.Binary, Key: "runtime_command", Value: panel.RuntimeCommandError})
-		}
-		if panel.ManagementMetadataError != "" {
-			unknowns++
-			f.Evidence = append(f.Evidence, model.Evidence{Source: panel.Database, Key: "management_metadata", Value: "unavailable: " + truncate(panel.ManagementMetadataError, 240)})
-		}
-		if panel.DefaultCredentialKnown {
-			f.Evidence = append(f.Evidence, model.Evidence{Source: panel.Product + " settings", Key: "default_credential", Value: strconv.FormatBool(panel.DefaultCredential)})
-			if panel.DefaultCredential {
-				f.Status, f.Severity = model.Risk, model.Critical
-			}
-		}
-		endpoint, ok := managementEndpoint(panel)
-		if !ok || endpoint.Port == "" {
-			unknowns++
-			f.Evidence = append(f.Evidence, model.Evidence{Source: panel.Product + " settings", Key: "panel_port", Value: "unavailable"})
-			continue
-		}
-		f.Evidence = append(f.Evidence, model.Evidence{Source: endpoint.Source, Key: "management_endpoint", Value: fmt.Sprintf("product=%s listen=%s port=%s/tcp tls=%s path_default=%s", panel.Product, endpoint.Listen, endpoint.Port, knownBool(endpoint.TLS, endpoint.TLSKnown), knownBool(endpoint.PathIsDefault, endpoint.PathKnown))})
-		if !endpoint.PathKnown {
-			pathUnknown++
-		}
-		if !ssAvailable {
-			unknowns++
-			continue
-		}
-		scope, found := panelListenerScope(listeners, endpoint.Port, &f)
-		if !found {
-			inactive++
-			continue
-		}
-		if scope != "public" && scope != "public-wildcard" {
-			continue
-		}
-		family := "any"
-		for _, listener := range listeners {
-			if listener.Port == endpoint.Port && strings.HasPrefix(listener.Protocol, "tcp") && listener.Scope == scope {
-				family = listenerAddressFamily(listener.Address)
-				break
-			}
-		}
-		disposition := panelFirewallDispositionFamily(ufw, endpoint.Port, family, &f)
-		judgment := "public-management-restricted-by-host-firewall"
-		switch disposition {
-		case "allow-anywhere", "inactive":
-			publicUnrestricted++
-			f.Status, f.Severity = model.Risk, model.High
-			judgment = "public-management-exposed"
-		case "restricted", "blocked-by-default", "blocked-by-explicit-rule":
-			// Public binding is constrained by the host firewall.
-		default:
-			unknowns++
-			judgment = "public-management-firewall-unknown"
-		}
-		if endpoint.PathKnown && endpoint.PathIsDefault {
-			publicDefaultPath++
-			judgment += "+root-or-default-path"
-		}
-		if endpoint.TLSKnown && !endpoint.TLS {
-			publicPlaintext++
-			judgment += "+plaintext-panel"
-		}
-		f.Evidence = append(f.Evidence, model.Evidence{Source: endpoint.Source + " + ss + host firewall", Key: "management_posture", Value: fmt.Sprintf("product=%s port=%s/tcp scope=%s firewall=%s tls=%s path_default=%s judgment=%s", panel.Product, endpoint.Port, scope, disposition, knownBool(endpoint.TLS, endpoint.TLSKnown), knownBool(endpoint.PathIsDefault, endpoint.PathKnown), judgment)})
+	if panel.RuntimeCommandError != "" {
+		counts.unknowns++
+		f.Evidence = append(f.Evidence, model.Evidence{Source: panel.Binary, Key: "runtime_command", Value: panel.RuntimeCommandError})
 	}
-	// A loopback-bound panel can still be Internet-facing through Nginx,
-	// Caddy, or HAProxy. Treat that as management exposure here as well as in
-	// the detailed reverse-proxy relationship check.
-	reverseProxyRoutes, reverseProxyErr := ctx.Facts.ReverseProxyRoutes()
-	for _, route := range reverseProxyRoutes {
-		frontend := matchingListener(listeners, route.FrontendPort, route.FrontendTransport)
-		if frontend == nil || (frontend.Scope != "public" && frontend.Scope != "public-wildcard") {
+	if panel.ManagementMetadataError != "" {
+		counts.unknowns++
+		f.Evidence = append(f.Evidence, model.Evidence{Source: panel.Database, Key: "management_metadata", Value: "unavailable: " + truncate(panel.ManagementMetadataError, 240)})
+	}
+	if panel.DefaultCredentialKnown {
+		f.Evidence = append(f.Evidence, model.Evidence{Source: panel.Product + " settings", Key: "default_credential", Value: strconv.FormatBool(panel.DefaultCredential)})
+		if panel.DefaultCredential {
+			f.Status, f.Severity = model.Risk, model.Critical
+		}
+	}
+	endpoint, ok := managementEndpoint(panel)
+	if !ok || endpoint.Port == "" {
+		counts.unknowns++
+		f.Evidence = append(f.Evidence, model.Evidence{Source: panel.Product + " settings", Key: "panel_port", Value: "unavailable"})
+		return
+	}
+	f.Evidence = append(f.Evidence, model.Evidence{Source: endpoint.Source, Key: "management_endpoint", Value: fmt.Sprintf("product=%s listen=%s port=%s/tcp tls=%s path_default=%s", panel.Product, endpoint.Listen, endpoint.Port, knownBool(endpoint.TLS, endpoint.TLSKnown), knownBool(endpoint.PathIsDefault, endpoint.PathKnown))})
+	if !endpoint.PathKnown {
+		counts.pathUnknown++
+	}
+	if evidence.listenerErr != nil {
+		counts.unknowns++
+		return
+	}
+	scope, found := panelListenerScope(evidence.listeners, endpoint.Port, f)
+	if !found {
+		counts.inactive++
+		return
+	}
+	if scope != "public" && scope != "public-wildcard" {
+		return
+	}
+	family := panelListenerFamily(evidence.listeners, endpoint.Port, scope)
+	disposition := panelFirewallDispositionFamily(evidence.firewall, endpoint.Port, family, f)
+	judgment := "public-management-restricted-by-host-firewall"
+	switch disposition {
+	case "allow-anywhere", "inactive":
+		counts.publicUnrestricted++
+		f.Status, f.Severity = model.Risk, model.High
+		judgment = "public-management-exposed"
+	case "restricted", "blocked-by-default", "blocked-by-explicit-rule":
+	default:
+		counts.unknowns++
+		judgment = "public-management-firewall-unknown"
+	}
+	if endpoint.PathKnown && endpoint.PathIsDefault {
+		counts.publicDefaultPath++
+		judgment += "+root-or-default-path"
+	}
+	if endpoint.TLSKnown && !endpoint.TLS {
+		counts.publicPlaintext++
+		judgment += "+plaintext-panel"
+	}
+	f.Evidence = append(f.Evidence, model.Evidence{Source: endpoint.Source + " + ss + host firewall", Key: "management_posture", Value: fmt.Sprintf("product=%s port=%s/tcp scope=%s firewall=%s tls=%s path_default=%s judgment=%s", panel.Product, endpoint.Port, scope, disposition, knownBool(endpoint.TLS, endpoint.TLSKnown), knownBool(endpoint.PathIsDefault, endpoint.PathKnown), judgment)})
+}
+
+func panelListenerFamily(listeners []Listener, port, scope string) string {
+	for _, listener := range listeners {
+		if listener.Port == port && strings.HasPrefix(listener.Protocol, "tcp") && listener.Scope == scope {
+			return listenerAddressFamily(listener.Address)
+		}
+	}
+	return "any"
+}
+
+func evaluateReverseProxyPanelManagement(f *model.Finding, evidence panelManagementEvidence, counts *panelManagementCounts) {
+	for _, route := range evidence.routes {
+		frontend := matchingListener(evidence.listeners, route.FrontendPort, route.FrontendTransport)
+		if frontend == nil || (frontend.Scope != "public" && frontend.Scope != "public-wildcard") || classifyAddress(route.BackendAddress) == "unknown" || matchingBackendListener(evidence.listeners, route.BackendAddress, route.BackendPort, "tcp") == nil {
 			continue
 		}
-		if classifyAddress(route.BackendAddress) == "unknown" || matchingBackendListener(listeners, route.BackendAddress, route.BackendPort, "tcp") == nil {
-			continue
-		}
-		disposition := firewallDispositionFamily(ufw, route.FrontendPort, "tcp", listenerAddressFamily(frontend.Address))
+		disposition := firewallDispositionFamily(evidence.firewall, route.FrontendPort, "tcp", listenerAddressFamily(frontend.Address))
 		if disposition != "allow-anywhere" && disposition != "inactive" {
 			continue
 		}
-		for _, panel := range panels {
+		for _, panel := range evidence.panels {
 			endpoint, ok := managementEndpoint(panel)
 			if !ok || endpoint.Port != route.BackendPort {
 				continue
 			}
-			publicReverseProxy++
-			raiseRisk(&f, model.High)
+			counts.publicReverseProxy++
+			raiseRisk(f, model.High)
 			judgment := "public-reverse-proxy-management-exposed"
 			if route.Access == "path-gated" {
 				judgment = "public-path-gated-reverse-proxy-management-exposed"
@@ -169,46 +211,36 @@ func checkPanelManagement(ctx *Context) model.Finding {
 			f.Evidence = append(f.Evidence, model.Evidence{Source: route.Source + " + ss + host firewall", Key: "management_posture", Value: fmt.Sprintf("product=%s port=%s/tcp scope=%s firewall=%s tls=unknown path_default=%s judgment=%s", panel.Product, route.FrontendPort, frontend.Scope, disposition, knownBool(endpoint.PathIsDefault, endpoint.PathKnown), judgment)})
 		}
 	}
-	for _, panel := range containerPanels {
-		products = append(products, panel.product)
-		unknowns++
-		f.Evidence = append(f.Evidence, model.Evidence{Source: "docker ps", Key: "container_panel", Value: fmt.Sprintf("product=%s name=%s image=%s", panel.product, panel.name, panel.image)})
-		if len(panel.ports) == 0 {
-			detail := "no directly published ports; management access may use a reverse-proxy network"
-			if panel.hostNetwork {
-				detail = "host network; management port requires a product adapter or listener correlation"
-			}
-			f.Evidence = append(f.Evidence, model.Evidence{Source: "docker inspect", Key: panel.name, Value: detail})
-		} else {
-			for _, line := range panel.ports {
-				f.Evidence = append(f.Evidence, model.Evidence{Source: "docker inspect", Key: panel.name, Value: truncate(line, 180)})
-			}
+}
+
+func recordContainerPanelManagement(f *model.Finding, panel containerPanelInstall, counts *panelManagementCounts) {
+	counts.products = append(counts.products, panel.product)
+	counts.unknowns++
+	f.Evidence = append(f.Evidence, model.Evidence{Source: "docker ps", Key: "container_panel", Value: fmt.Sprintf("product=%s name=%s image=%s", panel.product, panel.name, panel.image)})
+	if len(panel.ports) == 0 {
+		detail := "no directly published ports; management access may use a reverse-proxy network"
+		if panel.hostNetwork {
+			detail = "host network; management port requires a product adapter or listener correlation"
 		}
+		f.Evidence = append(f.Evidence, model.Evidence{Source: "docker inspect", Key: panel.name, Value: detail})
+		return
 	}
-	sort.Strings(products)
-	f.Facts["products"] = strings.Join(products, ",")
-	f.Facts["ports_unavailable"] = strconv.Itoa(unknowns)
-	f.Facts["panels_not_listening"] = strconv.Itoa(inactive)
-	f.Facts["public_unrestricted_management"] = strconv.Itoa(publicUnrestricted)
-	f.Facts["public_plaintext_management"] = strconv.Itoa(publicPlaintext)
-	f.Facts["public_default_path_management"] = strconv.Itoa(publicDefaultPath)
-	f.Facts["management_path_unknown"] = strconv.Itoa(pathUnknown)
-	f.Facts["public_reverse_proxy_management"] = strconv.Itoa(publicReverseProxy)
-	f.Facts["unsupported_panel_schemas"] = strconv.Itoa(unsupportedSchemas)
-	if f.Status != model.Risk {
-		if unsupportedSchemas > 0 {
-			f.Status, f.Unavailable = model.Unknown, true
-			f.Error = "one or more panel database schemas are not supported; management-panel conclusions are incomplete"
-		} else if unknowns > 0 {
-			f.Status, f.Unavailable = model.Unknown, true
-			f.Error = "management-panel exposure could not be determined from the available port, listener, and firewall evidence"
-		} else if inactive == len(panels) && len(containerPanels) == 0 {
-			f.Status = model.Info
-		}
+	for _, line := range panel.ports {
+		f.Evidence = append(f.Evidence, model.Evidence{Source: "docker inspect", Key: panel.name, Value: truncate(line, 180)})
 	}
-	f = withIncompleteEvidence(f, "host firewall discovery", ufw.collectionErr)
-	f = withIncompleteEvidence(f, "panel and container discovery", panelDiscoveryErr)
-	return withIncompleteEvidence(f, "reverse-proxy configuration discovery", reverseProxyErr)
+}
+
+func (counts *panelManagementCounts) writeFacts(f *model.Finding) {
+	sort.Strings(counts.products)
+	f.Facts["products"] = strings.Join(counts.products, ",")
+	f.Facts["ports_unavailable"] = strconv.Itoa(counts.unknowns)
+	f.Facts["panels_not_listening"] = strconv.Itoa(counts.inactive)
+	f.Facts["public_unrestricted_management"] = strconv.Itoa(counts.publicUnrestricted)
+	f.Facts["public_plaintext_management"] = strconv.Itoa(counts.publicPlaintext)
+	f.Facts["public_default_path_management"] = strconv.Itoa(counts.publicDefaultPath)
+	f.Facts["management_path_unknown"] = strconv.Itoa(counts.pathUnknown)
+	f.Facts["public_reverse_proxy_management"] = strconv.Itoa(counts.publicReverseProxy)
+	f.Facts["unsupported_panel_schemas"] = strconv.Itoa(counts.unsupportedSchemas)
 }
 
 func managementEndpoint(panel panelSnapshot) (panelEndpoint, bool) {
@@ -281,11 +313,6 @@ func panelProductFromContainer(value string) (string, bool) {
 	}
 }
 
-func regularFile(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir()
-}
-
 func parsePanelPort(product, output string) (string, bool) {
 	pattern := `(?mi)^\s*(?:port|webPort)\s*:\s*([0-9]{1,5})\s*$`
 	if product == "S-UI" {
@@ -351,7 +378,7 @@ func checkFilesystem(ctx *Context) []model.Finding {
 	checked := 0
 	var discoveryErr error
 	for _, t := range targets {
-		info, err := os.Stat(t.path)
+		info, err := ctx.Facts.Stat(t.path)
 		if err != nil {
 			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s: %w", t.path, err))
 			continue
@@ -369,7 +396,7 @@ func checkFilesystem(ctx *Context) []model.Finding {
 		}
 	}
 	for _, path := range []string{"/tmp", "/var/tmp", "/dev/shm"} {
-		info, err := os.Stat(path)
+		info, err := ctx.Facts.Stat(path)
 		if err != nil {
 			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s: %w", path, err))
 			continue
@@ -394,9 +421,9 @@ func checkFilesystem(ctx *Context) []model.Finding {
 	return []model.Finding{withIncompleteEvidence(f, "sensitive filesystem metadata", discoveryErr)}
 }
 
-func checkTemporaryExecutables() model.Finding {
+func checkTemporaryExecutables(ctx *Context) model.Finding {
 	f := model.Finding{ID: "PERSIST-002", Category: "persistence", Status: model.Pass, Facts: map[string]string{}}
-	entries, err := safefs.ReadDirectoryBounded("/proc", procDirectoryEntryLimit)
+	entries, err := ctx.Facts.ReadDirectory("/proc", procDirectoryEntryLimit)
 	if err != nil {
 		return unknown("PERSIST-002", "persistence", "/proc", err.Error())
 	}
@@ -411,7 +438,7 @@ func checkTemporaryExecutables() model.Finding {
 		if _, err := strconv.Atoi(entry.Name()); err != nil {
 			continue
 		}
-		target, err := os.Readlink(filepath.Join("/proc", entry.Name(), "exe"))
+		target, err := ctx.Facts.Readlink(path.Join("/proc", entry.Name(), "exe"))
 		if err != nil {
 			if !errors.Is(err, fs.ErrNotExist) {
 				unavailable++
@@ -454,7 +481,7 @@ func checkPersistence(ctx *Context) []model.Finding {
 		{"base64-decoded-shell", regexp.MustCompile(`(?i)base64\s+(-d|--decode).{0,120}(\||;).{0,40}(sh|bash)`)},
 	}
 	paths := []string{"/etc/rc.local", "/etc/ld.so.preload", "/etc/crontab"}
-	discovered, discoveryErr := discoverExistingFiles(2048, "/etc/cron.d/*", "/etc/systemd/system/*.service", "/etc/systemd/system/*.timer", "/etc/systemd/system/*/*.service")
+	discovered, discoveryErr := discoverExistingFilesFromSnapshot(ctx.Facts.files, 2048, "/etc/cron.d/*", "/etc/systemd/system/*.service", "/etc/systemd/system/*.timer", "/etc/systemd/system/*/*.service")
 	paths = append(paths, discovered...)
 	discoveredSet := make(map[string]bool, len(discovered))
 	for _, path := range discovered {
@@ -463,9 +490,9 @@ func checkPersistence(ctx *Context) []model.Finding {
 	indicators := 0
 	scanned := 0
 	for _, path := range paths {
-		data, err := readSmall(path, 4<<20)
+		data, err := ctx.Facts.ReadSmall(path, 4<<20)
 		if err != nil {
-			if persistenceReadFailureIncomplete(path, err, discoveredSet[path]) {
+			if persistenceReadFailureIncomplete(ctx, path, err, discoveredSet[path]) {
 				discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s: %w", path, err))
 			}
 			continue
@@ -484,7 +511,7 @@ func checkPersistence(ctx *Context) []model.Finding {
 				}
 			}
 		}
-		if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink == 0 && tooOpen(info, 0o022) {
+		if info, err := ctx.Facts.Lstat(path); err == nil && info.Mode()&os.ModeSymlink == 0 && tooOpen(info, 0o022) {
 			indicators++
 			f.Evidence = append(f.Evidence, model.Evidence{Source: "stat", Key: "writable_startup_file", Value: path + " mode=" + modeString(info)})
 		}
@@ -495,10 +522,10 @@ func checkPersistence(ctx *Context) []model.Finding {
 		f.Status, f.Severity = model.Risk, model.High
 	}
 	f = withIncompleteEvidence(f, "startup-file discovery", discoveryErr)
-	return []model.Finding{f, checkTemporaryExecutables()}
+	return []model.Finding{f, checkTemporaryExecutables(ctx)}
 }
 
-func persistenceReadFailureIncomplete(path string, readErr error, discovered bool) bool {
+func persistenceReadFailureIncomplete(ctx *Context, path string, readErr error, discovered bool) bool {
 	if readErr == nil {
 		return false
 	}
@@ -508,108 +535,11 @@ func persistenceReadFailureIncomplete(path string, readErr error, discovered boo
 	// systemd glob results legitimately include masked units that resolve to
 	// /dev/null and stale wants/ aliases. Neither is an executable persistence
 	// file, so do not turn a disabled unit into unavailable evidence.
-	info, statErr := os.Stat(path)
+	info, statErr := ctx.Facts.Stat(path)
 	return !errors.Is(statErr, fs.ErrNotExist) && (statErr != nil || info.Mode().IsRegular())
 }
 
-func checkLogAndInodePressure(ctx *Context) model.Finding {
-	f := model.Finding{ID: "REL-002", Category: "reliability", Status: model.Info, Facts: map[string]string{}}
-	if ctx.Commander.Exists("df") {
-		r := ctx.Commander.Run(8*time.Second, "df", "-Pi", "/")
-		if r.Err == nil {
-			rows := lines(r.Stdout)
-			if len(rows) > 1 {
-				fields := strings.Fields(rows[len(rows)-1])
-				if len(fields) >= 5 {
-					f.Facts["root_inode_used_percent"] = strings.TrimSuffix(fields[4], "%")
-					f.Evidence = append(f.Evidence, model.Evidence{Source: "df -Pi /", Key: "inode_use", Value: fields[4]})
-				}
-			}
-		}
-	}
-	if ctx.Commander.Exists("journalctl") {
-		r := ctx.Commander.Run(10*time.Second, "journalctl", "--disk-usage", "--no-pager")
-		if r.Err == nil {
-			f.Evidence = append(f.Evidence, model.Evidence{Source: "journalctl --disk-usage", Key: "journal_size", Value: truncate(strings.TrimSpace(r.Stdout), 180)})
-		}
-	}
-	if ctx.Commander.Exists("docker") {
-		r := ctx.Commander.Run(15*time.Second, "docker", "system", "df", "--format", "{{json .}}")
-		if r.Err == nil {
-			f.Evidence = append(f.Evidence, model.Evidence{Source: "docker system df", Key: "docker_storage_rows", Value: strconv.Itoa(len(lines(r.Stdout)))})
-		}
-	}
-	if len(f.Evidence) == 0 {
-		return unknown("REL-002", "reliability", "df, journalctl, docker", "storage pressure evidence was unavailable")
-	}
-	return f
-}
-
 func checkReliability(ctx *Context) []model.Finding {
-	f := model.Finding{ID: "REL-001", Category: "reliability", Status: model.Pass, Facts: map[string]string{}}
-	oom, cores := 0, 0
-	var discoveryErr error
-	if ctx.Commander.Exists("journalctl") {
-		r := ctx.Commander.Run(25*time.Second, "journalctl", "-k", "--since", sinceArg(ctx.LogSince), "--no-pager", "-o", "cat")
-		if r.Truncated || r.Err != nil {
-			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("journalctl -k: %s", commandError(r)))
-			f.Evidence = append(f.Evidence, model.Evidence{Source: "journalctl -k", Key: "unavailable", Value: commandError(r)})
-		} else {
-			re := regexp.MustCompile(`(?i)(out of memory|oom-kill|killed process \d+)`)
-			for _, line := range lines(r.Stdout) {
-				if re.MatchString(line) {
-					oom++
-					if len(f.Evidence) < 25 {
-						f.Evidence = append(f.Evidence, model.Evidence{Source: "journalctl -k", Key: "oom", Value: truncate(line, 350)})
-					}
-				}
-			}
-		}
-	}
-	if ctx.Commander.Exists("coredumpctl") {
-		r := ctx.Commander.Run(20*time.Second, "coredumpctl", "list", "--since", sinceArg(ctx.LogSince), "--no-pager", "--no-legend")
-		if r.Truncated || r.Err != nil {
-			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("coredumpctl: %s", commandError(r)))
-			f.Evidence = append(f.Evidence, model.Evidence{Source: "coredumpctl", Key: "unavailable", Value: commandError(r)})
-		} else {
-			coreLines := lines(r.Stdout)
-			cores = len(coreLines)
-			for i, line := range coreLines {
-				if i >= 20 {
-					break
-				}
-				f.Evidence = append(f.Evidence, model.Evidence{Source: "coredumpctl", Key: "core", Value: truncate(line, 350)})
-			}
-		}
-	}
-	storage := "auto"
-	for _, path := range []string{"/etc/systemd/journald.conf"} {
-		if data, err := readSmall(path, 2<<20); err == nil {
-			for _, line := range lines(data) {
-				if strings.HasPrefix(strings.TrimSpace(line), "Storage=") && !strings.HasPrefix(strings.TrimSpace(line), "#") {
-					_, storage, _ = strings.Cut(line, "=")
-				}
-			}
-		}
-	}
-	persistent := false
-	if info, err := os.Stat("/var/log/journal"); err == nil && info.IsDir() {
-		persistent = true
-	}
-	diskFreePercent := diskFreePercent("/")
-	f.Facts["oom_events"] = strconv.Itoa(oom)
-	f.Facts["core_dumps"] = strconv.Itoa(cores)
-	f.Facts["journal_storage"] = strings.TrimSpace(storage)
-	f.Facts["journal_persistent_directory"] = strconv.FormatBool(persistent)
-	f.Facts["root_disk_free_percent"] = strconv.Itoa(diskFreePercent)
-	if oom > 0 || cores > 0 || (diskFreePercent >= 0 && diskFreePercent < 10) {
-		f.Status, f.Severity = model.Risk, model.Medium
-	}
-	f.Evidence = append(f.Evidence,
-		model.Evidence{Source: "summary", Key: "oom_events", Value: strconv.Itoa(oom)},
-		model.Evidence{Source: "summary", Key: "core_dumps", Value: strconv.Itoa(cores)},
-		model.Evidence{Source: "/var/log/journal", Key: "persistent", Value: strconv.FormatBool(persistent)},
-		model.Evidence{Source: "statfs /", Key: "free_percent", Value: strconv.Itoa(diskFreePercent)},
-	)
-	return []model.Finding{withIncompleteEvidence(f, "reliability log discovery", discoveryErr), checkLogAndInodePressure(ctx)}
+	snapshot := collectReliabilitySnapshot(ctx)
+	return []model.Finding{evaluateReliability(snapshot), evaluateLogAndInodePressure(snapshot)}
 }

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sakkaku404/vps-scope/internal/model"
 )
@@ -125,6 +126,7 @@ func TestWithIncompleteEvidenceCannotRemainPass(t *testing.T) {
 }
 
 func TestPersistenceDiscoveryIgnoresMaskedAndBrokenUnitAliases(t *testing.T) {
+	ctx := &Context{Facts: &FactStore{files: newFileEvidenceSnapshot(osFileEvidenceSource{})}}
 	root := t.TempDir()
 	broken := filepath.Join(root, "broken.service")
 	masked := filepath.Join(root, "masked.service")
@@ -139,7 +141,7 @@ func TestPersistenceDiscoveryIgnoresMaskedAndBrokenUnitAliases(t *testing.T) {
 		if readErr == nil {
 			t.Fatalf("expected read failure for %s", path)
 		}
-		if persistenceReadFailureIncomplete(path, readErr, true) {
+		if persistenceReadFailureIncomplete(ctx, path, readErr, true) {
 			t.Fatalf("disabled systemd alias became incomplete evidence: %s: %v", path, readErr)
 		}
 	}
@@ -246,7 +248,7 @@ func TestRuntimeExpectedWireGuardListener(t *testing.T) {
 	cmd := newScenarioCommander([]string{"wg"}, map[string]CommandResult{
 		scenarioCommandKey("wg", "show", "all", "listen-port"): {Stdout: "hiddifywg\t32247\n"},
 	})
-	ctx := &Context{Options: Options{Commander: cmd}}
+	ctx := &Context{Options: Options{Commander: cmd}, Facts: NewFactStore(cmd, false)}
 	expected, err := runtimeExpectedPublicListeners(ctx)
 	if err != nil || !expected["32247/udp"] {
 		t.Fatal("active WireGuard listen port was not recognized")
@@ -413,6 +415,46 @@ func TestContextualPasswordPolicyParsers(t *testing.T) {
 	}
 	if hasPasswordQualityPolicy("# password requisite pam_pwquality.so\npassword sufficient pam_unix.so\n") {
 		t.Fatal("commented pam_pwquality was detected")
+	}
+}
+
+func TestContextualPasswordPolicyTreatsKeyboardInteractiveAsPasswordPath(t *testing.T) {
+	cmd := newScenarioCommander([]string{"sshd"}, scenarioResult("sshd", []string{"-T"}, "passwordauthentication no\nkbdinteractiveauthentication yes\npermitrootlogin prohibit-password\npubkeyauthentication yes\n"))
+	facts := newFactStoreAt(cmd, false, time.Unix(1, 0), mapFileEvidenceSource{files: map[string]string{
+		"/etc/shadow": "alice:$y$hash:1:2:3\n",
+	}})
+	ctx := scenarioContext(cmd)
+	ctx.Facts = facts
+	finding := checkPasswordPolicy(ctx, []passwdEntry{{Name: "alice", UID: 1000, Home: "/home/alice", Shell: "/bin/bash"}})
+	if finding.Status != model.Unknown || !finding.Unavailable {
+		t.Fatalf("missing PAM evidence with keyboard-interactive enabled produced %+v", finding)
+	}
+	if finding.Facts["ssh_password_path_enabled"] != "true" || finding.Facts["pam_password_policy_readable"] != "false" {
+		t.Fatalf("password-path facts=%v", finding.Facts)
+	}
+}
+
+func TestUDPTransportContextRequiresCoreBufferEvidence(t *testing.T) {
+	cmd := newScenarioCommander(nil, nil)
+	for name, source := range map[string]mapFileEvidenceSource{
+		"complete": {files: map[string]string{
+			"/proc/sys/net/core/rmem_max": "212992\n",
+			"/proc/sys/net/core/wmem_max": "212992\n",
+		}},
+		"missing": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := scenarioContext(cmd)
+			ctx.Facts = newFactStoreAt(cmd, false, time.Unix(1, 0), source)
+			finding := checkProxyTransportContext(ctx, []proxyConfigSummary{{Product: "Hysteria2", UsesUDP: true}})
+			if name == "complete" {
+				if finding.Status != model.Info || finding.Facts["rmem_max"] != "212992" || finding.Facts["wmem_max"] != "212992" {
+					t.Fatalf("complete buffer evidence produced %+v", finding)
+				}
+			} else if finding.Status != model.Unknown || !finding.Unavailable {
+				t.Fatalf("missing buffer evidence produced %+v", finding)
+			}
+		})
 	}
 }
 
@@ -680,8 +722,8 @@ func TestSplitProxyEndpoint(t *testing.T) {
 	tests := []struct{ input, host, port string }{
 		{"127.0.0.1:9090", "127.0.0.1", "9090"},
 		{"[::]:443", "::", "443"},
-		{":8080", "::", "8080"},
-		{"8443", "::", "8443"},
+		{":8080", "*", "8080"},
+		{"8443", "*", "8443"},
 	}
 	for _, test := range tests {
 		host, port, ok := splitEndpoint(test.input)

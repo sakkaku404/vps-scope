@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sakkaku404/vps-scope/internal/audit"
 	"github.com/sakkaku404/vps-scope/internal/model"
@@ -30,6 +31,24 @@ func TestSubcommandHelpIsSuccessfulAndUsesProvidedWriter(t *testing.T) {
 		}
 		if !strings.Contains(strings.ToLower(out.String()), "usage") {
 			t.Fatalf("%v produced no usage text: %q", args, out.String())
+		}
+	}
+}
+
+func TestPublicCommandsRejectInvalidLanguageAndUnexpectedArguments(t *testing.T) {
+	tests := [][]string{
+		{"audit", "unexpected"},
+		{"doctor", "unexpected"},
+		{"checks", "unexpected"},
+		{"version", "unexpected"},
+		{"help", "unexpected"},
+		{"checks", "--lang", "not-a-language"},
+		{"audit", "--format", "text", "--also-terminal"},
+	}
+	for _, args := range tests {
+		var output bytes.Buffer
+		if err := Run(args, bytes.NewReader(nil), &output, &output, BuildInfo{Version: "test"}); err == nil {
+			t.Fatalf("%v succeeded", args)
 		}
 	}
 }
@@ -222,6 +241,36 @@ func TestParseDurationDays(t *testing.T) {
 	}
 }
 
+func TestParseDurationRejectsOverflowAndExcessiveLookback(t *testing.T) {
+	for _, value := range []string{"0s", "367d", "1000000000000000000d", "8784h1s"} {
+		if _, err := parseDuration(value); err == nil {
+			t.Fatalf("parseDuration(%q) succeeded", value)
+		}
+	}
+	if got, err := parseDuration("366d"); err != nil || got != audit.MaxLogSince {
+		t.Fatalf("maximum duration = %v, %v", got, err)
+	}
+}
+
+func TestDisplayAndReportNamesRemainUnicodeSafe(t *testing.T) {
+	if got := truncateDisplay("你好世界", 3); got != "你好…" || !utf8.ValidString(got) {
+		t.Fatalf("unicode truncation = %q", got)
+	}
+	name := safeName("测试主机")
+	if name == "" || !strings.HasPrefix(name, "host-") {
+		t.Fatalf("safeName = %q", name)
+	}
+	root := t.TempDir()
+	t.Setenv("VPS_SCOPE_REPORT_DIR", root)
+	path, err := defaultBundleDir(model.Report{Host: model.Host{Hostname: "测试主机"}, StartedAt: time.Unix(1, 0).UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := filepath.Dir(filepath.Dir(path)); got != root {
+		t.Fatalf("latest root would be %q, want %q", got, root)
+	}
+}
+
 func TestAtomicWriteNewPublishesCompleteFileWithoutOverwrite(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "report.json")
@@ -321,7 +370,7 @@ func TestVerifyKeepsLegacyReportReadable(t *testing.T) {
 
 func appContractReport() model.Report {
 	r := model.Report{
-		SchemaVersion: "1.0", ToolVersion: "0.13.0", Locale: "en",
+		SchemaVersion: "1.0", ToolVersion: "1.0.0", Locale: "en",
 		StartedAt: time.Unix(1, 0).UTC(), FinishedAt: time.Unix(2, 0).UTC(),
 		LogSince: "168h0m0s",
 		Host:     model.Host{StableID: "fixture-id", Hostname: "fixture", OS: "debian", OSVersion: "12", Kernel: "fixture-kernel", Architecture: "x86_64"},

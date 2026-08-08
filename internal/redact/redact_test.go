@@ -26,6 +26,41 @@ func TestReportStableTokens(t *testing.T) {
 	}
 }
 
+func TestStableHostTokenSurvivesIndependentRedactionWithoutCrossHostCollision(t *testing.T) {
+	a1 := New().Report(model.Report{Host: model.Host{StableID: "machine-a"}}).Host.StableID
+	a2 := New().Report(model.Report{Host: model.Host{StableID: "machine-a"}}).Host.StableID
+	b := New().Report(model.Report{Host: model.Host{StableID: "machine-b"}}).Host.StableID
+	if a1 == "" || a1 != a2 {
+		t.Fatalf("same host did not retain one pseudonym: %q vs %q", a1, a2)
+	}
+	if a1 == b {
+		t.Fatalf("different hosts collapsed to one pseudonym: %q", a1)
+	}
+	if strings.Contains(a1, "machine-a") || !strings.HasPrefix(a1, "HOST_ID_") {
+		t.Fatalf("unsafe host pseudonym: %q", a1)
+	}
+}
+
+func TestReportRedactionKeepsExistingHostPseudonymStable(t *testing.T) {
+	first := New().Report(model.Report{Host: model.Host{StableID: "machine-a"}})
+	second := New().Report(first)
+	if first.Host.StableID != second.Host.StableID {
+		t.Fatalf("redaction was not idempotent: %q -> %q", first.Host.StableID, second.Host.StableID)
+	}
+	legacy := model.Report{Host: model.Host{StableID: "HOST_ID_1"}, Metadata: map[string]string{"redacted": "true"}}
+	if got := New().Report(legacy).Host.StableID; got != "HOST_ID_1" {
+		t.Fatalf("legacy identity was falsely upgraded: %q", got)
+	}
+}
+
+func TestRedactorPreservesNetworkSemanticAddresses(t *testing.T) {
+	r := New()
+	got := r.text("listen=0.0.0.0 ipv6=:: local=127.0.0.1 remote=203.0.113.9")
+	if got != "listen=0.0.0.0 ipv6=:: local=127.0.0.1 remote=IP_1" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestReportRedactsFactsErrorsMetadataAndProfileReasons(t *testing.T) {
 	in := model.Report{
 		Profile:   model.Profile{Reasons: []string{"domain secret.example.net"}},
@@ -94,8 +129,11 @@ func TestReportRedactsDeploymentWithoutBreakingTopologyLinks(t *testing.T) {
 		t.Fatal("deployment was not deep-copied")
 	}
 	component, endpoint, link := out.Deployment.Components[0], out.Deployment.Endpoints[0], out.Deployment.Links[0]
-	if component.ID != in.Deployment.Components[0].ID || endpoint.ID != in.Deployment.Endpoints[0].ID || endpoint.ComponentID != component.ID {
-		t.Fatalf("topology IDs changed: component=%q endpoint=%q reference=%q", component.ID, endpoint.ID, endpoint.ComponentID)
+	if component.ID == in.Deployment.Components[0].ID || endpoint.ID == in.Deployment.Endpoints[0].ID {
+		t.Fatalf("topology IDs retained reversible source hashes: component=%q endpoint=%q", component.ID, endpoint.ID)
+	}
+	if endpoint.ComponentID != component.ID {
+		t.Fatalf("topology reference was not remapped: component=%q endpoint reference=%q", component.ID, endpoint.ComponentID)
 	}
 	if link.From != component.ID || link.To != endpoint.ID || link.Kind != "declares" {
 		t.Fatalf("topology link changed: %+v", link)
@@ -115,6 +153,29 @@ func TestReportRedactsDeploymentWithoutBreakingTopologyLinks(t *testing.T) {
 	}
 	if in.Deployment.Components[0].Product != "registry.secret.example.net/proxy" || in.Deployment.Endpoints[0].Address != "198.51.100.8" {
 		t.Fatal("input deployment was mutated")
+	}
+}
+
+func TestRedactedTopologyIDsAreStablePerHostAndDistinctAcrossHosts(t *testing.T) {
+	deployment := &model.Deployment{
+		Components: []model.Component{{ID: "component:0123456789abcdef", Product: "sing-box", Kind: "proxy-core"}},
+		Endpoints:  []model.ServiceEndpoint{{ID: "endpoint:0123456789abcdef", ComponentID: "component:0123456789abcdef", Product: "sing-box", Role: "proxy-ingress", Transport: "tcp", Port: 443}},
+		Links:      []model.TopologyLink{{From: "component:0123456789abcdef", To: "endpoint:0123456789abcdef", Kind: "declares"}},
+	}
+	makeReport := func(stableID string) model.Report {
+		return model.Report{Host: model.Host{StableID: stableID}, Deployment: deployment}
+	}
+	a1 := New().Report(makeReport("machine-a"))
+	a2 := New().Report(makeReport("machine-a"))
+	b := New().Report(makeReport("machine-b"))
+	if a1.Deployment.Components[0].ID != a2.Deployment.Components[0].ID || a1.Deployment.Endpoints[0].ID != a2.Deployment.Endpoints[0].ID {
+		t.Fatal("same-host topology pseudonyms drifted")
+	}
+	if a1.Deployment.Components[0].ID == b.Deployment.Components[0].ID || a1.Deployment.Endpoints[0].ID == b.Deployment.Endpoints[0].ID {
+		t.Fatal("different hosts shared topology pseudonyms")
+	}
+	if a1.Deployment.Links[0].From != a1.Deployment.Components[0].ID || a1.Deployment.Links[0].To != a1.Deployment.Endpoints[0].ID {
+		t.Fatalf("remapped link is invalid: %+v", a1.Deployment.Links[0])
 	}
 }
 

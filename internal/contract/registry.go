@@ -22,9 +22,11 @@ const (
 
 // Check describes one stable report-v1 check.
 type Check struct {
-	ID         string
-	Category   string
-	ActionBand ActionBand
+	ID              string
+	Category        string
+	ActionBand      ActionBand
+	IntroducedMajor int
+	IntroducedMinor int
 }
 
 var categoryOrder = []string{
@@ -37,7 +39,8 @@ var checks = []Check{
 	{ID: "ACC-001", Category: "accounts"}, {ID: "ACC-002", Category: "accounts"}, {ID: "ACC-003", Category: "accounts"},
 	{ID: "SSH-001", Category: "ssh"}, {ID: "SSH-002", Category: "ssh"}, {ID: "SSH-003", Category: "ssh"}, {ID: "SSH-004", Category: "ssh"}, {ID: "SSH-005", Category: "ssh"},
 	{ID: "PRIV-001", Category: "privileges"}, {ID: "PRIV-002", Category: "privileges"},
-	{ID: "NET-001", Category: "network"}, {ID: "NET-002", Category: "network"}, {ID: "NET-003", Category: "network"}, {ID: "NET-004", Category: "network"},
+	{ID: "NET-001", Category: "network"}, {ID: "NET-002", Category: "network"}, {ID: "NET-003", Category: "network"},
+	{ID: "NET-004", Category: "network", IntroducedMajor: 1},
 	{ID: "FW-001", Category: "firewall"}, {ID: "FW-002", Category: "firewall"},
 	{ID: "AUTH-001", Category: "auth"}, {ID: "AUTH-002", Category: "auth"}, {ID: "AUTH-003", Category: "auth"},
 	{ID: "UPD-001", Category: "updates"}, {ID: "UPD-002", Category: "updates"},
@@ -50,8 +53,10 @@ var checks = []Check{
 	{ID: "WORK-007", Category: "workloads"}, {ID: "WORK-008", Category: "workloads"},
 	{ID: "WORK-009", Category: "workloads", ActionBand: ActionBandAvailability},
 	{ID: "WORK-010", Category: "workloads", ActionBand: ActionBandAvailability}, {ID: "WORK-011", Category: "workloads"}, {ID: "WORK-012", Category: "workloads"},
-	{ID: "WORK-013", Category: "workloads"}, {ID: "WORK-014", Category: "workloads"}, {ID: "WORK-015", Category: "workloads"},
-	{ID: "WORK-016", Category: "workloads"}, {ID: "WORK-017", Category: "workloads"},
+	{ID: "WORK-013", Category: "workloads"}, {ID: "WORK-014", Category: "workloads"},
+	{ID: "WORK-015", Category: "workloads", IntroducedMajor: 1},
+	{ID: "WORK-016", Category: "workloads", IntroducedMajor: 1},
+	{ID: "WORK-017", Category: "workloads", IntroducedMajor: 1},
 	{ID: "FS-001", Category: "filesystem"},
 	{ID: "PERSIST-001", Category: "persistence"}, {ID: "PERSIST-002", Category: "persistence"},
 	{ID: "REL-001", Category: "reliability", ActionBand: ActionBandAvailability}, {ID: "REL-002", Category: "reliability"},
@@ -60,6 +65,14 @@ var checks = []Check{
 var checkIDPattern = regexp.MustCompile(`^[A-Z]+-[0-9]{3}$`)
 
 var checksByID, categoriesByPrefix = indexChecks(checks)
+
+var checkOrderByID = func() map[string]int {
+	order := make(map[string]int, len(checks))
+	for index, check := range checks {
+		order[check.ID] = index
+	}
+	return order
+}()
 
 func indexChecks(registered []Check) (map[string]Check, map[string]string) {
 	byID := make(map[string]Check, len(registered))
@@ -87,6 +100,34 @@ func StableIDs() []string {
 	ids := make([]string, len(checks))
 	for i, check := range checks {
 		ids[i] = check.ID
+	}
+	return ids
+}
+
+// Order returns the stable registry position for a check. Unknown append-only
+// IDs sort after the current contract so older readers remain deterministic.
+func Order(id string) int {
+	if index, ok := checkOrderByID[id]; ok {
+		return index
+	}
+	return len(checks)
+}
+
+// StableIDsForVersion returns the checks that existed in the requested tool
+// version. The first stable report-v1 contract shipped in v0.12; an omitted
+// introduction version on a registry entry therefore means v0.12. Explicit
+// introduction metadata prevents a current verifier from demanding checks
+// that an authentic older report could not contain.
+func StableIDsForVersion(major, minor int) []string {
+	ids := make([]string, 0, len(checks))
+	for _, check := range checks {
+		introducedMajor, introducedMinor := check.IntroducedMajor, check.IntroducedMinor
+		if introducedMajor == 0 && introducedMinor == 0 {
+			introducedMinor = 12
+		}
+		if major > introducedMajor || major == introducedMajor && minor >= introducedMinor {
+			ids = append(ids, check.ID)
+		}
 	}
 	return ids
 }
@@ -190,6 +231,9 @@ func validate(categories []string, registered []Check) error {
 		case ActionBandDefault, ActionBandAvailability:
 		default:
 			return fmt.Errorf("stable check %q has invalid action band %q", check.ID, check.ActionBand)
+		}
+		if check.IntroducedMajor < 0 || check.IntroducedMinor < 0 {
+			return fmt.Errorf("stable check %q has invalid introduction version %d.%d", check.ID, check.IntroducedMajor, check.IntroducedMinor)
 		}
 		categoryCounts[check.Category]++
 	}

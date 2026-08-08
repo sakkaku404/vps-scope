@@ -132,7 +132,7 @@ func TestScenarioPanelAndDockerRiskRelations(t *testing.T) {
 	ctx.Facts.hostFirewallOnce.Do(func() {
 		ctx.Facts.hostFirewall = parsePanelUFW("Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n2053/tcp ALLOW IN Anywhere\n31001/tcp ALLOW IN Anywhere")
 	})
-	panel := panelSnapshot{Product: "3x-ui", Database: "/etc/x-ui/x-ui.db", DatabaseAvailable: true, Endpoints: []panelEndpoint{{Role: "management", Listen: "::", Port: "2053", Source: "fixture", TLSKnown: true, TLS: true}}, Inbounds: []panelInboundFact{{Enabled: true, Listen: "::", Port: "31001", Protocol: "vless", Network: "tcp", Security: "reality", RealityKeySet: true, RealityTargets: 1, RealityIDs: 1}}}
+	panel := panelSnapshot{Product: "3x-ui", Database: "/etc/x-ui/x-ui.db", DatabaseAvailable: true, Endpoints: []panelEndpoint{{Role: "management", Listen: "*", Port: "2053", Source: "fixture", TLSKnown: true, TLS: true}}, Inbounds: []panelInboundFact{{Enabled: true, Listen: "*", Port: "31001", Protocol: "vless", Network: "tcp", Security: "reality", RealityKeySet: true, RealityTargets: 1, RealityIDs: 1}}}
 	ctx.Facts.panelsOnce.Do(func() { ctx.Facts.panels = []panelSnapshot{panel} })
 	container := dockerInspect{Name: "risky"}
 	container.HostConfig.Privileged = true
@@ -381,8 +381,7 @@ func TestFirewallMissingIPv6ConfigurationCannotBecomePass(t *testing.T) {
 
 func TestScenarioIncompleteFirewallFactsPropagateToWorkloadFindings(t *testing.T) {
 	cmd := newScenarioCommander([]string{"wg"}, map[string]CommandResult{
-		scenarioCommandKey("wg", "show", "interfaces"):               {Stdout: "wg0"},
-		scenarioCommandKey("wg", "show", "wg0", "listen-port"):       {Stdout: "51820"},
+		scenarioCommandKey("wg", "show", "all", "listen-port"):       {Stdout: "wg0\t51820"},
 		scenarioCommandKey("wg", "show", "wg0", "peers"):             {},
 		scenarioCommandKey("wg", "show", "wg0", "latest-handshakes"): {},
 	})
@@ -511,7 +510,7 @@ func TestScenarioPublicPlaintextSubscriptionIsHighRisk(t *testing.T) {
 	})
 	panel := panelSnapshot{
 		Product: "3x-ui", Database: "/etc/x-ui/x-ui.db", DatabaseAvailable: true,
-		Endpoints: []panelEndpoint{{Role: "subscription", Port: "2096", Listen: "::", Source: "fixture", TLSKnown: true, TLS: false}},
+		Endpoints: []panelEndpoint{{Role: "subscription", Port: "2096", Listen: "*", Source: "fixture", TLSKnown: true, TLS: false}},
 	}
 	ctx.Facts.panelsOnce.Do(func() { ctx.Facts.panels = []panelSnapshot{panel} })
 	f := checkPanelRuntimeConsistency(ctx, nil)
@@ -597,8 +596,7 @@ func TestScenarioProxyServiceDiscoveryFailureIsUnknown(t *testing.T) {
 
 func TestScenarioWireGuardPartialRuntimeIsUnknown(t *testing.T) {
 	results := map[string]CommandResult{
-		scenarioCommandKey("wg", "show", "interfaces"):               {Stdout: "wg0"},
-		scenarioCommandKey("wg", "show", "wg0", "listen-port"):       {Stdout: "51820"},
+		scenarioCommandKey("wg", "show", "all", "listen-port"):       {Stdout: "wg0\t51820"},
 		scenarioCommandKey("wg", "show", "wg0", "peers"):             {Stdout: "withheld-public-key", Err: fmt.Errorf("peer inventory interrupted")},
 		scenarioCommandKey("wg", "show", "wg0", "latest-handshakes"): {Stdout: "withheld-public-key 1783900800"},
 	}
@@ -727,6 +725,17 @@ func TestScenarioUnavailableReliabilityEvidenceNeverPasses(t *testing.T) {
 	f := findingByID(t, checkReliability(ctx), "REL-001")
 	if f.Status != model.Unknown || !f.Unavailable || f.Facts["evidence_discovery_incomplete"] != "true" {
 		t.Fatalf("finding=%+v", f)
+	}
+}
+
+func TestScenarioMissingReliabilityCommandsNeverPasses(t *testing.T) {
+	ctx := scenarioContext(newScenarioCommander(nil, nil))
+	f := findingByID(t, checkReliability(ctx), "REL-001")
+	if f.Status != model.Unknown || !f.Unavailable || f.Facts["evidence_discovery_incomplete"] != "true" {
+		t.Fatalf("finding=%+v", f)
+	}
+	if !strings.Contains(f.Error, "journalctl") || !strings.Contains(f.Error, "coredumpctl") {
+		t.Fatalf("missing-command evidence not retained: %q", f.Error)
 	}
 }
 

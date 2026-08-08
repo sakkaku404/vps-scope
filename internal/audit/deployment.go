@@ -7,75 +7,113 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/sakkaku404/vps-scope/internal/contract"
 	"github.com/sakkaku404/vps-scope/internal/model"
 )
 
-const maxDeploymentEndpoints = 2048
+const maxDeploymentEndpoints = contract.MaxDeploymentEndpoints
 
 // buildDeployment normalizes configuration, runtime, panel, reverse-proxy,
 // Docker, and firewall facts into one typed view. It contains no policy side
 // effects: stable findings remain the source of PASS/RISK/INFO/UNKNOWN.
 func buildDeployment(ctx *Context, summaries []proxyConfigSummary, configurationErr error) *model.Deployment {
+	evidence := collectDeploymentEvidence(ctx, summaries, configurationErr)
 	b := newDeploymentBuilder()
-	active := activeProxyProducts(ctx)
-
-	listeners, listenerErr := ctx.Facts.Listeners()
-	firewall := ctx.Facts.HostFirewall()
-	panels, panelErr := ctx.Facts.Panels()
-	routes, routeErr := ctx.Facts.ReverseProxyRoutes()
-	containers, dockerErr := []dockerInspect(nil), error(nil)
-	dockerInstalled := ctx.Commander.Exists("docker")
-	if dockerInstalled {
-		containers, dockerErr = ctx.Facts.DockerContainers()
-	}
-
 	b.deployment.Coverage = model.DeploymentCoverage{
-		Configuration: coverageState(len(summaries) > 0, configurationErr),
-		Runtime:       coverageState(len(listeners) > 0, listenerErr),
-		Firewall:      coverageState(firewall.available, firewall.collectionErr),
-		Panels:        coverageState(len(panels) > 0, panelErr),
-		ReverseProxy:  coverageState(len(routes) > 0, routeErr),
+		Configuration: coverageState(len(evidence.summaries) > 0, evidence.configurationErr),
+		Runtime:       coverageState(len(evidence.listeners) > 0, evidence.listenerErr),
+		Firewall:      coverageState(evidence.firewall.available, evidence.firewall.collectionErr),
+		Panels:        coverageState(len(evidence.panels) > 0, evidence.panelErr),
+		ReverseProxy:  coverageState(len(evidence.routes) > 0, evidence.routeErr),
 		Docker:        "not-applicable",
 	}
-	if dockerInstalled {
-		b.deployment.Coverage.Docker = coverageState(true, dockerErr)
+	if evidence.dockerInstalled {
+		b.deployment.Coverage.Docker = coverageState(true, evidence.dockerErr)
 	}
-
-	for _, summary := range summaries {
-		b.component(summary.Product, "proxy-core", summary.Path, productIsActive(active, summary.Product), "native-or-managed", confidenceForError(summary.Err))
-	}
-	for product := range active {
-		b.component(canonicalProductName(product), "proxy-runtime", "process inventory", true, "native-or-managed", "confirmed")
-	}
-	for _, panel := range panels {
-		source := panel.Database
-		if source == "" {
-			source = panel.Binary
-		}
-		b.component(panel.Product, "management-panel", source, productIsActive(active, panel.Product), deploymentKind(panel), panelConfidence(panel))
-	}
-	for _, route := range routes {
-		b.component(route.Product, "reverse-proxy", route.Source, true, "native-or-managed", "confirmed")
-	}
-
+	addDeploymentComponents(b, evidence)
 	claimed := map[string]bool{}
-	connections, connectionErr := ctx.Facts.EstablishedConnections()
-	connectionCounts := map[string]int{}
-	if connectionErr == nil {
+	addProxyIngressEndpoints(b, evidence, claimed)
+	addControlEndpoints(b, evidence, claimed)
+	panelEndpoints := addPanelEndpoints(b, evidence, claimed)
+	addReverseProxyEndpoints(b, evidence, claimed, panelEndpoints)
+	addDockerEndpoints(b, evidence, claimed)
+	addUnclassifiedListenerEndpoints(b, evidence, claimed)
+	if len(b.deployment.Components) == 0 && len(b.deployment.Endpoints) == 0 {
+		return nil
+	}
+	b.finish()
+	ctx.DeploymentBudgetRejects = b.budgetRejects
+	return &b.deployment
+}
+
+type deploymentEvidence struct {
+	summaries        []proxyConfigSummary
+	configurationErr error
+	active           map[string]bool
+	listeners        []Listener
+	listenerErr      error
+	firewall         hostFirewallSnapshot
+	panels           []panelSnapshot
+	panelErr         error
+	routes           []reverseProxyRoute
+	routeErr         error
+	dockerInstalled  bool
+	containers       []dockerInspect
+	dockerErr        error
+	dockerFirewall   dockerFirewallFacts
+	connectionCounts map[string]int
+	connectionErr    error
+}
+
+func collectDeploymentEvidence(ctx *Context, summaries []proxyConfigSummary, configurationErr error) deploymentEvidence {
+	evidence := deploymentEvidence{summaries: summaries, configurationErr: configurationErr, active: activeProxyProducts(ctx)}
+	evidence.listeners, evidence.listenerErr = ctx.Facts.Listeners()
+	evidence.firewall = ctx.Facts.HostFirewall()
+	evidence.panels, evidence.panelErr = ctx.Facts.Panels()
+	evidence.routes, evidence.routeErr = ctx.Facts.ReverseProxyRoutes()
+	evidence.dockerInstalled = ctx.Commander.Exists("docker")
+	if evidence.dockerInstalled {
+		evidence.containers, evidence.dockerErr = ctx.Facts.DockerContainers()
+		if evidence.dockerErr == nil {
+			evidence.dockerFirewall = ctx.Facts.DockerFirewall()
+		}
+	}
+	connections, err := ctx.Facts.EstablishedConnections()
+	evidence.connectionErr = err
+	evidence.connectionCounts = map[string]int{}
+	if err == nil {
 		for _, connection := range connections {
 			_, port := splitHostPortLoose(connection.local)
-			connectionCounts[port]++
+			evidence.connectionCounts[port]++
 		}
 	}
+	return evidence
+}
 
-	inbounds := uniqueProxyInbounds(summaries)
-	for _, assessment := range assessProxyEndpointGraph(buildProxyEndpointGraph(inbounds, listeners, firewall), active) {
+func addDeploymentComponents(b *deploymentBuilder, evidence deploymentEvidence) {
+	for _, summary := range evidence.summaries {
+		b.component(summary.Product, "proxy-core", summary.Path, productIsActive(evidence.active, summary.Product), "native-or-managed", confidenceForError(summary.Err))
+	}
+	for product := range evidence.active {
+		b.component(canonicalRuntimeProductName(product, evidence.panels), "proxy-runtime", "process inventory", true, "native-or-managed", "confirmed")
+	}
+	for _, panel := range evidence.panels {
+		b.component(panel.Product, "management-panel", valueOr(panel.Database, panel.Binary), productIsActive(evidence.active, panel.Product), deploymentKind(panel), panelConfidence(panel))
+	}
+	for _, route := range evidence.routes {
+		b.component(route.Product, "reverse-proxy", route.Source, true, "native-or-managed", "confirmed")
+	}
+}
+
+func addProxyIngressEndpoints(b *deploymentBuilder, evidence deploymentEvidence, claimed map[string]bool) {
+	inbounds := uniqueProxyInbounds(evidence.summaries)
+	for _, assessment := range assessProxyEndpointGraph(buildProxyEndpointGraph(inbounds, evidence.listeners, evidence.firewall), evidence.active) {
 		node := assessment.Node
 		port, err := strconv.Atoi(node.Port)
 		if err != nil || port < 1 || port > 65535 {
 			continue
 		}
-		componentID := b.component(node.Product, "proxy-core", node.Source, productIsActive(active, node.Product), "native-or-managed", "confirmed")
+		componentID := b.component(node.Product, "proxy-core", node.Source, productIsActive(evidence.active, node.Product), "native-or-managed", "confirmed")
 		state, confidence := "configured", "confirmed"
 		if node.Live {
 			state = "live"
@@ -93,74 +131,81 @@ func buildDeployment(ctx *Context, summaries []proxyConfigSummary, configuration
 			Security: node.Security, Firewall: valueOr(node.Firewall, "unknown"), State: state,
 			Judgment: assessment.Judgment, Source: node.Source, Confidence: confidence,
 		}
-		if node.Live && strings.EqualFold(node.Transport, "tcp") && connectionErr == nil {
-			count := connectionCounts[node.Port]
+		if node.Live && strings.EqualFold(node.Transport, "tcp") && evidence.connectionErr == nil {
+			count := evidence.connectionCounts[node.Port]
 			endpoint.ConnectionCount = &count
 		}
 		endpointID := b.endpoint(endpoint)
 		b.link(componentID, endpointID, "declares")
 	}
+}
 
-	for _, summary := range summaries {
-		componentID := b.component(summary.Product, "proxy-core", summary.Path, productIsActive(active, summary.Product), "native-or-managed", confidenceForError(summary.Err))
+func addControlEndpoints(b *deploymentBuilder, evidence deploymentEvidence, claimed map[string]bool) {
+	for _, summary := range evidence.summaries {
+		componentID := b.component(summary.Product, "proxy-core", summary.Path, productIsActive(evidence.active, summary.Product), "native-or-managed", confidenceForError(summary.Err))
 		for _, control := range summary.Controls {
 			port, err := strconv.Atoi(control.Port)
 			if err != nil || port < 1 || port > 65535 {
 				continue
 			}
-			listener := configuredListener(listeners, control.Listen, control.Port, "tcp")
+			listener := configuredListener(evidence.listeners, control.Listen, control.Port, "tcp")
 			endpoint := model.ServiceEndpoint{ComponentID: componentID, Product: control.Product, Role: "control-api", Protocol: control.Kind, Transport: "tcp", Port: port, Address: control.Listen, Scope: classifyAddress(control.Listen), State: "configured", Source: summary.Path, Confidence: "confirmed"}
 			if listener != nil {
 				endpoint.Address, endpoint.Family, endpoint.Scope, endpoint.Process, endpoint.State = listener.Address, listenerAddressFamily(listener.Address), listener.Scope, truncate(listener.Process, 120), "live"
-				endpoint.Firewall = firewallDispositionFamily(firewall, control.Port, "tcp", endpoint.Family)
+				endpoint.Firewall = firewallDispositionFamily(evidence.firewall, control.Port, "tcp", endpoint.Family)
 				claimed[listenerClaimKey("tcp", control.Port, listener.Address)] = true
 			}
-			endpoint.Judgment, endpoint.Confidence = controlJudgment(endpoint, listenerErr, firewall.collectionErr)
+			endpoint.Judgment, endpoint.Confidence = controlJudgment(endpoint, evidence.listenerErr, evidence.firewall.collectionErr)
 			endpointID := b.endpoint(endpoint)
 			b.link(componentID, endpointID, "declares")
 		}
 	}
+}
 
+func addPanelEndpoints(b *deploymentBuilder, evidence deploymentEvidence, claimed map[string]bool) map[string][]string {
 	panelEndpoints := map[string][]string{}
-	for _, panel := range panels {
-		componentID := b.component(panel.Product, "management-panel", valueOr(panel.Database, panel.Binary), productIsActive(active, panel.Product), deploymentKind(panel), panelConfidence(panel))
+	for _, panel := range evidence.panels {
+		componentID := b.component(panel.Product, "management-panel", valueOr(panel.Database, panel.Binary), productIsActive(evidence.active, panel.Product), deploymentKind(panel), panelConfidence(panel))
 		for _, configured := range panel.Endpoints {
 			port, err := strconv.Atoi(configured.Port)
 			if err != nil || port < 1 || port > 65535 {
 				continue
 			}
-			listener := configuredListener(listeners, configured.Listen, configured.Port, "tcp")
+			listener := configuredListener(evidence.listeners, configured.Listen, configured.Port, "tcp")
 			endpoint := model.ServiceEndpoint{ComponentID: componentID, Product: panel.Product, Role: configured.Role, Transport: "tcp", Port: port, Address: configured.Listen, Scope: classifyAddress(configured.Listen), State: "configured", Source: configured.Source, Confidence: "confirmed", TLS: knownBool(configured.TLS, configured.TLSKnown), PathPosture: pathPosture(configured)}
 			if listener != nil {
 				endpoint.Address, endpoint.Family, endpoint.Scope, endpoint.Process, endpoint.State = listener.Address, listenerAddressFamily(listener.Address), listener.Scope, truncate(listener.Process, 120), "live"
-				endpoint.Firewall = firewallDispositionFamily(firewall, configured.Port, "tcp", endpoint.Family)
+				endpoint.Firewall = firewallDispositionFamily(evidence.firewall, configured.Port, "tcp", endpoint.Family)
 				claimed[listenerClaimKey("tcp", configured.Port, listener.Address)] = true
 			}
-			endpoint.Judgment, endpoint.Confidence = panelEndpointJudgment(endpoint, listenerErr, firewall.collectionErr)
+			endpoint.Judgment, endpoint.Confidence = panelEndpointJudgment(endpoint, evidence.listenerErr, evidence.firewall.collectionErr)
 			endpointID := b.endpoint(endpoint)
 			panelEndpoints[configured.Port] = append(panelEndpoints[configured.Port], endpointID)
 			b.link(componentID, endpointID, "declares")
 		}
 	}
+	return panelEndpoints
+}
 
-	for _, route := range routes {
+func addReverseProxyEndpoints(b *deploymentBuilder, evidence deploymentEvidence, claimed map[string]bool, panelEndpoints map[string][]string) {
+	for _, route := range evidence.routes {
 		componentID := b.component(route.Product, "reverse-proxy", route.Source, true, "native-or-managed", "confirmed")
 		frontPort, frontErr := strconv.Atoi(route.FrontendPort)
 		backPort, backErr := strconv.Atoi(route.BackendPort)
 		if frontErr != nil || backErr != nil {
 			continue
 		}
-		frontListener := configuredListener(listeners, route.FrontendAddress, route.FrontendPort, valueOr(route.FrontendTransport, "tcp"))
+		frontListener := configuredListener(evidence.listeners, route.FrontendAddress, route.FrontendPort, valueOr(route.FrontendTransport, "tcp"))
 		frontend := model.ServiceEndpoint{ComponentID: componentID, Product: route.Product, Role: "reverse-proxy-frontend", Protocol: route.Access, Transport: valueOr(route.FrontendTransport, "tcp"), Port: frontPort, Address: route.FrontendAddress, Scope: classifyAddress(route.FrontendAddress), State: "configured", Source: route.Source, Confidence: "confirmed"}
 		if frontListener != nil {
 			frontend.Address, frontend.Family, frontend.Scope, frontend.Process, frontend.State = frontListener.Address, listenerAddressFamily(frontListener.Address), frontListener.Scope, truncate(frontListener.Process, 120), "live"
-			frontend.Firewall = firewallDispositionFamily(firewall, route.FrontendPort, frontend.Transport, frontend.Family)
+			frontend.Firewall = firewallDispositionFamily(evidence.firewall, route.FrontendPort, frontend.Transport, frontend.Family)
 			claimed[listenerClaimKey(frontend.Transport, route.FrontendPort, frontListener.Address)] = true
 		}
-		frontend.Judgment = reverseFrontendJudgment(frontend, frontListener, listenerErr, firewall.collectionErr)
+		frontend.Judgment = reverseFrontendJudgment(frontend, frontListener, evidence.listenerErr, evidence.firewall.collectionErr)
 		frontID := b.endpoint(frontend)
 
-		backListener := configuredListener(listeners, route.BackendAddress, route.BackendPort, "tcp")
+		backListener := configuredListener(evidence.listeners, route.BackendAddress, route.BackendPort, "tcp")
 		backend := model.ServiceEndpoint{ComponentID: componentID, Product: route.Product, Role: "reverse-proxy-backend", Transport: "tcp", Port: backPort, Address: route.BackendAddress, Scope: classifyAddress(route.BackendAddress), State: "configured", Source: route.Source, Confidence: "confirmed"}
 		if backListener != nil {
 			backend.Address, backend.Family, backend.Scope, backend.Process, backend.State = backListener.Address, listenerAddressFamily(backListener.Address), backListener.Scope, truncate(backListener.Process, 120), "live"
@@ -180,16 +225,17 @@ func buildDeployment(ctx *Context, summaries []proxyConfigSummary, configuration
 			b.link(backID, panelID, "routes-to")
 		}
 	}
+}
 
-	if dockerInstalled && dockerErr == nil {
-		dockerFirewall := ctx.Facts.DockerFirewall()
-		for _, container := range containers {
+func addDockerEndpoints(b *deploymentBuilder, evidence deploymentEvidence, claimed map[string]bool) {
+	if evidence.dockerInstalled && evidence.dockerErr == nil {
+		for _, container := range evidence.containers {
 			name := strings.TrimPrefix(container.Name, "/")
 			identity := strings.TrimSpace(name + " " + container.Config.Image)
 			if !proxyProcessPattern.MatchString(identity) && !containsAny(strings.ToLower(identity), "marzban", "hiddify", "outline", "nginx", "caddy", "haproxy") {
 				continue
 			}
-			product := proxyProductFromText(identity)
+			product := deploymentProductFromText(identity)
 			if product == "unknown-proxy" {
 				product = valueOr(container.Config.Image, name)
 			}
@@ -205,19 +251,34 @@ func buildDeployment(ctx *Context, summaries []proxyConfigSummary, configuration
 						continue
 					}
 					family := addressFamily(binding.HostIP)
-					forward := dockerForwardDisposition(dockerFirewall, binding.HostPort, targetPort, transport, family)
+					forward := dockerForwardDisposition(evidence.dockerFirewall, binding.HostPort, targetPort, transport, family)
 					endpoint := model.ServiceEndpoint{ComponentID: componentID, Product: product, Role: "container-publish", Protocol: target, Transport: transport, Port: hostPort, Address: binding.HostIP, Family: family, Scope: classifyAddress(binding.HostIP), Process: name, Firewall: forward, State: "live", Judgment: "docker-published-port", Source: "docker inspect", Confidence: confidenceForDockerFirewall(forward)}
 					endpointID := b.endpoint(endpoint)
 					b.link(componentID, endpointID, "published-as")
-					if listener := configuredListener(listeners, binding.HostIP, binding.HostPort, transport); listener != nil {
+					if listener := configuredListener(evidence.listeners, binding.HostIP, binding.HostPort, transport); listener != nil {
 						claimed[listenerClaimKey(transport, binding.HostPort, listener.Address)] = true
 					}
 				}
 			}
 		}
 	}
+}
 
-	for _, listener := range listeners {
+func deploymentProductFromText(value string) string {
+	if product := proxyProductFromText(value); product != "unknown-proxy" {
+		return product
+	}
+	lower := strings.ToLower(value)
+	for _, product := range []string{"nginx", "caddy", "haproxy", "marzban", "hiddify", "outline"} {
+		if strings.Contains(lower, product) {
+			return canonicalProductName(product)
+		}
+	}
+	return "unknown-proxy"
+}
+
+func addUnclassifiedListenerEndpoints(b *deploymentBuilder, evidence deploymentEvidence, claimed map[string]bool) {
+	for _, listener := range evidence.listeners {
 		transport := strings.TrimSuffix(strings.TrimSuffix(strings.ToLower(listener.Protocol), "4"), "6")
 		product, recognized := listenerProxyProduct(listener.Process)
 		if claimed[listenerClaimKey(transport, listener.Port, listener.Address)] || (!recognized && listener.Scope != "public" && listener.Scope != "public-wildcard") {
@@ -233,17 +294,11 @@ func buildDeployment(ctx *Context, summaries []proxyConfigSummary, configuration
 			role = "unclassified-product-listener"
 			componentID = b.component(product, "proxy-runtime", "process inventory", true, "native-or-managed", "inferred")
 		}
-		endpointID := b.endpoint(model.ServiceEndpoint{ComponentID: componentID, Product: product, Role: role, Transport: transport, Port: port, Address: listener.Address, Family: listenerAddressFamily(listener.Address), Scope: listener.Scope, Process: truncate(listener.Process, 120), Firewall: firewallDispositionFamily(firewall, listener.Port, transport, listenerAddressFamily(listener.Address)), State: "live", Judgment: "listener-purpose-not-classified", Source: "ss", Confidence: "inferred"})
+		endpointID := b.endpoint(model.ServiceEndpoint{ComponentID: componentID, Product: product, Role: role, Transport: transport, Port: port, Address: listener.Address, Family: listenerAddressFamily(listener.Address), Scope: listener.Scope, Process: truncate(listener.Process, 120), Firewall: firewallDispositionFamily(evidence.firewall, listener.Port, transport, listenerAddressFamily(listener.Address)), State: "live", Judgment: "listener-purpose-not-classified", Source: "ss", Confidence: "inferred"})
 		if componentID != "" {
 			b.link(componentID, endpointID, "owns")
 		}
 	}
-
-	if len(b.deployment.Components) == 0 && len(b.deployment.Endpoints) == 0 {
-		return nil
-	}
-	b.finish()
-	return &b.deployment
 }
 
 type deploymentBuilder struct {
@@ -251,6 +306,7 @@ type deploymentBuilder struct {
 	componentIndex map[string]int
 	endpointIndex  map[string]int
 	links          map[string]bool
+	budgetRejects  int
 }
 
 func newDeploymentBuilder() *deploymentBuilder {
@@ -275,22 +331,26 @@ func (b *deploymentBuilder) component(product, kind, source string, runtime bool
 		}
 		return id
 	}
+	if len(b.deployment.Components) >= contract.MaxDeploymentComponents {
+		b.budgetRejects++
+		return ""
+	}
 	b.componentIndex[id] = len(b.deployment.Components)
 	b.deployment.Components = append(b.deployment.Components, model.Component{ID: id, Product: product, Kind: kind, Source: source, Runtime: runtime, Deployment: deployment, Confidence: valueOr(confidence, "unknown")})
 	return id
 }
 
 func (b *deploymentBuilder) endpoint(endpoint model.ServiceEndpoint) string {
-	if len(b.deployment.Endpoints) >= maxDeploymentEndpoints {
-		b.deployment.Coverage.Runtime = "partial"
-		return ""
-	}
 	endpoint.ID = topologyID("endpoint", endpoint.ComponentID, endpoint.Product, endpoint.Role, endpoint.Protocol, endpoint.Transport, strconv.Itoa(endpoint.Port), normalizeTopologyAddress(endpoint.Address))
 	if index, ok := b.endpointIndex[endpoint.ID]; ok {
 		if confidenceRank(endpoint.Confidence) > confidenceRank(b.deployment.Endpoints[index].Confidence) {
 			b.deployment.Endpoints[index] = endpoint
 		}
 		return endpoint.ID
+	}
+	if len(b.deployment.Endpoints) >= maxDeploymentEndpoints {
+		b.budgetRejects++
+		return ""
 	}
 	b.endpointIndex[endpoint.ID] = len(b.deployment.Endpoints)
 	b.deployment.Endpoints = append(b.deployment.Endpoints, endpoint)
@@ -305,11 +365,23 @@ func (b *deploymentBuilder) link(from, to, kind string) {
 	if b.links[key] {
 		return
 	}
+	if len(b.deployment.Links) >= contract.MaxDeploymentLinks {
+		b.budgetRejects++
+		return
+	}
 	b.links[key] = true
 	b.deployment.Links = append(b.deployment.Links, model.TopologyLink{From: from, To: to, Kind: kind})
 }
 
 func (b *deploymentBuilder) finish() {
+	if b.budgetRejects > 0 {
+		coverage := &b.deployment.Coverage
+		for _, state := range []*string{&coverage.Configuration, &coverage.Runtime, &coverage.Firewall, &coverage.Panels, &coverage.ReverseProxy, &coverage.Docker} {
+			if *state == "complete" {
+				*state = "partial"
+			}
+		}
+	}
 	sort.Slice(b.deployment.Components, func(i, j int) bool { return b.deployment.Components[i].ID < b.deployment.Components[j].ID })
 	sort.Slice(b.deployment.Endpoints, func(i, j int) bool {
 		left, right := b.deployment.Endpoints[i], b.deployment.Endpoints[j]
@@ -370,6 +442,22 @@ func canonicalProductName(product string) string {
 	default:
 		return product
 	}
+}
+
+func canonicalRuntimeProductName(product string, panels []panelSnapshot) string {
+	canonical := canonicalProductName(product)
+	switch strings.ToLower(canonical) {
+	case "x-ui/3x-ui", "x-ui", "3x-ui":
+		for _, panel := range panels {
+			switch strings.ToLower(strings.TrimSpace(panel.Product)) {
+			case "3x-ui":
+				return "3x-ui"
+			case "x-ui":
+				return "x-ui"
+			}
+		}
+	}
+	return canonical
 }
 
 func confidenceForError(err error) string {

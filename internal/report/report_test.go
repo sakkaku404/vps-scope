@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sakkaku404/vps-scope/internal/i18n"
 	"github.com/sakkaku404/vps-scope/internal/model"
 )
 
@@ -34,6 +35,84 @@ func TestAllRenderers(t *testing.T) {
 		}
 		if name != "json" && !strings.Contains(b.String(), "SSH") {
 			t.Fatalf("%s missing finding", name)
+		}
+	}
+}
+
+func TestHumanRenderersPreserveFindingEvidenceAndActionsAcrossLocales(t *testing.T) {
+	r := sampleReport()
+	r.Findings[2].Evidence = []model.Evidence{{Source: "certificate inventory", Key: "renewal_state", Value: "unknown"}}
+	for _, locale := range []string{"zh-CN", "en", "ru-RU", "fa-IR"} {
+		renders := map[string]func(io.Writer) error{
+			"text":     func(w io.Writer) error { return Text(w, r, Options{Locale: locale, Verbose: true}) },
+			"markdown": func(w io.Writer) error { return Markdown(w, r, Options{Locale: locale}) },
+			"html":     func(w io.Writer) error { return HTML(w, r, Options{Locale: locale}) },
+		}
+		for name, render := range renders {
+			var output bytes.Buffer
+			if err := render(&output); err != nil {
+				t.Fatalf("%s/%s: %v", locale, name, err)
+			}
+			body := output.String()
+			for _, finding := range r.Findings {
+				if !strings.Contains(body, finding.ID) {
+					t.Errorf("%s/%s omitted finding %s", locale, name, finding.ID)
+				}
+			}
+			for _, evidenceValue := range []string{"no", "inactive", "unknown"} {
+				if !strings.Contains(body, evidenceValue) {
+					t.Errorf("%s/%s omitted evidence value %q", locale, name, evidenceValue)
+				}
+			}
+			for _, finding := range r.Findings[1:] {
+				recommendation := localize(finding, locale).Recommendation
+				if recommendation == "" || !strings.Contains(body, recommendation) {
+					t.Errorf("%s/%s omitted recommendation for %s", locale, name, finding.ID)
+				}
+			}
+		}
+	}
+}
+
+func TestHTMLTemplateLiteralMessagesAreCatalogBacked(t *testing.T) {
+	messagePattern := regexp.MustCompile(`\{\{t "[^"]*" "([^"]*)"\}\}`)
+	matches := messagePattern.FindAllStringSubmatch(htmlTemplate, -1)
+	if len(matches) == 0 {
+		t.Fatal("HTML template contains no localized messages")
+	}
+	for _, match := range matches {
+		for _, locale := range []string{"ru-RU", "fa-IR"} {
+			if strings.TrimSpace(i18n.ExtraUI[locale][match[1]]) == "" {
+				t.Errorf("HTML template message %q lacks %s translation", match[1], locale)
+			}
+		}
+	}
+	if regexp.MustCompile(`aria-label="[A-Za-z]`).MatchString(htmlTemplate) {
+		t.Fatal("HTML template contains a hard-coded English accessibility label")
+	}
+	if strings.Contains(htmlTemplate, `<div class="eyebrow">Proxy`) {
+		t.Fatal("HTML template contains a hard-coded English eyebrow")
+	}
+}
+
+func TestHumanRenderersShowAuditDeadlineProminentlyInEveryLocale(t *testing.T) {
+	r := sampleReport()
+	r.Metadata = map[string]string{"collection_timed_out": "true"}
+	for _, locale := range []string{"zh-CN", "en", "ru-RU", "fa-IR"} {
+		for name, render := range map[string]func(*bytes.Buffer) error{
+			"text":     func(b *bytes.Buffer) error { return Text(b, r, Options{Locale: locale}) },
+			"markdown": func(b *bytes.Buffer) error { return Markdown(b, r, Options{Locale: locale}) },
+			"html":     func(b *bytes.Buffer) error { return HTML(b, r, Options{Locale: locale}) },
+		} {
+			var output bytes.Buffer
+			if err := render(&output); err != nil {
+				t.Fatalf("%s/%s: %v", locale, name, err)
+			}
+			if !strings.Contains(output.String(), "UNKNOWN") || !strings.Contains(output.String(), map[string]string{
+				"zh-CN": "审计已达到截止时间", "en": "Audit deadline reached", "ru-RU": "Истекло время аудита", "fa-IR": "مهلت ممیزی به پایان رسید",
+			}[locale]) {
+				t.Fatalf("%s/%s deadline warning missing", locale, name)
+			}
 		}
 	}
 }
@@ -132,8 +211,9 @@ func TestVerifyBundleRejectsTraversalAndDuplicateNames(t *testing.T) {
 
 func TestVerifyBundleRejectsUnknownManifestFieldsAndTrailingJSON(t *testing.T) {
 	for name, manifest := range map[string]string{
-		"unknown":  `{"schema_version":"1.0","unexpected":true,"files":[]}`,
-		"trailing": `{"schema_version":"1.0","files":[]} {}`,
+		"unknown":   `{"schema_version":"1.0","unexpected":true,"files":[]}`,
+		"trailing":  `{"schema_version":"1.0","files":[]} {}`,
+		"duplicate": `{"schema_version":"1.0","schema_version":"support-1.0","files":[]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -347,8 +427,28 @@ func TestMarkdownCompressesLongEvidence(t *testing.T) {
 	if !strings.Contains(out.String(), "<details><summary>All evidence (3)</summary>") {
 		t.Fatalf("long evidence was not collapsed:\n%s", out.String())
 	}
-	if !strings.Contains(out.String(), "`ufw`: one=1") {
+	if !strings.Contains(out.String(), "**ufw:** one=1") {
 		t.Fatalf("evidence key and value are not separated:\n%s", out.String())
+	}
+}
+
+func TestMarkdownEscapesUntrustedHTMLAndFormatting(t *testing.T) {
+	r := sampleReport()
+	r.Findings[1].Evidence = []model.Evidence{{Source: "fixture_`source`_[source]", Key: "payload", Value: `<script>alert(1)</script> [click](file:///secret) *bold*`}}
+	var output bytes.Buffer
+	if err := Markdown(&output, r, Options{Locale: "en"}); err != nil {
+		t.Fatal(err)
+	}
+	body := output.String()
+	for _, forbidden := range []string{"<script>", "[click](file:///secret)", "*bold*", "`source`"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("Markdown retained active syntax %q:\n%s", forbidden, body)
+		}
+	}
+	for _, expected := range []string{"&lt;script&gt;", `\[click\](file:///secret)`, `\*bold\*`, "fixture\\_\\`source\\`\\_\\[source\\]"} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("Markdown omitted escaped text %q:\n%s", expected, body)
+		}
 	}
 }
 
