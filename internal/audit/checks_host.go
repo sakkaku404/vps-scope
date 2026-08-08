@@ -521,7 +521,7 @@ func checkPersistence(ctx *Context) []model.Finding {
 	if indicators > 0 {
 		f.Status, f.Severity = model.Risk, model.High
 	}
-	f = withIncompleteEvidence(f, "startup-file discovery", discoveryErr)
+	f = withIncompleteEvidence(f, "startup-file discovery", requireReadableEvidence(scanned, "startup files", discoveryErr))
 	return []model.Finding{f, checkTemporaryExecutables(ctx)}
 }
 

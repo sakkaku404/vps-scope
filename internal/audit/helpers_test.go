@@ -99,6 +99,33 @@ func TestDiscoverExistingFilesRejectsDirectoryEntryOverflow(t *testing.T) {
 	}
 }
 
+func TestRequireReadableEvidence(t *testing.T) {
+	sentinel := errors.New("discovery failed")
+	for _, test := range []struct {
+		name  string
+		count int
+		err   error
+	}{
+		{name: "none", count: 0},
+		{name: "none with discovery error", count: 0, err: sentinel},
+		{name: "readable with discovery error", count: 1, err: sentinel},
+		{name: "readable complete", count: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := requireReadableEvidence(test.count, "fixture files", test.err)
+			if test.count == 0 && got == nil {
+				t.Fatal("empty evidence inventory was accepted as complete")
+			}
+			if test.err != nil && !errors.Is(got, test.err) {
+				t.Fatalf("existing error was not preserved: %v", got)
+			}
+			if test.count > 0 && test.err == nil && got != nil {
+				t.Fatalf("complete evidence was rejected: %v", got)
+			}
+		})
+	}
+}
+
 func TestDiscoverExistingFilesIgnoresBrokenAliasInDirectorySegment(t *testing.T) {
 	root := t.TempDir()
 	broken := filepath.Join(root, "removed.service")

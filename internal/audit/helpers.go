@@ -94,6 +94,13 @@ const (
 
 var errFileDiscoveryLimit = errors.New("file discovery safety limit exceeded")
 
+func requireReadableEvidence(count int, description string, discoveryErr error) error {
+	if count > 0 {
+		return discoveryErr
+	}
+	return errors.Join(discoveryErr, fmt.Errorf("no readable %s were found", description))
+}
+
 // discoverExistingFiles expands a small, fixed set of local configuration
 // patterns without filepath.Glob's unbounded directory allocation. Both the
 // number of directory entries examined and the number of unique matches are

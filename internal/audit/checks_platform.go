@@ -73,14 +73,7 @@ func checkAPTRepositories(ctx *Context) model.Finding {
 	} else if thirdParty > 0 {
 		f.Status = model.Info
 	}
-	return withIncompleteEvidence(f, "APT source discovery", aptRepositoryEvidenceError(readableFiles, discoveryErr))
-}
-
-func aptRepositoryEvidenceError(readableFiles int, discoveryErr error) error {
-	if readableFiles > 0 {
-		return discoveryErr
-	}
-	return errors.Join(discoveryErr, errors.New("no readable APT source files were found"))
+	return withIncompleteEvidence(f, "APT source discovery", requireReadableEvidence(readableFiles, "APT source files", discoveryErr))
 }
 
 var aptURLPattern = regexp.MustCompile(`(?i)https?://[^\s"']+`)

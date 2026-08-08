@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
+	"sort"
 	"testing"
 	"time"
 
@@ -150,10 +151,15 @@ VERSION_ID="24.04"
 			t.Fatalf("unexpected %s=%q", key, report.Metadata[key])
 		}
 	}
+	var unsupportedPasses []string
 	for _, finding := range report.Findings {
 		if finding.Status == "PASS" && finding.ID != "ACC-001" && finding.ID != "SYS-001" {
-			t.Fatalf("evidence-starved full audit produced unsupported PASS: %s", finding.ID)
+			unsupportedPasses = append(unsupportedPasses, finding.ID)
 		}
+	}
+	sort.Strings(unsupportedPasses)
+	if len(unsupportedPasses) > 0 {
+		t.Fatalf("evidence-starved full audit produced unsupported PASS findings: %v", unsupportedPasses)
 	}
 }
 
