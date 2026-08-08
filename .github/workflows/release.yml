@@ -139,8 +139,8 @@ jobs:
           grep -Fq "${GITHUB_REF_NAME#v}" <<<"$version_output"
           sudo dist/vps-scope_linux_amd64 audit --lang en --profile general \
             --format bundle --output /tmp/vps-scope-release-candidate --quiet
-          dist/vps-scope_linux_amd64 verify /tmp/vps-scope-release-candidate
-          jq -e '
+          sudo dist/vps-scope_linux_amd64 verify /tmp/vps-scope-release-candidate
+          sudo jq -e '
             (.findings | length) == 55 and
             .metadata.collector_contract_repairs == "0" and
             .metadata.collector_command_budget_rejections == "0" and
