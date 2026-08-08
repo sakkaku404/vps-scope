@@ -36,7 +36,7 @@ func checkAPTRepositories(ctx *Context) model.Finding {
 		discovered[path] = true
 	}
 	f := model.Finding{ID: "PKG-001", Category: "packages", Status: model.Pass, Facts: map[string]string{}}
-	thirdParty, unsafe := 0, 0
+	readableFiles, thirdParty, unsafe := 0, 0, 0
 	for _, path := range paths {
 		data, err := ctx.Facts.ReadSmall(path, 4<<20)
 		if err != nil {
@@ -45,6 +45,7 @@ func checkAPTRepositories(ctx *Context) model.Finding {
 			}
 			continue
 		}
+		readableFiles++
 		for i, line := range lines(data) {
 			trimmed := strings.TrimSpace(line)
 			if strings.HasPrefix(trimmed, "#") || trimmed == "" {
@@ -66,12 +67,20 @@ func checkAPTRepositories(ctx *Context) model.Finding {
 	}
 	f.Facts["third_party_entries"] = strconv.Itoa(thirdParty)
 	f.Facts["unsafe_trust_entries"] = strconv.Itoa(unsafe)
+	f.Facts["readable_source_files"] = strconv.Itoa(readableFiles)
 	if unsafe > 0 {
 		f.Status, f.Severity = model.Risk, model.High
 	} else if thirdParty > 0 {
 		f.Status = model.Info
 	}
-	return withIncompleteEvidence(f, "APT source discovery", discoveryErr)
+	return withIncompleteEvidence(f, "APT source discovery", aptRepositoryEvidenceError(readableFiles, discoveryErr))
+}
+
+func aptRepositoryEvidenceError(readableFiles int, discoveryErr error) error {
+	if readableFiles > 0 {
+		return discoveryErr
+	}
+	return errors.Join(discoveryErr, errors.New("no readable APT source files were found"))
 }
 
 var aptURLPattern = regexp.MustCompile(`(?i)https?://[^\s"']+`)

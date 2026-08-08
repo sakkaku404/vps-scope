@@ -1,11 +1,25 @@
 package audit
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestAPTRepositoryEvidenceRequiresAReadableSourceFile(t *testing.T) {
+	if err := aptRepositoryEvidenceError(0, nil); err == nil {
+		t.Fatal("missing APT source inventory was accepted as complete evidence")
+	}
+	sentinel := errors.New("discovery failed")
+	if err := aptRepositoryEvidenceError(1, sentinel); !errors.Is(err, sentinel) {
+		t.Fatalf("existing discovery error was not preserved: %v", err)
+	}
+	if err := aptRepositoryEvidenceError(1, nil); err != nil {
+		t.Fatalf("readable source inventory was marked incomplete: %v", err)
+	}
+}
 
 func TestDiscoverCertificatePathsPropagatesNginxCommandFailure(t *testing.T) {
 	ctx := scenarioContext(newScenarioCommander([]string{"nginx"}, map[string]CommandResult{
