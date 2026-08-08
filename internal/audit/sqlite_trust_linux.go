@@ -35,6 +35,9 @@ func sqliteOpenPath(file *os.File, absolutePath string) (string, *os.File, error
 		return "", nil, err
 	}
 	directory := filepath.Dir(resolved)
+	// #nosec G304 -- resolved is the canonical path of the already-open
+	// database; the directory descriptor is subsequently checked for ownership,
+	// writable permissions, and stable file identity before SQLite can use it.
 	anchor, err := os.Open(directory)
 	if err != nil {
 		return "", nil, err
@@ -62,8 +65,8 @@ func sqliteOwnerControlled(info os.FileInfo, path string) error {
 	if !ok {
 		return fmt.Errorf("cannot determine owner: %s", path)
 	}
-	euid := uint32(os.Geteuid())
-	if stat.Uid != euid && stat.Uid != 0 {
+	euid := int64(os.Geteuid())
+	if int64(stat.Uid) != euid && stat.Uid != 0 {
 		return fmt.Errorf("not controlled by the audit user: %s", path)
 	}
 	if info.Mode().Perm()&0o022 == 0 {
