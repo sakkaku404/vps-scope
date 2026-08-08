@@ -7,8 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"net/url"
-	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -17,7 +18,6 @@ import (
 	"time"
 
 	"github.com/sakkaku404/vps-scope/internal/model"
-	"github.com/sakkaku404/vps-scope/internal/safefs"
 )
 
 func checkPackages(ctx *Context) []model.Finding {
@@ -25,26 +25,27 @@ func checkPackages(ctx *Context) []model.Finding {
 	if ctx.Deep {
 		verify = checkDPKGVerify(ctx)
 	}
-	return []model.Finding{checkAPTRepositories(), verify}
+	return []model.Finding{checkAPTRepositories(ctx), verify}
 }
 
-func checkAPTRepositories() model.Finding {
-	dropIns, discoveryErr := discoverExistingFiles(512, "/etc/apt/sources.list.d/*.list", "/etc/apt/sources.list.d/*.sources")
+func checkAPTRepositories(ctx *Context) model.Finding {
+	dropIns, discoveryErr := discoverExistingFilesFromSnapshot(ctx.Facts.files, 512, "/etc/apt/sources.list.d/*.list", "/etc/apt/sources.list.d/*.sources")
 	paths := append([]string{"/etc/apt/sources.list"}, dropIns...)
 	discovered := make(map[string]bool, len(dropIns))
 	for _, path := range dropIns {
 		discovered[path] = true
 	}
 	f := model.Finding{ID: "PKG-001", Category: "packages", Status: model.Pass, Facts: map[string]string{}}
-	thirdParty, unsafe := 0, 0
+	readableFiles, thirdParty, unsafe := 0, 0, 0
 	for _, path := range paths {
-		data, err := readSmall(path, 4<<20)
+		data, err := ctx.Facts.ReadSmall(path, 4<<20)
 		if err != nil {
 			if discovered[path] || !errors.Is(err, fs.ErrNotExist) {
 				discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s: %w", path, err))
 			}
 			continue
 		}
+		readableFiles++
 		for i, line := range lines(data) {
 			trimmed := strings.TrimSpace(line)
 			if strings.HasPrefix(trimmed, "#") || trimmed == "" {
@@ -66,12 +67,13 @@ func checkAPTRepositories() model.Finding {
 	}
 	f.Facts["third_party_entries"] = strconv.Itoa(thirdParty)
 	f.Facts["unsafe_trust_entries"] = strconv.Itoa(unsafe)
+	f.Facts["readable_source_files"] = strconv.Itoa(readableFiles)
 	if unsafe > 0 {
 		f.Status, f.Severity = model.Risk, model.High
 	} else if thirdParty > 0 {
 		f.Status = model.Info
 	}
-	return withIncompleteEvidence(f, "APT source discovery", discoveryErr)
+	return withIncompleteEvidence(f, "APT source discovery", requireReadableEvidence(readableFiles, "APT source files", discoveryErr))
 }
 
 var aptURLPattern = regexp.MustCompile(`(?i)https?://[^\s"']+`)
@@ -194,13 +196,13 @@ func checkProcesses(ctx *Context) []model.Finding {
 			}
 		}
 	}
-	deleted := checkDeletedExecutables()
+	deleted := checkDeletedExecutables(ctx)
 	return []model.Finding{failed, deleted}
 }
 
-func checkDeletedExecutables() model.Finding {
+func checkDeletedExecutables(ctx *Context) model.Finding {
 	f := model.Finding{ID: "PROC-002", Category: "processes", Status: model.Pass, Facts: map[string]string{}}
-	procEntries, err := safefs.ReadDirectoryBounded("/proc", procDirectoryEntryLimit)
+	procEntries, err := ctx.Facts.ReadDirectory("/proc", procDirectoryEntryLimit)
 	if err != nil {
 		return unknown("PROC-002", "processes", "/proc", err.Error())
 	}
@@ -213,8 +215,8 @@ func checkDeletedExecutables() model.Finding {
 		if _, err := strconv.Atoi(entry.Name()); err != nil {
 			continue
 		}
-		path := filepath.Join("/proc", entry.Name(), "exe")
-		target, err := os.Readlink(path)
+		executablePath := path.Join("/proc", entry.Name(), "exe")
+		target, err := ctx.Facts.Readlink(executablePath)
 		if err != nil {
 			if !errors.Is(err, fs.ErrNotExist) {
 				unavailable++
@@ -413,11 +415,11 @@ func checkFileTLS(ctx *Context) model.Finding {
 		return notApplicable("TLS-001", "tls", "certificate discovery", "no file-backed server certificate found in supported locations")
 	}
 	f := model.Finding{ID: "TLS-001", Category: "tls", Status: model.Pass, Facts: map[string]string{"certificates": strconv.Itoa(len(paths))}}
-	now := ctx.Now()
+	now := ctx.evidenceTime()
 	minimumDays := int(^uint(0) >> 1)
 	var certificateEvidenceErr error
 	for _, path := range paths {
-		data, err := readSmall(path, 2<<20)
+		data, err := ctx.Facts.ReadSmall(path, 2<<20)
 		if err != nil {
 			certificateEvidenceErr = errors.Join(certificateEvidenceErr, fmt.Errorf("%s: %w", path, err))
 			f.Evidence = append(f.Evidence, model.Evidence{Source: path, Value: err.Error()})
@@ -435,14 +437,16 @@ func checkFileTLS(ctx *Context) model.Finding {
 			f.Evidence = append(f.Evidence, model.Evidence{Source: path, Value: err.Error()})
 			continue
 		}
-		days := int(cert.NotAfter.Sub(now).Hours() / 24)
+		days := certificateDaysRemaining(cert.NotAfter, now)
 		if days < minimumDays {
 			minimumDays = days
 		}
-		value := fmt.Sprintf("subject=%s not_after=%s days_remaining=%d", cert.Subject.CommonName, cert.NotAfter.UTC().Format(time.RFC3339), days)
+		value := fmt.Sprintf("subject=%s not_before=%s not_after=%s days_remaining=%d", cert.Subject.CommonName, cert.NotBefore.UTC().Format(time.RFC3339), cert.NotAfter.UTC().Format(time.RFC3339), days)
 		f.Evidence = append(f.Evidence, model.Evidence{Source: path, Value: value})
-		if days < 0 {
+		if cert.NotAfter.Before(now) {
 			f.Status, f.Severity = model.Risk, model.Critical
+		} else if now.Before(cert.NotBefore) {
+			f.Status, f.Severity = model.Risk, model.High
 		} else if days <= 30 && f.Severity != model.Critical {
 			f.Status, f.Severity = model.Risk, model.High
 		}
@@ -491,12 +495,16 @@ func checkFileTLS(ctx *Context) model.Finding {
 	return withIncompleteEvidence(f, "certificate and renewal discovery", discoveryErr)
 }
 
+func certificateDaysRemaining(notAfter, now time.Time) int {
+	return int(math.Floor(notAfter.Sub(now).Hours() / 24))
+}
+
 func embeddedSUITLS(ctx *Context) (model.Finding, bool) {
 	db := "/usr/local/s-ui/db/s-ui.db"
-	if _, err := os.Stat(db); err != nil {
+	if _, err := ctx.Facts.Stat(db); err != nil {
 		return model.Finding{}, false
 	}
-	rows, err := querySQLite(db, "SELECT count(*) FROM tls WHERE server IS NOT NULL AND length(server)>0;")
+	rows, err := querySQLiteContext(ctx.auditContext(), db, "SELECT count(*) FROM tls WHERE server IS NOT NULL AND length(server)>0;")
 	if err != nil || len(rows) != 1 || len(rows[0]) != 1 {
 		if err == nil {
 			err = fmt.Errorf("could not read embedded TLS record count")
@@ -523,7 +531,7 @@ func discoverCertificatePaths(ctx *Context) ([]string, error) {
 		if path == "" || strings.Contains(path, "$s") || !filepath.IsAbs(path) {
 			return
 		}
-		info, err := os.Stat(path)
+		info, err := ctx.Facts.Stat(path)
 		if err != nil {
 			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s: %w", path, err))
 			return
@@ -532,7 +540,7 @@ func discoverCertificatePaths(ctx *Context) ([]string, error) {
 			seen[path] = true
 		}
 	}
-	letsencryptPaths, err := discoverExistingFiles(512, "/etc/letsencrypt/live/*/fullchain.pem")
+	letsencryptPaths, err := discoverExistingFilesFromSnapshot(ctx.Facts.files, 512, "/etc/letsencrypt/live/*/fullchain.pem")
 	if err != nil {
 		discoveryErr = errors.Join(discoveryErr, err)
 	}
@@ -552,20 +560,43 @@ func discoverCertificatePaths(ctx *Context) ([]string, error) {
 			add(path)
 		}
 	}
-	if ctx.Commander.Exists("nginx") {
-		r := ctx.Commander.Run(15*time.Second, "nginx", "-T")
-		if r.Truncated || r.Err != nil {
-			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("nginx -T: %s", commandError(r)))
+	nginxCertificateRE := regexp.MustCompile(`(?m)^\s*ssl_certificate\s+([^;]+);`)
+	nginxRuntimeLoaded := false
+	if ctx.Options.NativeSelfTest && ctx.Commander.Exists("nginx") {
+		binary, trustErr := trustedExecutable(ctx.Commander, "nginx")
+		if trustErr != nil {
+			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("nginx -T skipped: %w", trustErr))
+		} else {
+			nginxRuntimeLoaded = true
+			r := ctx.Commander.Run(15*time.Second, binary, "-T")
+			if r.Truncated || r.Err != nil {
+				discoveryErr = errors.Join(discoveryErr, fmt.Errorf("nginx -T: %s", commandError(r)))
+			}
+			for _, match := range nginxCertificateRE.FindAllStringSubmatch(r.Stdout+r.Stderr, -1) {
+				if len(match) > 1 {
+					add(match[1])
+				}
+			}
 		}
-		re := regexp.MustCompile(`(?m)^\s*ssl_certificate\s+([^;]+);`)
-		for _, match := range re.FindAllStringSubmatch(r.Stdout+r.Stderr, -1) {
-			if len(match) > 1 {
-				add(match[1])
+	}
+	if !nginxRuntimeLoaded {
+		nginxPaths, err := discoverExistingFilesFromSnapshot(ctx.Facts.files, 512, "/etc/nginx/nginx.conf", "/etc/nginx/sites-enabled/*", "/etc/nginx/conf.d/*.conf")
+		discoveryErr = errors.Join(discoveryErr, err)
+		for _, path := range nginxPaths {
+			data, readErr := ctx.Facts.ReadSmall(path, 4<<20)
+			if readErr != nil {
+				discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s: %w", path, readErr))
+				continue
+			}
+			for _, match := range nginxCertificateRE.FindAllStringSubmatch(data, -1) {
+				if len(match) > 1 {
+					add(match[1])
+				}
 			}
 		}
 	}
 	for _, config := range []string{"/etc/hysteria/config.yaml", "/etc/hysteria/config.yml", "/etc/sing-box/config.json"} {
-		data, err := readSmall(config, 8<<20)
+		data, err := ctx.Facts.ReadSmall(config, 8<<20)
 		if err != nil {
 			continue
 		}

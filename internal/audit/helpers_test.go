@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sakkaku404/vps-scope/internal/model"
 )
@@ -98,6 +99,33 @@ func TestDiscoverExistingFilesRejectsDirectoryEntryOverflow(t *testing.T) {
 	}
 }
 
+func TestRequireReadableEvidence(t *testing.T) {
+	sentinel := errors.New("discovery failed")
+	for _, test := range []struct {
+		name  string
+		count int
+		err   error
+	}{
+		{name: "none", count: 0},
+		{name: "none with discovery error", count: 0, err: sentinel},
+		{name: "readable with discovery error", count: 1, err: sentinel},
+		{name: "readable complete", count: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := requireReadableEvidence(test.count, "fixture files", test.err)
+			if test.count == 0 && got == nil {
+				t.Fatal("empty evidence inventory was accepted as complete")
+			}
+			if test.err != nil && !errors.Is(got, test.err) {
+				t.Fatalf("existing error was not preserved: %v", got)
+			}
+			if test.count > 0 && test.err == nil && got != nil {
+				t.Fatalf("complete evidence was rejected: %v", got)
+			}
+		})
+	}
+}
+
 func TestDiscoverExistingFilesIgnoresBrokenAliasInDirectorySegment(t *testing.T) {
 	root := t.TempDir()
 	broken := filepath.Join(root, "removed.service")
@@ -125,6 +153,7 @@ func TestWithIncompleteEvidenceCannotRemainPass(t *testing.T) {
 }
 
 func TestPersistenceDiscoveryIgnoresMaskedAndBrokenUnitAliases(t *testing.T) {
+	ctx := &Context{Facts: &FactStore{files: newFileEvidenceSnapshot(osFileEvidenceSource{})}}
 	root := t.TempDir()
 	broken := filepath.Join(root, "broken.service")
 	masked := filepath.Join(root, "masked.service")
@@ -139,7 +168,7 @@ func TestPersistenceDiscoveryIgnoresMaskedAndBrokenUnitAliases(t *testing.T) {
 		if readErr == nil {
 			t.Fatalf("expected read failure for %s", path)
 		}
-		if persistenceReadFailureIncomplete(path, readErr, true) {
+		if persistenceReadFailureIncomplete(ctx, path, readErr, true) {
 			t.Fatalf("disabled systemd alias became incomplete evidence: %s: %v", path, readErr)
 		}
 	}
@@ -186,6 +215,17 @@ func TestParseKeyValues(t *testing.T) {
 	}
 }
 
+func TestMemoryOverviewReportsZeroSwapExplicitly(t *testing.T) {
+	f := model.Finding{Facts: map[string]string{}}
+	addMemoryOverview(&f, map[string]int64{"MemTotal": 512 << 20, "MemAvailable": 320 << 20})
+	if f.Facts["swap_total_bytes"] != "0" || f.Facts["swap_free_bytes"] != "0" {
+		t.Fatalf("zero swap was omitted or changed: facts=%v", f.Facts)
+	}
+	if f.Facts["memory_used_percent"] != "37" {
+		t.Fatalf("memory percentage=%q, want 37", f.Facts["memory_used_percent"])
+	}
+}
+
 func TestParseDPKGVerifyClassifiesExcludedDocs(t *testing.T) {
 	input := "missing     /usr/share/doc/pkg/README.gz\n??5?????? c /etc/example.conf\nmissing     /usr/bin/tool\n..5......   /usr/lib/libchanged.so\n"
 	got := parseDPKGVerify(input)
@@ -219,11 +259,23 @@ func TestExpectedInfrastructureListeners(t *testing.T) {
 	}
 }
 
+func TestDockerProfileExpectedListenersRemainProcessScoped(t *testing.T) {
+	ctx := &Context{Profile: model.Profile{Effective: "docker"}}
+	for _, process := range []string{`users:(("docker-proxy"))`, `users:(("nginx"))`, `users:(("traefik"))`} {
+		if !expectedListener(ctx, Listener{Protocol: "tcp", Port: "8443", Process: process}, "8443/tcp") {
+			t.Errorf("Docker edge listener was rejected: %s", process)
+		}
+	}
+	if expectedListener(ctx, Listener{Protocol: "tcp", Port: "8443", Process: `users:(("unknown-admin"))`}, "8443/tcp") {
+		t.Fatal("Docker profile accepted an unrelated public process")
+	}
+}
+
 func TestRuntimeExpectedWireGuardListener(t *testing.T) {
 	cmd := newScenarioCommander([]string{"wg"}, map[string]CommandResult{
 		scenarioCommandKey("wg", "show", "all", "listen-port"): {Stdout: "hiddifywg\t32247\n"},
 	})
-	ctx := &Context{Options: Options{Commander: cmd}}
+	ctx := &Context{Options: Options{Commander: cmd}, Facts: NewFactStore(cmd, false)}
 	expected, err := runtimeExpectedPublicListeners(ctx)
 	if err != nil || !expected["32247/udp"] {
 		t.Fatal("active WireGuard listen port was not recognized")
@@ -393,6 +445,46 @@ func TestContextualPasswordPolicyParsers(t *testing.T) {
 	}
 }
 
+func TestContextualPasswordPolicyTreatsKeyboardInteractiveAsPasswordPath(t *testing.T) {
+	cmd := newScenarioCommander([]string{"sshd"}, scenarioResult("sshd", []string{"-T"}, "passwordauthentication no\nkbdinteractiveauthentication yes\npermitrootlogin prohibit-password\npubkeyauthentication yes\n"))
+	facts := newFactStoreAt(cmd, false, time.Unix(1, 0), mapFileEvidenceSource{files: map[string]string{
+		"/etc/shadow": "alice:$y$hash:1:2:3\n",
+	}})
+	ctx := scenarioContext(cmd)
+	ctx.Facts = facts
+	finding := checkPasswordPolicy(ctx, []passwdEntry{{Name: "alice", UID: 1000, Home: "/home/alice", Shell: "/bin/bash"}})
+	if finding.Status != model.Unknown || !finding.Unavailable {
+		t.Fatalf("missing PAM evidence with keyboard-interactive enabled produced %+v", finding)
+	}
+	if finding.Facts["ssh_password_path_enabled"] != "true" || finding.Facts["pam_password_policy_readable"] != "false" {
+		t.Fatalf("password-path facts=%v", finding.Facts)
+	}
+}
+
+func TestUDPTransportContextRequiresCoreBufferEvidence(t *testing.T) {
+	cmd := newScenarioCommander(nil, nil)
+	for name, source := range map[string]mapFileEvidenceSource{
+		"complete": {files: map[string]string{
+			"/proc/sys/net/core/rmem_max": "212992\n",
+			"/proc/sys/net/core/wmem_max": "212992\n",
+		}},
+		"missing": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := scenarioContext(cmd)
+			ctx.Facts = newFactStoreAt(cmd, false, time.Unix(1, 0), source)
+			finding := checkProxyTransportContext(ctx, []proxyConfigSummary{{Product: "Hysteria2", UsesUDP: true}})
+			if name == "complete" {
+				if finding.Status != model.Info || finding.Facts["rmem_max"] != "212992" || finding.Facts["wmem_max"] != "212992" {
+					t.Fatalf("complete buffer evidence produced %+v", finding)
+				}
+			} else if finding.Status != model.Unknown || !finding.Unavailable {
+				t.Fatalf("missing buffer evidence produced %+v", finding)
+			}
+		})
+	}
+}
+
 func TestParseEstablishedConnections(t *testing.T) {
 	input := `tcp ESTAB 0 0 10.0.0.2:22 203.0.113.5:50123 users:(("sshd",pid=9,fd=3))
 tcp 0 0 127.0.0.1:3001 127.0.0.1:44220 users:(("node",pid=8,fd=4))`
@@ -454,13 +546,19 @@ func TestParseSingBoxSummaryDoesNotExposeSecrets(t *testing.T) {
 }
 
 func TestParseXrayAPIInbound(t *testing.T) {
-	input := []byte(`{"inbounds":[{"tag":"api","listen":"127.0.0.1","port":10085,"protocol":"dokodemo-door"},{"port":"443","protocol":"vless"}]}`)
+	input := []byte(`{"api":{"tag":"internal-control"},"metrics":{"listen":"127.0.0.1:11111"},"inbounds":[{"tag":"internal-control","listen":"127.0.0.1","port":10085,"protocol":"dokodemo-door"},{"tag":"rapid-entry","port":"443","protocol":"vless"}]}`)
 	got := parseXraySummary("/etc/xray/config.json", input)
-	if got.Err != nil || len(got.Inbounds) != 2 || len(got.Controls) != 1 {
+	if got.Err != nil || len(got.Inbounds) != 1 || len(got.Controls) != 2 {
 		t.Fatalf("unexpected summary: %+v", got)
 	}
 	if got.Controls[0].Listen != "127.0.0.1" || got.Controls[0].Port != "10085" {
 		t.Fatalf("unexpected API endpoint: %+v", got.Controls[0])
+	}
+	if got.Controls[1].Kind != "metrics" || got.Controls[1].Port != "11111" {
+		t.Fatalf("unexpected metrics endpoint: %+v", got.Controls[1])
+	}
+	if got.Inbounds[0].Port != "443" {
+		t.Fatalf("ordinary inbound containing 'api' in its tag was excluded: %+v", got.Inbounds)
 	}
 }
 
@@ -651,8 +749,8 @@ func TestSplitProxyEndpoint(t *testing.T) {
 	tests := []struct{ input, host, port string }{
 		{"127.0.0.1:9090", "127.0.0.1", "9090"},
 		{"[::]:443", "::", "443"},
-		{":8080", "::", "8080"},
-		{"8443", "::", "8443"},
+		{":8080", "*", "8080"},
+		{"8443", "*", "8443"},
 	}
 	for _, test := range tests {
 		host, port, ok := splitEndpoint(test.input)
@@ -699,6 +797,27 @@ func TestApplyPanelSettingsReadsPathsFromDatabase(t *testing.T) {
 	}
 	if len(snapshot.Endpoints) != 2 || !snapshot.Endpoints[1].PathKnown || snapshot.Endpoints[1].PathIsDefault {
 		t.Fatalf("endpoints=%+v", snapshot.Endpoints)
+	}
+}
+
+func TestApplySUIDefaultsTreatsMissingWebBasePathAsRoot(t *testing.T) {
+	rows := [][]string{{"webPort", "2095"}, {"subPort", "2096"}, {"subPath", "/sub/"}}
+	snapshot := panelSnapshot{}
+	applyPanelSettings(&snapshot, rows, "S-UI database")
+	applySUIDefaults(&snapshot, rows)
+
+	management, ok := managementEndpoint(snapshot)
+	if !ok || !management.PathKnown || !management.PathIsDefault || management.Source != "S-UI database + built-in default" {
+		t.Fatalf("management=%+v ok=%t", management, ok)
+	}
+
+	rows = append(rows, []string{"webBasePath", "/private/"})
+	snapshot = panelSnapshot{}
+	applyPanelSettings(&snapshot, rows, "S-UI database")
+	applySUIDefaults(&snapshot, rows)
+	management, ok = managementEndpoint(snapshot)
+	if !ok || !management.PathKnown || management.PathIsDefault || management.Source != "S-UI database" {
+		t.Fatalf("persisted management path was overwritten: %+v ok=%t", management, ok)
 	}
 }
 

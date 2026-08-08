@@ -34,20 +34,11 @@ type hostFirewallSnapshot struct {
 	collectionErr                  error
 }
 
-func parsePanelUFW(output string) hostFirewallSnapshot {
-	defaultDeny := regexp.MustCompile(`(?mi)^Default:\s+deny \(incoming\)`).MatchString(output)
-	policy := "unknown"
-	if defaultDeny {
-		policy = "deny"
-	} else if regexp.MustCompile(`(?mi)^Default:\s+allow \(incoming\)`).MatchString(output) {
-		policy = "allow"
-	}
-	f := hostFirewallSnapshot{available: true, active: regexp.MustCompile(`(?mi)^Status:\s+active\s*$`).MatchString(output), defaultDeny: defaultDeny, defaultDenyByFamily: map[string]bool{"any": defaultDeny}, defaultPolicyByFamily: map[string]string{"any": policy}, lines: lines(output), backend: "ufw"}
-	f.rules = parseUFWRules(f.lines)
-	return f
+func collectHostFirewall(cmd Commander) hostFirewallSnapshot {
+	return collectHostFirewallFromProgram(cmd, newFirewallProgram(cmd))
 }
 
-func collectHostFirewall(cmd Commander) hostFirewallSnapshot {
+func collectHostFirewallFromProgram(cmd Commander, program *firewallProgram) hostFirewallSnapshot {
 	var inactive hostFirewallSnapshot
 	var active hostFirewallSnapshot
 	var collectionErr error
@@ -67,8 +58,12 @@ func collectHostFirewall(cmd Commander) hostFirewallSnapshot {
 	// effective nftables INPUT path.  UFW's summary intentionally omits rules
 	// inserted by other managers, so merge the live nftables view instead of
 	// returning as soon as an active UFW frontend is found.
-	if active.available && cmd.Exists("nft") {
-		r := cmd.Run(15*time.Second, "nft", "list", "ruleset")
+	if active.available {
+		r, exists := program.nftRuleset()
+		if !exists {
+			active.collectionErr = collectionErr
+			return active
+		}
 		if r.Err == nil && !r.Truncated {
 			nft := parseNFTFirewall(r.Stdout)
 			active.rules = append(active.rules, nft.rules...)
@@ -80,10 +75,6 @@ func collectHostFirewall(cmd Commander) hostFirewallSnapshot {
 		} else {
 			active.collectionErr = fmt.Errorf("nft list ruleset: %s", commandError(r))
 		}
-		return active
-	}
-	if active.available {
-		active.collectionErr = collectionErr
 		return active
 	}
 	if cmd.Exists("firewall-cmd") {
@@ -100,8 +91,7 @@ func collectHostFirewall(cmd Commander) hostFirewallSnapshot {
 			}
 		}
 	}
-	if cmd.Exists("nft") {
-		r := cmd.Run(15*time.Second, "nft", "list", "ruleset")
+	if r, exists := program.nftRuleset(); exists {
 		if r.Err == nil && !r.Truncated {
 			f := parseNFTFirewall(r.Stdout)
 			f.collectionErr = collectionErr
@@ -109,13 +99,15 @@ func collectHostFirewall(cmd Commander) hostFirewallSnapshot {
 		}
 		collectionErr = fmt.Errorf("nft list ruleset: %s", commandError(r))
 	}
-	if cmd.Exists("iptables-save") || cmd.Exists("ip6tables-save") {
+	_, ipv4SaveExists := program.iptablesSave("ipv4")
+	_, ipv6SaveExists := program.iptablesSave("ipv6")
+	if ipv4SaveExists || ipv6SaveExists {
 		f := hostFirewallSnapshot{backend: "iptables", defaultDenyByFamily: map[string]bool{}, defaultPolicyByFamily: map[string]string{}}
 		for _, spec := range []struct{ command, family string }{{"iptables-save", "ipv4"}, {"ip6tables-save", "ipv6"}} {
-			if !cmd.Exists(spec.command) {
+			r, exists := program.iptablesSave(spec.family)
+			if !exists {
 				continue
 			}
-			r := cmd.Run(12*time.Second, spec.command)
 			if r.Err == nil && !r.Truncated {
 				f.available, f.active = true, true
 				rules, policy, unresolved := parseIPTablesFirewallDetailed(r.Stdout, spec.family)
@@ -148,102 +140,6 @@ func collectHostFirewall(cmd Commander) hostFirewallSnapshot {
 	}
 	inactive.collectionErr = collectionErr
 	return inactive
-}
-
-func collectFirewalld(cmd Commander) hostFirewallSnapshot {
-	zonesResult := cmd.Run(10*time.Second, "firewall-cmd", "--get-active-zones")
-	if zonesResult.Err != nil || zonesResult.Truncated {
-		return hostFirewallSnapshot{collectionErr: fmt.Errorf("firewall-cmd --get-active-zones: %s", commandError(zonesResult))}
-	}
-	f := hostFirewallSnapshot{available: true, active: true, backend: "firewalld", defaultDenyByFamily: map[string]bool{}, defaultPolicyByFamily: map[string]string{}}
-	servicePorts := map[string]string{"ssh": "22", "http": "80", "https": "443"}
-	for _, zone := range parseFirewalldActiveZones(zonesResult.Stdout) {
-		detail := cmd.Run(10*time.Second, "firewall-cmd", "--zone="+zone, "--list-all")
-		if detail.Err != nil || detail.Truncated {
-			return hostFirewallSnapshot{collectionErr: fmt.Errorf("firewall-cmd --zone=%s --list-all: %s", zone, commandError(detail))}
-		}
-		f.lines = append(f.lines, lines(detail.Stdout)...)
-		restricted := false
-		zonePolicy := "deny"
-		for _, line := range lines(detail.Stdout) {
-			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "sources:") && strings.TrimSpace(strings.TrimPrefix(trimmed, "sources:")) != "" {
-				restricted = true
-			}
-			if strings.HasPrefix(trimmed, "target:") {
-				target := strings.ToUpper(strings.TrimSpace(strings.TrimPrefix(trimmed, "target:")))
-				if target == "ACCEPT" {
-					zonePolicy = "allow"
-				} else if target != "DEFAULT" && target != "DROP" && target != "REJECT" {
-					zonePolicy = "unknown"
-				}
-			}
-		}
-		mergeDefaultFirewallPolicy(&f, "any", zonePolicy)
-		analysis := parseFirewalldZone(detail.Stdout)
-		source := "any"
-		if restricted {
-			source = "zone-sources"
-		}
-		if analysis.unrestricted {
-			f.rules = append(f.rules, firewallRule{Family: "any", Protocol: "any", Port: "any", Source: source, Action: "allow", Origin: "firewalld-zone", Raw: "unrestricted active zone"})
-		}
-		for _, item := range analysis.ports {
-			parts := strings.SplitN(item, "/", 2)
-			if len(parts) != 2 || !validPort(parts[0]) {
-				continue
-			}
-			f.rules = append(f.rules, firewallRule{Family: "any", Protocol: parts[1], Port: parts[0], Source: source, Action: "allow", Origin: "firewalld-zone", Raw: item})
-		}
-		for _, service := range analysis.services {
-			if port := servicePorts[service]; port != "" {
-				f.rules = append(f.rules, firewallRule{Family: "any", Protocol: "tcp", Port: port, Source: source, Action: "allow", Origin: "firewalld-zone", Raw: service})
-			}
-		}
-	}
-	return f
-}
-
-func parseUFWRules(input []string) []firewallRule {
-	var out []firewallRule
-	actionRE := regexp.MustCompile(`\s+(ALLOW|DENY|REJECT) IN\s+`)
-	for _, line := range input {
-		match := actionRE.FindStringSubmatchIndex(line)
-		if len(match) < 4 {
-			continue
-		}
-		target := strings.TrimSpace(line[:match[0]])
-		action := "allow"
-		if strings.ToUpper(line[match[2]:match[3]]) != "ALLOW" {
-			action = "deny"
-		}
-		family := "ipv4"
-		if strings.Contains(target, "(v6)") || strings.Contains(line, "Anywhere (v6)") {
-			family = "ipv6"
-		}
-		target = strings.TrimSpace(strings.ReplaceAll(target, "(v6)", ""))
-		if target == "Anywhere" {
-			source := strings.TrimSpace(line[match[1]:])
-			if strings.HasPrefix(source, "Anywhere") {
-				source = "any"
-			}
-			out = append(out, firewallRule{Family: family, Protocol: "any", Port: "any", Source: source, Action: action, Origin: "ufw-user", Raw: line})
-			continue
-		}
-		port, protocol := target, "any"
-		if parts := strings.SplitN(target, "/", 2); len(parts) == 2 {
-			port, protocol = parts[0], strings.ToLower(parts[1])
-		}
-		if !validPort(port) {
-			continue
-		}
-		source := strings.TrimSpace(line[match[1]:])
-		if strings.HasPrefix(source, "Anywhere") {
-			source = "any"
-		}
-		out = append(out, firewallRule{Family: family, Protocol: protocol, Port: port, Source: source, Action: action, Origin: "ufw-user", Raw: line})
-	}
-	return out
 }
 
 func parseNFTFirewall(output string) hostFirewallSnapshot {
@@ -634,173 +530,4 @@ func collectNFTHookPolicies(f *hostFirewallSnapshot, output, hook string) {
 		// With no INPUT base chain, nftables is not filtering host-local input.
 		mergeDefaultFirewallPolicy(f, "any", "allow")
 	}
-}
-
-func firewallDisposition(f hostFirewallSnapshot, port, protocol string) string {
-	return firewallDispositionFamily(f, port, protocol, "any")
-}
-
-func firewallDispositionFamily(f hostFirewallSnapshot, port, protocol, family string) string {
-	if !f.available {
-		if f.collectionErr != nil {
-			return "unknown"
-		}
-		return "inactive"
-	}
-	if !f.active {
-		return "inactive"
-	}
-	rules := f.rules
-	if len(rules) == 0 && len(f.lines) > 0 {
-		rules = parseUFWRules(f.lines)
-	}
-	restricted, conditional := false, false
-	orderedRules := f.backend == "iptables" || f.backend == "nftables" || f.backend == "ufw"
-	for _, rule := range rules {
-		if family != "any" && rule.Family != "any" && rule.Family != family {
-			continue
-		}
-		if (rule.Port != "any" && rule.Port != port) || (rule.Protocol != "any" && rule.Protocol != protocol) {
-			continue
-		}
-		if rule.Action != "allow" {
-			if orderedRules && rule.Action == "deny" && rule.Source == "any" && !rule.Conditional {
-				if conditional {
-					return "conditional-unknown"
-				}
-				if restricted {
-					return "allow-restricted"
-				}
-				return "blocked-by-explicit-rule"
-			}
-			continue
-		}
-		if rule.InputInterface == "lo" || rule.InputInterface == "lo+" {
-			continue
-		}
-		if rule.Conditional {
-			conditional = true
-			continue
-		}
-		if rule.Source == "any" {
-			return "allow-anywhere"
-		}
-		restricted = true
-	}
-	policy := defaultFirewallPolicyForFamily(f, family)
-	if policy == "allow" {
-		return "allow-anywhere"
-	}
-	if conditional {
-		return "conditional-unknown"
-	}
-	if restricted {
-		return "allow-restricted"
-	}
-	switch policy {
-	case "deny":
-		return "blocked-by-default"
-	case "allow":
-		return "allow-anywhere"
-	}
-	return "no-explicit-rule"
-}
-
-func setDefaultFirewallPolicy(f *hostFirewallSnapshot, family, policy string) {
-	if f.defaultPolicyByFamily == nil {
-		f.defaultPolicyByFamily = map[string]string{}
-	}
-	if f.defaultDenyByFamily == nil {
-		f.defaultDenyByFamily = map[string]bool{}
-	}
-	f.defaultPolicyByFamily[family] = policy
-	f.defaultDenyByFamily[family] = policy == "deny"
-	f.defaultDeny = false
-	for _, deny := range f.defaultDenyByFamily {
-		f.defaultDeny = f.defaultDeny || deny
-	}
-}
-
-func mergeDefaultFirewallPolicy(f *hostFirewallSnapshot, family, policy string) {
-	existing := f.defaultPolicyByFamily[family]
-	if existing == "" {
-		setDefaultFirewallPolicy(f, family, policy)
-		return
-	}
-	if existing == policy {
-		return
-	}
-	// Multiple base chains are all traversed. A deny policy on any of them
-	// blocks unmatched traffic; otherwise conflicting or unknown evidence is
-	// retained as unknown rather than optimistically calling it allowed.
-	if existing == "deny" || policy == "deny" {
-		setDefaultFirewallPolicy(f, family, "deny")
-		return
-	}
-	setDefaultFirewallPolicy(f, family, "unknown")
-}
-
-func defaultFirewallPolicyForFamily(f hostFirewallSnapshot, family string) string {
-	if policy := f.defaultPolicyByFamily["any"]; policy != "" {
-		return policy
-	}
-	if family != "any" {
-		if policy := f.defaultPolicyByFamily[family]; policy != "" {
-			return policy
-		}
-		if len(f.defaultPolicyByFamily) == 0 && f.defaultDenyByFamily[family] {
-			return "deny"
-		}
-		if len(f.defaultPolicyByFamily) == 0 && len(f.defaultDenyByFamily) == 0 && f.defaultDeny {
-			return "deny"
-		}
-		return "unknown"
-	}
-	v4, v6 := f.defaultPolicyByFamily["ipv4"], f.defaultPolicyByFamily["ipv6"]
-	if v4 != "" && v4 == v6 {
-		return v4
-	}
-	if v4 == "deny" && v6 == "deny" {
-		return "deny"
-	}
-	if len(f.defaultPolicyByFamily) == 0 && f.defaultDeny {
-		return "deny"
-	}
-	return "unknown"
-}
-
-func defaultDenyForFamily(f hostFirewallSnapshot, family string) bool {
-	if len(f.defaultPolicyByFamily) > 0 {
-		return defaultFirewallPolicyForFamily(f, family) == "deny"
-	}
-	if len(f.defaultDenyByFamily) == 0 {
-		return f.defaultDeny
-	}
-	if f.defaultDenyByFamily["any"] {
-		return true
-	}
-	if family == "any" {
-		return f.defaultDenyByFamily["ipv4"] && f.defaultDenyByFamily["ipv6"]
-	}
-	return f.defaultDenyByFamily[family]
-}
-
-func listenerAddressFamily(address string) string {
-	if address == "*" {
-		return "any"
-	}
-	if address == "::" {
-		return "ipv6"
-	}
-	if strings.Contains(address, ":") && !strings.Contains(address, ".") {
-		return "ipv6"
-	}
-	return "ipv4"
-}
-
-func firewallEvidenceSource(f hostFirewallSnapshot) string {
-	if f.backend == "" {
-		return "host firewall"
-	}
-	return f.backend
 }

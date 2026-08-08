@@ -130,7 +130,7 @@ func collectEgressSnapshot(ctx *Context) egressSnapshot {
 			snapshot.MarkedRules++
 		}
 	}
-	resolv, err := readSmall("/etc/resolv.conf", 128<<10)
+	resolv, err := ctx.Facts.ReadSmall("/etc/resolv.conf", 128<<10)
 	if err != nil {
 		snapshot.Error = fmt.Errorf("read resolv.conf: %w", err)
 		return snapshot

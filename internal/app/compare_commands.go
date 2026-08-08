@@ -6,10 +6,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"sort"
+	"strings"
 
+	"github.com/sakkaku404/vps-scope/internal/audit"
 	"github.com/sakkaku404/vps-scope/internal/i18n"
 	"github.com/sakkaku404/vps-scope/internal/model"
+	"github.com/sakkaku404/vps-scope/internal/safejson"
 )
 
 func (e environment) diff(args []string) error {
@@ -22,23 +26,31 @@ func (e environment) diff(args []string) error {
 	if fs.NArg() != 2 {
 		return errors.New("usage: vps-scope diff OLD.json NEW.json")
 	}
-	oldReport, err := readReport(fs.Arg(0))
+	oldReport, err := e.readReport(fs.Arg(0))
 	if err != nil {
 		return err
 	}
-	newReport, err := readReport(fs.Arg(1))
+	newReport, err := e.readReport(fs.Arg(1))
 	if err != nil {
 		return err
 	}
-	locale := i18n.Locale(*lang)
+	if err := validateComparableHostIdentity(oldReport); err != nil {
+		return fmt.Errorf("old report: %w", err)
+	}
+	if err := validateComparableHostIdentity(newReport); err != nil {
+		return fmt.Errorf("new report: %w", err)
+	}
+	if oldReport.Host.StableID != newReport.Host.StableID {
+		return errors.New("cannot diff reports from different hosts: stable_id mismatch")
+	}
+	locale, err := parseLocaleFlag(*lang)
+	if err != nil {
+		return err
+	}
 	oldMap, newMap := findingMap(oldReport), findingMap(newReport)
 	semantic, covered := semanticDiff(oldReport, newReport)
 	for _, change := range semantic {
-		message := change.MessageEN
-		if locale == "zh-CN" {
-			message = change.MessageZH
-		}
-		fmt.Fprintf(e.out, "%-11s %-12s %s\n", change.Kind, change.ID, message)
+		fmt.Fprintf(e.out, "%-11s %-12s %s\n", change.Kind, change.ID, change.message(locale))
 	}
 	var ids []string
 	seen := map[string]bool{}
@@ -70,39 +82,123 @@ func (e environment) diff(args []string) error {
 	return nil
 }
 
+var legacyRedactedStableIDPattern = regexp.MustCompile(`^HOST_ID_[0-9]+$`)
+
+func validateComparableHostIdentity(r model.Report) error {
+	if r.Metadata["redacted"] == "true" && legacyRedactedStableIDPattern.MatchString(r.Host.StableID) {
+		return errors.New("legacy redacted report has a non-unique host placeholder; re-redact the original unredacted report with the current version")
+	}
+	return nil
+}
+
 func (e environment) fleet(args []string) error {
 	fs := e.newFlagSet("fleet")
 	lang := fs.String("lang", "auto", "language")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	_ = lang
 	if fs.NArg() < 1 {
 		return errors.New("usage: vps-scope fleet REPORT.json [REPORT.json ...]")
 	}
-	fmt.Fprintf(e.out, "%-24s %5s %5s %5s %8s %10s\n", "HOST", "RISK", "PASS", "INFO", "UNKNOWN", "PROFILE")
+	locale, err := parseLocaleFlag(*lang)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(e.out, "%-24s %5s %5s %5s %8s %10s  %s\n", strings.ToUpper(i18n.UI(locale, "主机", "Host")), "RISK", "PASS", "INFO", "UNKNOWN", "PROFILE", i18n.UI(locale, "最高优先级结果", "TOP FINDING"))
 	for _, path := range fs.Args() {
-		r, err := readReport(path)
+		r, err := e.readReport(path)
 		if err != nil {
 			return fmt.Errorf("%s: %w", path, err)
 		}
-		fmt.Fprintf(e.out, "%-24s %5d %5d %5d %8d %10s\n", truncateDisplay(r.Host.Hostname, 24), r.Summary.Risk, r.Summary.Pass, r.Summary.Info, r.Summary.Unknown, r.Profile.Effective)
+		top := fleetTopFinding(r, locale)
+		fmt.Fprintf(e.out, "%-24s %5d %5d %5d %8d %10s  %s\n", truncateDisplay(r.Host.Hostname, 24), r.Summary.Risk, r.Summary.Pass, r.Summary.Info, r.Summary.Unknown, r.Profile.Effective, top)
 	}
 	return nil
 }
 
+func fleetTopFinding(r model.Report, locale string) string {
+	bestRank := 1 << 30
+	best := model.Finding{}
+	for _, finding := range r.Findings {
+		if finding.NotApplicable || (finding.Status != model.Risk && finding.Status != model.Unknown) {
+			continue
+		}
+		rank := 100
+		if finding.Status == model.Risk {
+			rank = map[model.Severity]int{model.Critical: 0, model.High: 10, model.Medium: 20, model.Low: 30}[finding.Severity]
+		} else {
+			rank = 40
+		}
+		if rank < bestRank || rank == bestRank && finding.ID < best.ID {
+			bestRank, best = rank, finding
+		}
+	}
+	if best.ID == "" {
+		return i18n.UI(locale, "没有 RISK；如有 INFO 请按需查看", "no RISK; review INFO as needed")
+	}
+	label := string(best.Status)
+	if best.Severity != "" {
+		label += "/" + strings.ToUpper(string(best.Severity))
+	}
+	title := i18n.Pick(i18n.RuleForLocale(best.ID, locale).Title, locale)
+	return fmt.Sprintf("[%s] %s %s", label, best.ID, truncateDisplay(title, 52))
+}
+
 func readReport(path string) (model.Report, error) {
+	return readReportWithOptions(path, reportReadOptions{})
+}
+
+func (e environment) readReport(path string) (model.Report, error) {
+	return readReportWithOptions(path, reportReadOptions{verifierVersion: e.build.Version})
+}
+
+// readReportForRewrite is used by commands that emit another machine-readable
+// report. A reader may ignore optional fields added by a newer schema-1.0
+// producer, but a redactor cannot preserve or sanitize fields it does not
+// understand. Rejecting them is safer than silently losing data or copying an
+// unreviewed secret into a shareable artifact.
+func (e environment) readReportForRewrite(path string) (model.Report, error) {
+	return readReportWithOptions(path, reportReadOptions{verifierVersion: e.build.Version, rejectUnknownFields: true})
+}
+
+type reportReadOptions struct {
+	// allowSemanticFailures is reserved for the verify command, which must load
+	// a damaged report in order to print every validation failure. All other
+	// offline commands consume only reports that pass the semantic contract.
+	allowSemanticFailures bool
+	// verifierVersion enables the schema-1.0 append-only compatibility rule:
+	// a newer report may add well-formed IDs but may not omit or redefine IDs
+	// known to this executable. An empty value keeps fixture readers strict.
+	verifierVersion string
+	// rejectUnknownFields prevents lossy or privacy-unsafe serialization by a
+	// command that will write the decoded report again.
+	rejectUnknownFields bool
+}
+
+func readReportWithOptions(path string, options reportReadOptions) (model.Report, error) {
 	file, err := openLimitedJSON(path)
 	if err != nil {
 		return model.Report{}, err
 	}
 	defer file.Close()
 	var r model.Report
-	if err := decodeSingleJSON(file, &r); err != nil {
+	if err := decodeSingleJSONWithOptions(file, &r, options.rejectUnknownFields); err != nil {
+		if options.rejectUnknownFields {
+			return r, fmt.Errorf("read report %q: cannot safely rewrite a report containing unsupported fields: %w", path, err)
+		}
 		return r, fmt.Errorf("read report %q: %w", path, err)
 	}
 	if r.SchemaVersion != "1.0" {
 		return r, fmt.Errorf("read report %q: unsupported report schema %q", path, r.SchemaVersion)
+	}
+	var failures []string
+	if options.verifierVersion == "" {
+		failures = audit.ValidateReport(r)
+	} else {
+		failures = audit.ValidateReport(r, options.verifierVersion)
+	}
+	if len(failures) > 0 && !options.allowSemanticFailures {
+		return r, fmt.Errorf("read report %q: semantic validation failed: %s", path, strings.Join(failures, "; "))
 	}
 	return r, nil
 }
@@ -138,8 +234,23 @@ func openLimitedJSON(path string) (*os.File, error) {
 	return file, nil
 }
 
-func decodeSingleJSON(r io.Reader, dst any) error {
+func decodeSingleJSONWithOptions(r io.Reader, dst any, rejectUnknownFields bool) error {
+	if seeker, ok := r.(io.ReadSeeker); ok {
+		start, err := seeker.Seek(0, io.SeekCurrent)
+		if err != nil {
+			return err
+		}
+		if err := safejson.RejectDuplicateMembers(io.LimitReader(r, maxLocalJSONSize+1)); err != nil {
+			return err
+		}
+		if _, err := seeker.Seek(start, io.SeekStart); err != nil {
+			return err
+		}
+	}
 	decoder := json.NewDecoder(io.LimitReader(r, maxLocalJSONSize+1))
+	if rejectUnknownFields {
+		decoder.DisallowUnknownFields()
+	}
 	if err := decoder.Decode(dst); err != nil {
 		return err
 	}
@@ -152,6 +263,7 @@ func decodeSingleJSON(r io.Reader, dst any) error {
 	}
 	return nil
 }
+
 func findingMap(r model.Report) map[string]model.Finding {
 	out := map[string]model.Finding{}
 	for _, f := range r.Findings {

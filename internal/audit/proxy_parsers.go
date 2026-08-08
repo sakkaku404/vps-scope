@@ -1,11 +1,23 @@
 package audit
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/sakkaku404/vps-scope/internal/safejson"
 )
+
+func unmarshalProxyJSON(data []byte, destination any) error {
+	if err := safejson.RejectDuplicateMembers(bytes.NewReader(data)); err != nil {
+		return fmt.Errorf("ambiguous proxy JSON: %w", err)
+	}
+	return json.Unmarshal(data, destination)
+}
 
 func parseSingBoxSummary(path string, data []byte) proxyConfigSummary {
 	type inbound struct {
@@ -42,7 +54,7 @@ func parseSingBoxSummary(path string, data []byte) proxyConfigSummary {
 		} `json:"experimental"`
 	}
 	s := proxyConfigSummary{Product: "sing-box", Path: path}
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	if err := unmarshalProxyJSON(data, &cfg); err != nil {
 		s.Err = err
 		return s
 	}
@@ -96,6 +108,12 @@ func parseSingBoxSummary(path string, data []byte) proxyConfigSummary {
 
 func parseXraySummary(path string, data []byte) proxyConfigSummary {
 	var cfg struct {
+		API struct {
+			Tag string `json:"tag"`
+		} `json:"api"`
+		Metrics struct {
+			Listen string `json:"listen"`
+		} `json:"metrics"`
 		Inbounds []struct {
 			Listen   string          `json:"listen"`
 			Port     json.RawMessage `json:"port"`
@@ -118,7 +136,7 @@ func parseXraySummary(path string, data []byte) proxyConfigSummary {
 		} `json:"inbounds"`
 	}
 	s := proxyConfigSummary{Product: "Xray", Path: path}
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	if err := unmarshalProxyJSON(data, &cfg); err != nil {
 		s.Err = err
 		return s
 	}
@@ -126,6 +144,14 @@ func parseXraySummary(path string, data []byte) proxyConfigSummary {
 	for _, item := range cfg.Inbounds {
 		port := jsonPort(item.Port)
 		listen := normalizeListen(item.Listen)
+		isAPIInbound := cfg.API.Tag != "" && item.Tag == cfg.API.Tag
+		if cfg.API.Tag == "" && strings.EqualFold(strings.TrimSpace(item.Tag), "api") && strings.EqualFold(item.Protocol, "dokodemo-door") {
+			isAPIInbound = true
+		}
+		if isAPIInbound {
+			s.Controls = append(s.Controls, controlEndpoint{Product: s.Product, Kind: "api-inbound", Listen: listen, Port: port})
+			continue
+		}
 		reality := strings.EqualFold(item.StreamSettings.Security, "reality")
 		targets := 0
 		if item.StreamSettings.Reality.Target != "" || item.StreamSettings.Reality.Dest != "" {
@@ -143,22 +169,36 @@ func parseXraySummary(path string, data []byte) proxyConfigSummary {
 		for _, transport := range transports {
 			s.UsesUDP = s.UsesUDP || transport == "udp"
 		}
-		if strings.Contains(strings.ToLower(item.Tag), "api") {
-			s.Controls = append(s.Controls, controlEndpoint{Product: s.Product, Kind: "api-inbound", Listen: listen, Port: port})
-		}
+	}
+	if host, port, ok := splitEndpoint(cfg.Metrics.Listen); ok {
+		s.Controls = append(s.Controls, controlEndpoint{Product: s.Product, Kind: "metrics", Listen: host, Port: port})
 	}
 	return s
 }
 
 func parseHysteriaSummary(path, data string) proxyConfigSummary {
-	s := proxyConfigSummary{Product: "Hysteria2", Path: path, Parseable: true, UsesUDP: true}
-	match := regexp.MustCompile(`(?mi)^\s*listen\s*:\s*["']?([^\s#"']+)`).FindStringSubmatch(data)
-	if len(match) == 2 {
-		host, port, ok := splitEndpoint(match[1])
-		if ok {
-			s.Inbounds = append(s.Inbounds, proxyInbound{Product: s.Product, Protocol: "hysteria2", Listen: host, Port: port, Transports: []string{"udp"}})
-		}
+	s := proxyConfigSummary{Product: "Hysteria2", Path: path, UsesUDP: true}
+	listenKey := regexp.MustCompile(`(?m)^listen\s*:`)
+	matches := regexp.MustCompile(`(?m)^listen\s*:\s*["']?([^\s#"']+)`).FindAllStringSubmatch(data, -1)
+	if len(matches) > 1 {
+		s.Err = errors.New("ambiguous Hysteria2 configuration: duplicate top-level listen key")
+		return s
 	}
+	if len(matches) == 0 {
+		if listenKey.MatchString(data) {
+			s.Err = errors.New("invalid Hysteria2 listen endpoint")
+			return s
+		}
+		s.Parseable = true
+		return s
+	}
+	host, port, ok := splitEndpoint(matches[0][1])
+	if !ok {
+		s.Err = errors.New("invalid Hysteria2 listen endpoint")
+		return s
+	}
+	s.Parseable = true
+	s.Inbounds = append(s.Inbounds, proxyInbound{Product: s.Product, Protocol: "hysteria2", Listen: host, Port: port, Transports: []string{"udp"}})
 	return s
 }
 
@@ -167,7 +207,7 @@ func parseTUICSummary(path string, data []byte) proxyConfigSummary {
 		Server string `json:"server"`
 	}
 	s := proxyConfigSummary{Product: "TUIC", Path: path, UsesUDP: true}
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	if err := unmarshalProxyJSON(data, &cfg); err != nil {
 		s.Err = err
 		return s
 	}
@@ -184,7 +224,7 @@ func parseTrojanSummary(path string, data []byte) proxyConfigSummary {
 		LocalPort    json.RawMessage `json:"local_port"`
 	}
 	s := proxyConfigSummary{Product: "Trojan", Path: path}
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	if err := unmarshalProxyJSON(data, &cfg); err != nil {
 		s.Err = err
 		return s
 	}
@@ -202,7 +242,7 @@ func parseShadowsocksSummary(path string, data []byte) proxyConfigSummary {
 		Mode       string          `json:"mode"`
 	}
 	s := proxyConfigSummary{Product: "Shadowsocks", Path: path}
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	if err := unmarshalProxyJSON(data, &cfg); err != nil {
 		s.Err = err
 		return s
 	}

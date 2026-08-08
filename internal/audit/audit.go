@@ -1,8 +1,10 @@
 package audit
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -11,16 +13,16 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
+	"github.com/sakkaku404/vps-scope/internal/contract"
 	"github.com/sakkaku404/vps-scope/internal/model"
 )
 
 const SchemaVersion = "1.0"
 
-var CategoryOrder = []string{
-	"system", "accounts", "ssh", "privileges", "network", "firewall", "auth", "updates",
-	"packages", "processes", "docker", "tls", "workloads", "filesystem", "persistence", "reliability",
-}
+var errAuditDeadline = errors.New("vps-scope audit deadline reached")
 
 type Build struct {
 	Version string
@@ -30,11 +32,14 @@ type Build struct {
 type ProgressFunc func(index, total int, category string)
 
 type Options struct {
+	Context         context.Context
 	Locale          string
 	Profile         string
 	ExpectedPublic  map[string]bool
 	LogSince        time.Duration
 	Deep            bool
+	NativeSelfTest  bool
+	AuditTimeout    time.Duration
 	ExternalDomains []string
 	ExpectCDN       bool
 	ExternalProber  ExternalProber
@@ -43,14 +48,27 @@ type Options struct {
 	Build           Build
 	Progress        ProgressFunc
 	Now             func() time.Time
+	fileSource      fileEvidenceSource
+	hostname        func() (string, error)
+	effectiveUID    func() int
+	timeoutContext  func(context.Context, time.Duration, error) (context.Context, context.CancelFunc)
 }
+
+// MaxLogSince bounds journal and event-history collection. A longer window is
+// not only expensive on small VPS hosts; day-suffixed CLI values can otherwise
+// overflow time.Duration before they reach the collectors.
+const MaxLogSince = 366 * 24 * time.Hour
 
 type Context struct {
 	Options
-	Host                  model.Host
-	Profile               model.Profile
-	ProfileDiscoveryError error
-	Facts                 *FactStore
+	Host                    model.Host
+	Profile                 model.Profile
+	ProfileDiscoveryError   error
+	Facts                   *FactStore
+	Deployment              *model.Deployment
+	DeploymentBudgetRejects int
+	EvidenceTime            time.Time
+	EffectiveUID            int
 }
 
 type CheckFunc func(*Context) []model.Finding
@@ -64,17 +82,39 @@ var checks = map[string]CheckFunc{
 }
 
 func Run(opts Options) (model.Report, error) {
-	if runtime.GOOS != "linux" {
-		return model.Report{}, fmt.Errorf("audit is supported only on Ubuntu/Debian Linux; current OS is %s", runtime.GOOS)
+	return runForPlatform(opts, runtime.GOOS)
+}
+
+func runForPlatform(opts Options, platform string) (model.Report, error) {
+	if platform != "linux" {
+		return model.Report{}, fmt.Errorf("audit is supported only on Ubuntu/Debian Linux; current OS is %s", platform)
 	}
 	if opts.Commander == nil {
 		opts.Commander = OSCommander{}
 	}
+	if opts.Context == nil {
+		opts.Context = context.Background()
+	}
+	if err := opts.Context.Err(); err != nil {
+		return model.Report{}, fmt.Errorf("audit canceled: %w", err)
+	}
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
+	if opts.hostname == nil {
+		opts.hostname = os.Hostname
+	}
+	if opts.effectiveUID == nil {
+		opts.effectiveUID = os.Geteuid
+	}
+	if opts.timeoutContext == nil {
+		opts.timeoutContext = context.WithTimeoutCause
+	}
 	if opts.LogSince <= 0 {
 		opts.LogSince = 7 * 24 * time.Hour
+	}
+	if opts.LogSince > MaxLogSince {
+		return model.Report{}, fmt.Errorf("log lookback must not exceed %s", MaxLogSince)
 	}
 	if opts.Profile == "" {
 		opts.Profile = "auto"
@@ -85,19 +125,43 @@ func Run(opts Options) (model.Report, error) {
 	if opts.Build.Version == "" {
 		opts.Build.Version = "dev"
 	}
+	if opts.AuditTimeout == 0 {
+		opts.AuditTimeout = 5 * time.Minute
+	}
+	if opts.AuditTimeout < 30*time.Second || opts.AuditTimeout > 30*time.Minute {
+		return model.Report{}, fmt.Errorf("audit timeout must be between 30s and 30m")
+	}
+	auditContext, cancelAudit := opts.timeoutContext(opts.Context, opts.AuditTimeout, errAuditDeadline)
+	defer cancelAudit()
+	opts.Context = auditContext
+	collectorCommands := newSnapshotCommander(newDeadlineCommander(opts.Commander, opts.AuditTimeout, opts.Context))
+	opts.Commander = collectorCommands
 	started := opts.Now().UTC()
-	host, err := collectHost(opts.Commander)
+	facts := newFactStoreAtContext(opts.Context, opts.Commander, opts.NativeSelfTest, started, opts.fileSource)
+	effectiveUID := opts.effectiveUID()
+	host, err := collectHost(opts.Commander, facts, opts.hostname, effectiveUID)
 	if err != nil {
 		return model.Report{}, err
 	}
 	if host.OS != "ubuntu" && host.OS != "debian" {
 		return model.Report{}, fmt.Errorf("unsupported distribution %q; v1 supports Ubuntu and Debian only", host.OS)
 	}
-	facts := NewFactStore(opts.Commander)
 	profile, profileErr := detectProfile(opts.Commander, facts, opts.Profile)
-	ctx := &Context{Options: opts, Host: host, Profile: profile, ProfileDiscoveryError: profileErr, Facts: facts}
+	ctx := &Context{Options: opts, Host: host, Profile: profile, ProfileDiscoveryError: profileErr, Facts: facts, EvidenceTime: started, EffectiveUID: effectiveUID}
 	findings := make([]model.Finding, 0, 64)
+	contractRepairs := 0
+	collectionTimedOut := false
 	for i, category := range CategoryOrder {
+		if err := opts.Context.Err(); err != nil {
+			if !errors.Is(context.Cause(opts.Context), errAuditDeadline) {
+				return model.Report{}, fmt.Errorf("audit canceled: %w", err)
+			}
+			collectionTimedOut = true
+			for _, remainingCategory := range CategoryOrder[i:] {
+				findings = append(findings, auditDeadlineFindings(remainingCategory)...)
+			}
+			break
+		}
 		if opts.Progress != nil {
 			opts.Progress(i+1, len(CategoryOrder), category)
 		}
@@ -105,9 +169,18 @@ func Run(opts Options) (model.Report, error) {
 		if fn == nil {
 			continue
 		}
-		findings = append(findings, safeCheck(fn, ctx, category)...)
+		categoryFindings, repairs := reconcileCategoryFindings(category, safeCheck(fn, ctx, category))
+		contractRepairs += repairs
+		findings = append(findings, normalizeFindings(categoryFindings)...)
+	}
+	if err := opts.Context.Err(); err != nil {
+		if !errors.Is(context.Cause(opts.Context), errAuditDeadline) {
+			return model.Report{}, fmt.Errorf("audit canceled: %w", err)
+		}
+		collectionTimedOut = true
 	}
 	assignReasonCodes(findings)
+	normalizeDeployment(ctx.Deployment)
 	report := model.Report{
 		SchemaVersion: SchemaVersion,
 		ToolVersion:   opts.Build.Version,
@@ -120,18 +193,139 @@ func Run(opts Options) (model.Report, error) {
 		Profile:       profile,
 		Findings:      findings,
 		Endpoints:     reportEndpoints(ctx),
+		Deployment:    ctx.Deployment,
 		Metadata: map[string]string{
-			"mutation_policy": "never-modify-system",
-			"network_checks":  map[bool]string{true: "explicitly-enabled", false: "disabled-by-default"}[len(opts.ExternalDomains) > 0],
-			"audit_depth":     map[bool]string{true: "deep", false: "standard"}[opts.Deep],
-			"policy_schema":   map[bool]string{true: PolicySchemaVersion, false: "none"}[opts.Policy != nil],
+			"mutation_policy":      "never-modify-system",
+			"network_checks":       map[bool]string{true: "explicitly-enabled", false: "disabled-by-default"}[len(opts.ExternalDomains) > 0],
+			"audit_depth":          map[bool]string{true: "deep", false: "standard"}[opts.Deep],
+			"native_self_test":     map[bool]string{true: "enabled-executes-local-workload-code", false: "disabled-by-default"}[opts.NativeSelfTest],
+			"audit_timeout":        opts.AuditTimeout.String(),
+			"collection_timed_out": strconv.FormatBool(collectionTimedOut),
+			"policy_schema":        map[bool]string{true: PolicySchemaVersion, false: "none"}[opts.Policy != nil],
 		},
 	}
+	commandStats := collectorCommands.Stats()
+	report.Metadata["collector_command_requests"] = strconv.Itoa(commandStats.CommandCalls)
+	report.Metadata["collector_command_cache_hits"] = strconv.Itoa(commandStats.CommandHits)
+	report.Metadata["collector_lookup_requests"] = strconv.Itoa(commandStats.ExistsCalls)
+	report.Metadata["collector_lookup_cache_hits"] = strconv.Itoa(commandStats.ExistsHits)
+	report.Metadata["collector_command_retained_bytes"] = strconv.Itoa(commandStats.RetainedBytes)
+	report.Metadata["collector_command_budget_rejections"] = strconv.Itoa(commandStats.BudgetRejects)
+	fileStats := facts.FileStats()
+	report.Metadata["collector_file_read_requests"] = strconv.Itoa(fileStats.ReadRequests)
+	report.Metadata["collector_file_read_cache_hits"] = strconv.Itoa(fileStats.ReadHits)
+	report.Metadata["collector_file_link_requests"] = strconv.Itoa(fileStats.LinkRequests)
+	report.Metadata["collector_file_link_cache_hits"] = strconv.Itoa(fileStats.LinkHits)
+	report.Metadata["collector_file_stat_requests"] = strconv.Itoa(fileStats.StatRequests + fileStats.LstatRequests)
+	report.Metadata["collector_file_stat_cache_hits"] = strconv.Itoa(fileStats.StatHits + fileStats.LstatHits)
+	report.Metadata["collector_directory_requests"] = strconv.Itoa(fileStats.DirRequests)
+	report.Metadata["collector_directory_cache_hits"] = strconv.Itoa(fileStats.DirHits)
+	report.Metadata["collector_file_retained_bytes"] = strconv.Itoa(fileStats.RetainedBytes)
+	report.Metadata["collector_directory_retained_entries"] = strconv.Itoa(fileStats.RetainedDirectoryEntries)
+	report.Metadata["collector_file_budget_rejections"] = strconv.Itoa(fileStats.BudgetRejects)
+	report.Metadata["collector_contract_repairs"] = strconv.Itoa(contractRepairs)
+	report.Metadata["collector_topology_budget_rejections"] = strconv.Itoa(ctx.DeploymentBudgetRejects)
 	report.Recount()
 	if failures := ValidateReport(report, opts.Build.Version); len(failures) > 0 {
 		return model.Report{}, fmt.Errorf("internal report contract validation failed: %s", strings.Join(failures, "; "))
 	}
 	return report, nil
+}
+
+func auditDeadlineFindings(category string) []model.Finding {
+	message := "audit deadline reached before this check could run"
+	findings := make([]model.Finding, 0, 8)
+	for _, id := range StableCheckIDs {
+		if reportCategoryForID(id) != category {
+			continue
+		}
+		findings = append(findings, model.Finding{
+			ID: id, Category: category, Status: model.Unknown, Unavailable: true, Error: message,
+			Evidence: []model.Evidence{{Source: "audit deadline", Key: "unavailable", Value: message}},
+		})
+	}
+	return findings
+}
+
+func (ctx *Context) evidenceTime() time.Time {
+	if !ctx.EvidenceTime.IsZero() {
+		return ctx.EvidenceTime.UTC()
+	}
+	if ctx.Now != nil {
+		return ctx.Now().UTC()
+	}
+	return time.Now().UTC()
+}
+
+func (ctx *Context) auditContext() context.Context {
+	if ctx.Options.Context != nil {
+		return ctx.Options.Context
+	}
+	return context.Background()
+}
+
+func reconcileCategoryFindings(category string, findings []model.Finding) ([]model.Finding, int) {
+	expected := make([]string, 0, 8)
+	for _, id := range StableCheckIDs {
+		if reportCategoryForID(id) == category {
+			expected = append(expected, id)
+		}
+	}
+	byID := make(map[string][]model.Finding, len(findings))
+	repairs := 0
+	for _, finding := range findings {
+		if reportCategoryForID(finding.ID) != category || finding.Category != category {
+			repairs++
+			continue
+		}
+		byID[finding.ID] = append(byID[finding.ID], finding)
+	}
+	out := make([]model.Finding, 0, len(expected))
+	for _, id := range expected {
+		matches := byID[id]
+		if len(matches) == 1 {
+			out = append(out, matches[0])
+			continue
+		}
+		repairs++
+		problem := "missing"
+		if len(matches) > 1 {
+			problem = "duplicate"
+		}
+		message := "internal check contract repair: " + problem + " result; details withheld"
+		out = append(out, model.Finding{
+			ID: id, Category: category, Status: model.Unknown, Unavailable: true, Error: message,
+			Evidence: []model.Evidence{{Source: "internal", Key: "contract_repair", Value: message}},
+		})
+	}
+	return out, repairs
+}
+
+func normalizeDeployment(deployment *model.Deployment) {
+	if deployment == nil {
+		return
+	}
+	for index := range deployment.Components {
+		component := &deployment.Components[index]
+		component.Product = limitText(component.Product, 256)
+		component.Source = limitText(component.Source, 1024)
+		component.Deployment = limitText(component.Deployment, 256)
+		component.Confidence = limitText(component.Confidence, 64)
+		component.Kind = limitText(component.Kind, 64)
+	}
+	for index := range deployment.Endpoints {
+		endpoint := &deployment.Endpoints[index]
+		endpoint.Product = limitText(endpoint.Product, 256)
+		endpoint.Protocol = limitText(endpoint.Protocol, 256)
+		endpoint.Address = limitText(endpoint.Address, 512)
+		endpoint.Process = limitText(endpoint.Process, 256)
+		endpoint.Security = limitText(endpoint.Security, 512)
+		endpoint.Firewall = limitText(endpoint.Firewall, 512)
+		endpoint.Judgment = limitText(endpoint.Judgment, 512)
+		endpoint.Source = limitText(endpoint.Source, 1024)
+		endpoint.TLS = limitText(endpoint.TLS, 64)
+		endpoint.PathPosture = limitText(endpoint.PathPosture, 64)
+	}
 }
 
 func reportEndpoints(ctx *Context) []model.Endpoint {
@@ -170,7 +364,13 @@ func reportEndpoints(ctx *Context) []model.Endpoint {
 		if endpoints[i].Protocol != endpoints[j].Protocol {
 			return endpoints[i].Protocol < endpoints[j].Protocol
 		}
-		return endpoints[i].Family < endpoints[j].Family
+		if endpoints[i].Family != endpoints[j].Family {
+			return endpoints[i].Family < endpoints[j].Family
+		}
+		if endpoints[i].Scope != endpoints[j].Scope {
+			return endpoints[i].Scope < endpoints[j].Scope
+		}
+		return endpoints[i].Process < endpoints[j].Process
 	})
 	return endpoints
 }
@@ -199,17 +399,17 @@ func unavailableCategoryFindings(category string) []model.Finding {
 	return out
 }
 
-func collectHost(cmd Commander) (model.Host, error) {
-	data, err := readSmall("/etc/os-release", 64<<10)
+func collectHost(cmd Commander, facts *FactStore, hostname func() (string, error), effectiveUID int) (model.Host, error) {
+	data, err := facts.ReadSmall("/etc/os-release", 64<<10)
 	if err != nil {
 		return model.Host{}, fmt.Errorf("read /etc/os-release: %w", err)
 	}
 	values := parseKeyValues(data)
-	hostname, err := os.Hostname()
+	hostnameValue, err := hostname()
 	if err != nil {
 		return model.Host{}, fmt.Errorf("read hostname: %w", err)
 	}
-	if strings.TrimSpace(hostname) == "" {
+	if strings.TrimSpace(hostnameValue) == "" {
 		return model.Host{}, fmt.Errorf("read hostname: empty value")
 	}
 	kernelResult := cmd.Run(5*time.Second, "uname", "-r")
@@ -225,18 +425,18 @@ func collectHost(cmd Commander) (model.Host, error) {
 	if cmd.Exists("systemd-detect-virt") {
 		virt = cmd.Run(5*time.Second, "systemd-detect-virt").Stdout
 	}
-	machineID, machineIDErr := readSmall("/etc/machine-id", 4<<10)
+	machineID, machineIDErr := facts.ReadSmall("/etc/machine-id", 4<<10)
 	if machineIDErr != nil {
 		return model.Host{}, fmt.Errorf("read machine identity: %w", machineIDErr)
 	}
 	if strings.TrimSpace(machineID) == "" {
 		return model.Host{}, fmt.Errorf("read machine identity: empty value")
 	}
-	sum := sha256.Sum256([]byte(strings.TrimSpace(machineID) + "\x00" + hostname))
+	sum := sha256.Sum256([]byte(strings.TrimSpace(machineID) + "\x00" + hostnameValue))
 	return model.Host{
-		StableID: hex.EncodeToString(sum[:8]), Hostname: hostname,
-		OS: strings.ToLower(values["ID"]), OSVersion: values["VERSION_ID"],
-		Kernel: kernel, Architecture: arch, Virtualization: virt, IsRoot: os.Geteuid() == 0,
+		StableID: hex.EncodeToString(sum[:8]), Hostname: limitText(hostnameValue, 1024),
+		OS: strings.ToLower(values["ID"]), OSVersion: limitText(values["VERSION_ID"], 1024),
+		Kernel: limitText(kernel, 1024), Architecture: limitText(arch, 1024), Virtualization: limitText(virt, 1024), IsRoot: effectiveUID == 0,
 	}, nil
 }
 
@@ -258,7 +458,7 @@ func detectProfile(cmd Commander, facts *FactStore, requested string) (model.Pro
 			"/etc/sing-box", "/usr/local/etc/sing-box", "/etc/xray", "/usr/local/etc/xray",
 			"/etc/hysteria", "/usr/local/x-ui", "/usr/local/s-ui", "/opt/marzban", "/opt/hiddify-manager",
 		} {
-			if info, err := os.Stat(path); err == nil && info.IsDir() {
+			if info, err := facts.Stat(path); err == nil && info.IsDir() {
 				hasProxy = true
 				break
 			}
@@ -362,11 +562,122 @@ func nativeCommandError(r CommandResult) string {
 }
 
 func truncate(s string, n int) string {
+	s = sanitizeReportText(s)
 	s = strings.TrimSpace(strings.Join(strings.Fields(s), " "))
 	if len(s) <= n {
 		return s
 	}
-	return s[:n] + "..."
+	return truncateUTF8(s, n) + "..."
+}
+
+const (
+	maxFindingEvidenceEntries = contract.MaxFindingEvidenceEntries
+	maxFindingFactEntries     = contract.MaxFindingFactEntries
+	maxEvidenceSourceBytes    = contract.MaxEvidenceSourceBytes
+	maxEvidenceKeyBytes       = contract.MaxEvidenceKeyBytes
+	maxEvidenceValueBytes     = contract.MaxEvidenceValueBytes
+	maxFindingErrorBytes      = contract.MaxFindingErrorBytes
+	maxFindingFactKeyBytes    = contract.MaxFindingFactKeyBytes
+	maxFindingFactValueBytes  = contract.MaxFindingFactValueBytes
+)
+
+// normalizeFindings applies the same deterministic resource budget to every
+// collector. A noisy journal, package inventory, or hostile local database
+// must not make the final report unbounded or fail the entire audit after all
+// other checks have completed.
+func normalizeFindings(findings []model.Finding) []model.Finding {
+	for index := range findings {
+		finding := &findings[index]
+		finding.Error = limitText(finding.Error, maxFindingErrorBytes)
+		for evidenceIndex := range finding.Evidence {
+			evidence := &finding.Evidence[evidenceIndex]
+			evidence.Source = limitText(evidence.Source, maxEvidenceSourceBytes)
+			evidence.Key = limitText(evidence.Key, maxEvidenceKeyBytes)
+			evidence.Value = limitText(evidence.Value, maxEvidenceValueBytes)
+		}
+		if len(finding.Evidence) > maxFindingEvidenceEntries {
+			omitted := len(finding.Evidence) - (maxFindingEvidenceEntries - 1)
+			finding.Evidence = append(finding.Evidence[:maxFindingEvidenceEntries-1], model.Evidence{
+				Source: "internal evidence budget", Key: "entries_omitted",
+				Value: strconv.Itoa(omitted) + " additional evidence entries omitted",
+			})
+			if finding.Facts == nil {
+				finding.Facts = map[string]string{}
+			}
+			finding.Facts["evidence_entries_omitted"] = strconv.Itoa(omitted)
+		}
+		finding.Facts = normalizeFindingFacts(finding.Facts)
+	}
+	return findings
+}
+
+func normalizeFindingFacts(facts map[string]string) map[string]string {
+	if facts == nil {
+		return nil
+	}
+	keys := make([]string, 0, len(facts))
+	for key := range facts {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	omitted := 0
+	if len(keys) > maxFindingFactEntries {
+		omitted = len(keys) - (maxFindingFactEntries - 1)
+		keys = keys[:maxFindingFactEntries-1]
+	}
+	normalized := make(map[string]string, len(keys)+1)
+	for _, key := range keys {
+		normalized[limitText(key, maxFindingFactKeyBytes)] = limitText(facts[key], maxFindingFactValueBytes)
+	}
+	if omitted > 0 {
+		normalized["fact_entries_omitted"] = strconv.Itoa(omitted)
+	}
+	return normalized
+}
+
+func limitText(value string, limit int) string {
+	value = sanitizeReportText(value)
+	if len(value) <= limit {
+		return value
+	}
+	return truncateUTF8(value, limit-3) + "..."
+}
+
+// sanitizeReportText removes terminal control sequences and bidirectional
+// override/isolate characters from locally collected text. Reports are often
+// opened directly in a privileged terminal, so evidence must be inert data,
+// not a way for a hostile filename, process argument, or log line to alter the
+// display.
+func sanitizeReportText(value string) string {
+	return strings.Map(func(r rune) rune {
+		if isUnsafeReportRune(r) {
+			return ' '
+		}
+		return r
+	}, value)
+}
+
+func isUnsafeReportRune(r rune) bool {
+	return unicode.IsControl(r) || isBidiControl(r) || r == '\u2028' || r == '\u2029'
+}
+
+func isBidiControl(r rune) bool {
+	return r == '\u061c' || r == '\u200e' || r == '\u200f' ||
+		(r >= '\u202a' && r <= '\u202e') || (r >= '\u2066' && r <= '\u2069')
+}
+
+func truncateUTF8(value string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if len(value) <= limit {
+		return value
+	}
+	end := limit
+	for end > 0 && !utf8.ValidString(value[:end]) {
+		end--
+	}
+	return value[:end]
 }
 
 func unknown(id, category, source, errText string) model.Finding {

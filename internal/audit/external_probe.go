@@ -28,25 +28,71 @@ type ExternalProber interface {
 type networkExternalProber struct{}
 
 func (networkExternalProber) Observe(ctx context.Context, domain string) externalObservation {
+	return observeExternalDomain(ctx, domain, net.DefaultResolver.LookupIPAddr, dialExternalTLS)
+}
+
+type externalResolveFunc func(context.Context, string) ([]net.IPAddr, error)
+type externalTLSDialFunc func(context.Context, string, string) (time.Time, error)
+
+func observeExternalDomain(ctx context.Context, domain string, resolve externalResolveFunc, dialTLS externalTLSDialFunc) externalObservation {
 	observation := externalObservation{Domain: domain}
-	addresses, err := net.DefaultResolver.LookupHost(ctx, domain)
+	resolved, err := resolve(ctx, domain)
 	if err != nil {
 		observation.TLSError = "dns lookup failed: " + err.Error()
 		return observation
 	}
-	observation.Addresses = uniqueStrings(addresses)
-	dialer := &net.Dialer{Timeout: 5 * time.Second}
-	connection, err := tls.DialWithDialer(dialer, "tcp", net.JoinHostPort(domain, "443"), &tls.Config{ServerName: domain, MinVersion: tls.VersionTLS12})
-	if err != nil {
-		observation.TLSError = "TLS probe failed: " + err.Error()
+	for _, address := range resolved {
+		if safePublicObservationIP(address.IP) {
+			observation.Addresses = append(observation.Addresses, address.IP.String())
+		}
+	}
+	observation.Addresses = uniqueStrings(observation.Addresses)
+	if len(observation.Addresses) == 0 {
+		observation.TLSError = "dns lookup returned no public unicast address"
 		return observation
 	}
-	defer connection.Close()
-	observation.TLSPresent = true
-	if certificates := connection.ConnectionState().PeerCertificates; len(certificates) > 0 {
-		observation.TLSNotAfter = certificates[0].NotAfter.UTC()
+	var lastErr error
+	for _, address := range observation.Addresses {
+		notAfter, dialErr := dialTLS(ctx, address, domain)
+		if dialErr != nil {
+			lastErr = dialErr
+			continue
+		}
+		observation.TLSPresent = true
+		observation.TLSNotAfter = notAfter.UTC()
+		return observation
+	}
+	observation.TLSError = "TLS probe failed"
+	if lastErr != nil {
+		observation.TLSError += ": " + lastErr.Error()
 	}
 	return observation
+}
+
+func dialExternalTLS(ctx context.Context, address, serverName string) (time.Time, error) {
+	dialer := &tls.Dialer{
+		NetDialer: &net.Dialer{Timeout: 5 * time.Second},
+		Config:    &tls.Config{ServerName: serverName, MinVersion: tls.VersionTLS12},
+	}
+	connection, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(address, "443"))
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer connection.Close()
+	tlsConnection, ok := connection.(*tls.Conn)
+	if !ok {
+		return time.Time{}, fmt.Errorf("unexpected TLS connection type")
+	}
+	certificates := tlsConnection.ConnectionState().PeerCertificates
+	if len(certificates) == 0 {
+		return time.Time{}, fmt.Errorf("peer returned no certificate")
+	}
+	return certificates[0].NotAfter, nil
+}
+
+func safePublicObservationIP(address net.IP) bool {
+	return address != nil && address.IsGlobalUnicast() && !address.IsPrivate() && !address.IsLoopback() &&
+		!address.IsLinkLocalUnicast() && !address.IsLinkLocalMulticast() && !address.IsUnspecified() && !address.IsMulticast()
 }
 
 func checkExternalExposure(ctx *Context) model.Finding {
@@ -65,8 +111,16 @@ func checkExternalExposure(ctx *Context) model.Finding {
 		f.Evidence = append(f.Evidence, model.Evidence{Source: "ip -o addr show scope global", Key: "local_address_evidence", Value: "unavailable"})
 	}
 	directOrigins, dnsFailures, tlsFailures, expiring := 0, 0, 0, 0
-	for _, domain := range ctx.ExternalDomains {
-		probeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	overallCtx, overallCancel := context.WithTimeout(ctx.auditContext(), 45*time.Second)
+	defer overallCancel()
+	for index, domain := range ctx.ExternalDomains {
+		if overallCtx.Err() != nil {
+			remaining := len(ctx.ExternalDomains) - index
+			dnsFailures += remaining
+			f.Evidence = append(f.Evidence, model.Evidence{Source: "external DNS/TLS", Key: "observation_budget_exhausted", Value: fmt.Sprintf("%d domain observations skipped after the 45s total network budget", remaining)})
+			break
+		}
+		probeCtx, cancel := context.WithTimeout(overallCtx, 10*time.Second)
 		observation := prober.Observe(probeCtx, domain)
 		cancel()
 		if len(observation.Addresses) == 0 {
@@ -88,7 +142,7 @@ func checkExternalExposure(ctx *Context) model.Finding {
 		if observation.TLSPresent {
 			tlsState = "valid-handshake"
 			if !observation.TLSNotAfter.IsZero() {
-				days := int(observation.TLSNotAfter.Sub(ctx.Now()).Hours() / 24)
+				days := int(observation.TLSNotAfter.Sub(ctx.evidenceTime()).Hours() / 24)
 				tlsState += fmt.Sprintf(" expires_in_days=%d", days)
 				if days < 14 {
 					expiring++

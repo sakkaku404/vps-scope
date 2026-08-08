@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 
@@ -20,6 +22,9 @@ func main() {
 		Date:    date,
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, "vps-scope:", err)
+		if errors.Is(err, context.Canceled) {
+			os.Exit(130)
+		}
 		os.Exit(2)
 	}
 }

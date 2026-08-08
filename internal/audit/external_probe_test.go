@@ -2,11 +2,47 @@ package audit
 
 import (
 	"context"
+	"errors"
+	"net"
 	"testing"
 	"time"
 
 	"github.com/sakkaku404/vps-scope/internal/model"
 )
+
+func TestExternalObservationPinsTLSDialToPublicResolvedAddress(t *testing.T) {
+	var dialedAddress, dialedServerName string
+	wantExpiry := time.Unix(2_000_000_000, 0).UTC()
+	observation := observeExternalDomain(context.Background(), "panel.example.test",
+		func(context.Context, string) ([]net.IPAddr, error) {
+			return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}, {IP: net.ParseIP("169.254.169.254")}, {IP: net.ParseIP("203.0.113.10")}}, nil
+		},
+		func(_ context.Context, address, serverName string) (time.Time, error) {
+			dialedAddress, dialedServerName = address, serverName
+			return wantExpiry, nil
+		})
+	if dialedAddress != "203.0.113.10" || dialedServerName != "panel.example.test" {
+		t.Fatalf("dialed address=%q server_name=%q", dialedAddress, dialedServerName)
+	}
+	if len(observation.Addresses) != 1 || observation.Addresses[0] != "203.0.113.10" || !observation.TLSPresent || !observation.TLSNotAfter.Equal(wantExpiry) {
+		t.Fatalf("observation=%+v", observation)
+	}
+}
+
+func TestExternalObservationRefusesPrivateOnlyDNSAndDoesNotDial(t *testing.T) {
+	dials := 0
+	observation := observeExternalDomain(context.Background(), "internal.example.test",
+		func(context.Context, string) ([]net.IPAddr, error) {
+			return []net.IPAddr{{IP: net.ParseIP("10.0.0.1")}, {IP: net.ParseIP("::1")}}, nil
+		},
+		func(context.Context, string, string) (time.Time, error) {
+			dials++
+			return time.Time{}, errors.New("must not run")
+		})
+	if dials != 0 || observation.TLSError != "dns lookup returned no public unicast address" {
+		t.Fatalf("dials=%d observation=%+v", dials, observation)
+	}
+}
 
 type fakeExternalProber struct {
 	observations map[string]externalObservation

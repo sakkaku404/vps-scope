@@ -7,7 +7,6 @@ import (
 	"io"
 	"io/fs"
 	"net"
-	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -23,13 +22,12 @@ type passwdEntry struct {
 	Shell string
 }
 
-func readPasswd() ([]passwdEntry, error) {
-	f, err := openRegularReadOnly("/etc/passwd")
+func readPasswdSnapshot(facts *FactStore) ([]passwdEntry, error) {
+	data, err := facts.ReadSmall("/etc/passwd", 4<<20)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	return parsePasswd(f)
+	return parsePasswd(strings.NewReader(data))
 }
 
 func parsePasswd(reader io.Reader) ([]passwdEntry, error) {
@@ -96,16 +94,31 @@ const (
 
 var errFileDiscoveryLimit = errors.New("file discovery safety limit exceeded")
 
+func requireReadableEvidence(count int, description string, discoveryErr error) error {
+	if count > 0 {
+		return discoveryErr
+	}
+	return errors.Join(discoveryErr, fmt.Errorf("no readable %s were found", description))
+}
+
 // discoverExistingFiles expands a small, fixed set of local configuration
 // patterns without filepath.Glob's unbounded directory allocation. Both the
 // number of directory entries examined and the number of unique matches are
 // bounded. Callers must propagate an error as incomplete evidence rather than
 // silently treating the returned prefix as a complete inventory.
 func discoverExistingFiles(maxMatches int, patterns ...string) ([]string, error) {
-	return discoverExistingFilesWithBudget(maxMatches, fileDiscoveryEntryLimit, patterns...)
+	return discoverExistingFilesFromSnapshot(newFileEvidenceSnapshot(osFileEvidenceSource{}), maxMatches, patterns...)
 }
 
 func discoverExistingFilesWithBudget(maxMatches, maxEntries int, patterns ...string) ([]string, error) {
+	return discoverExistingFilesWithSnapshotBudget(newFileEvidenceSnapshot(osFileEvidenceSource{}), maxMatches, maxEntries, patterns...)
+}
+
+func discoverExistingFilesFromSnapshot(files *fileEvidenceSnapshot, maxMatches int, patterns ...string) ([]string, error) {
+	return discoverExistingFilesWithSnapshotBudget(files, maxMatches, fileDiscoveryEntryLimit, patterns...)
+}
+
+func discoverExistingFilesWithSnapshotBudget(files *fileEvidenceSnapshot, maxMatches, maxEntries int, patterns ...string) ([]string, error) {
 	if maxMatches <= 0 || maxMatches > maxFileDiscoveryMatches || maxEntries <= 0 {
 		return nil, fmt.Errorf("invalid file discovery budget")
 	}
@@ -113,6 +126,7 @@ func discoverExistingFilesWithBudget(maxMatches, maxEntries int, patterns ...str
 		maxMatches: maxMatches,
 		maxEntries: maxEntries,
 		seen:       make(map[string]bool, min(maxMatches, 64)),
+		files:      files,
 	}
 	for _, pattern := range patterns {
 		if err := state.expand(pattern); err != nil {
@@ -129,6 +143,7 @@ type fileDiscoveryState struct {
 	entries    int
 	matches    []string
 	seen       map[string]bool
+	files      *fileEvidenceSnapshot
 }
 
 func (s *fileDiscoveryState) expand(pattern string) error {
@@ -149,7 +164,7 @@ func (s *fileDiscoveryState) expand(pattern string) error {
 
 func (s *fileDiscoveryState) walk(current string, segments []string, index int) error {
 	if index == len(segments) {
-		if _, err := os.Lstat(current); err != nil {
+		if _, err := s.files.Lstat(current); err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				return nil
 			}
@@ -170,7 +185,7 @@ func (s *fileDiscoveryState) walk(current string, segments []string, index int) 
 	if !strings.ContainsAny(segment, "*?[") {
 		next := filepath.Join(current, segment)
 		if index+1 < len(segments) {
-			info, err := os.Stat(next)
+			info, err := s.files.Stat(next)
 			if err != nil {
 				if errors.Is(err, fs.ErrNotExist) {
 					return nil
@@ -184,66 +199,47 @@ func (s *fileDiscoveryState) walk(current string, segments []string, index int) 
 		return s.walk(next, segments, index+1)
 	}
 
-	// #nosec G304 -- current is derived from fixed in-program glob patterns;
-	// traversal and returned entries are bounded by fileDiscoveryState.
-	dir, err := os.Open(current)
+	remaining := s.maxEntries - s.entries
+	if remaining <= 0 {
+		return fmt.Errorf("%w: more than %d directory entries", errFileDiscoveryLimit, s.maxEntries)
+	}
+	entries, err := s.files.ReadDirectory(current, remaining)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}
 		return err
 	}
-	defer dir.Close()
-	for {
-		remaining := s.maxEntries - s.entries
-		if remaining <= 0 {
-			extra, readErr := dir.ReadDir(1)
-			if len(extra) > 0 {
-				return fmt.Errorf("%w: more than %d directory entries", errFileDiscoveryLimit, s.maxEntries)
-			}
-			if readErr != nil && !errors.Is(readErr, io.EOF) {
-				return readErr
-			}
-			return nil
+	s.entries += len(entries)
+	for _, entry := range entries {
+		matched, matchErr := filepath.Match(segment, entry.Name())
+		if matchErr != nil {
+			return matchErr
 		}
-		batchSize := min(remaining, 256)
-		entries, readErr := dir.ReadDir(batchSize)
-		s.entries += len(entries)
-		for _, entry := range entries {
-			matched, matchErr := filepath.Match(segment, entry.Name())
-			if matchErr != nil {
-				return matchErr
-			}
-			if !matched {
-				continue
-			}
-			next := filepath.Join(current, entry.Name())
-			if index+1 < len(segments) {
-				info, statErr := os.Stat(next)
-				if statErr != nil {
-					// A wildcard directory segment commonly also matches broken
-					// file aliases (for example masked or removed systemd units).
-					// They cannot contain the remaining segments, so skip them.
-					if errors.Is(statErr, fs.ErrNotExist) {
-						continue
-					}
-					return statErr
-				}
-				if !info.IsDir() {
+		if !matched {
+			continue
+		}
+		next := filepath.Join(current, entry.Name())
+		if index+1 < len(segments) {
+			info, statErr := s.files.Stat(next)
+			if statErr != nil {
+				// A wildcard directory segment commonly also matches broken
+				// file aliases (for example masked or removed systemd units).
+				// They cannot contain the remaining segments, so skip them.
+				if errors.Is(statErr, fs.ErrNotExist) {
 					continue
 				}
+				return statErr
 			}
-			if err := s.walk(next, segments, index+1); err != nil {
-				return err
+			if !info.IsDir() {
+				continue
 			}
 		}
-		if errors.Is(readErr, io.EOF) {
-			return nil
-		}
-		if readErr != nil {
-			return readErr
+		if err := s.walk(next, segments, index+1); err != nil {
+			return err
 		}
 	}
+	return nil
 }
 
 func lines(s string) []string {

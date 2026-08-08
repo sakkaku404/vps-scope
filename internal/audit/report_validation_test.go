@@ -5,12 +5,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sakkaku404/vps-scope/internal/contract"
 	"github.com/sakkaku404/vps-scope/internal/model"
 )
 
 func validContractReport() model.Report {
 	r := model.Report{
-		SchemaVersion: "1.0", ToolVersion: "0.13.0", Locale: "en",
+		SchemaVersion: "1.0", ToolVersion: "1.0.0", Locale: "en",
 		StartedAt: time.Unix(1, 0).UTC(), FinishedAt: time.Unix(2, 0).UTC(),
 		LogSince: "168h0m0s",
 		Host:     model.Host{StableID: "fixture-id", Hostname: "fixture", OS: "debian", OSVersion: "12", Kernel: "fixture-kernel", Architecture: "x86_64"},
@@ -26,6 +27,94 @@ func validContractReport() model.Report {
 func TestValidateReportAcceptsCompleteContract(t *testing.T) {
 	if failures := ValidateReport(validContractReport()); len(failures) != 0 {
 		t.Fatalf("failures=%v", failures)
+	}
+}
+
+func validDeploymentFixture() *model.Deployment {
+	count := 3
+	return &model.Deployment{
+		Coverage: model.DeploymentCoverage{
+			Configuration: "complete", Runtime: "complete", Firewall: "partial",
+			Panels: "not-applicable", ReverseProxy: "unavailable", Docker: "not-applicable",
+		},
+		Components: []model.Component{{
+			ID: "component:0000000000000001", Product: "sing-box", Kind: "proxy-core",
+			Source: "/etc/sing-box/config.json", Runtime: true, Deployment: "native-or-managed", Confidence: "confirmed",
+		}},
+		Endpoints: []model.ServiceEndpoint{{
+			ID: "endpoint:0000000000000001", ComponentID: "component:0000000000000001",
+			Product: "sing-box", Role: "proxy-ingress", Protocol: "vless", Transport: "tcp",
+			Port: 443, Address: "0.0.0.0", Family: "ipv4", Scope: "public-wildcard",
+			State: "live", Confidence: "confirmed", ConnectionCount: &count,
+		}},
+		Links: []model.TopologyLink{{From: "component:0000000000000001", To: "endpoint:0000000000000001", Kind: "declares"}},
+	}
+}
+
+func TestValidateReportAcceptsTypedDeploymentAndLegacyAbsence(t *testing.T) {
+	legacy := validContractReport()
+	if failures := ValidateReport(legacy); len(failures) != 0 {
+		t.Fatalf("legacy report failures=%v", failures)
+	}
+	current := validContractReport()
+	current.Deployment = validDeploymentFixture()
+	if failures := ValidateReport(current); len(failures) != 0 {
+		t.Fatalf("typed deployment failures=%v", failures)
+	}
+}
+
+func TestValidateReportRejectsInvalidDeploymentTopology(t *testing.T) {
+	tests := []struct {
+		name, want string
+		mutate     func(*model.Deployment)
+	}{
+		{"coverage", "coverage runtime has invalid state", func(d *model.Deployment) { d.Coverage.Runtime = "optimistic" }},
+		{"component ID", "invalid ID", func(d *model.Deployment) { d.Components[0].ID = "component:\nsecret" }},
+		{"duplicate component ID", "duplicate deployment node ID", func(d *model.Deployment) { d.Components = append(d.Components, d.Components[0]) }},
+		{"duplicate endpoint ID", "duplicate deployment node ID", func(d *model.Deployment) { d.Endpoints = append(d.Endpoints, d.Endpoints[0]) }},
+		{"component reference", "references unknown component", func(d *model.Deployment) { d.Endpoints[0].ComponentID = "component:missing" }},
+		{"port", "invalid port", func(d *model.Deployment) { d.Endpoints[0].Port = 0 }},
+		{"transport", "invalid transport", func(d *model.Deployment) { d.Endpoints[0].Transport = "icmp" }},
+		{"role", "invalid role", func(d *model.Deployment) { d.Endpoints[0].Role = "root-shell" }},
+		{"component confidence", "invalid confidence", func(d *model.Deployment) { d.Components[0].Confidence = "certain" }},
+		{"endpoint confidence", "invalid confidence", func(d *model.Deployment) { d.Endpoints[0].Confidence = "certain" }},
+		{"state", "invalid state", func(d *model.Deployment) { d.Endpoints[0].State = "maybe-live" }},
+		{"negative connections", "negative connection count", func(d *model.Deployment) { count := -1; d.Endpoints[0].ConnectionCount = &count }},
+		{"dangling link", "unknown source", func(d *model.Deployment) { d.Links[0].From, d.Links[0].To = "component:missing", "endpoint:missing" }},
+		{"link kind", "invalid kind", func(d *model.Deployment) { d.Links[0].Kind = "executes" }},
+		{"oversized text", "oversized text", func(d *model.Deployment) { d.Endpoints[0].Process = strings.Repeat("x", 257) }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			r := validContractReport()
+			r.Deployment = validDeploymentFixture()
+			test.mutate(r.Deployment)
+			failures := strings.Join(ValidateReport(r), "\n")
+			if !strings.Contains(failures, test.want) {
+				t.Fatalf("missing %q in %s", test.want, failures)
+			}
+		})
+	}
+}
+
+func TestValidateReportRejectsOversizedDeploymentCollections(t *testing.T) {
+	tests := []struct {
+		name, want string
+		mutate     func(*model.Deployment)
+	}{
+		{"components", "513 components", func(d *model.Deployment) { d.Components = make([]model.Component, maxReportDeploymentComponents+1) }},
+		{"endpoints", "2049 endpoints", func(d *model.Deployment) { d.Endpoints = make([]model.ServiceEndpoint, maxReportDeploymentEndpoints+1) }},
+		{"links", "8193 links", func(d *model.Deployment) { d.Links = make([]model.TopologyLink, maxReportDeploymentLinks+1) }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			r := validContractReport()
+			r.Deployment = validDeploymentFixture()
+			test.mutate(r.Deployment)
+			if failures := strings.Join(ValidateReport(r), "\n"); !strings.Contains(failures, test.want) {
+				t.Fatalf("missing %q in %s", test.want, failures)
+			}
+		})
 	}
 }
 
@@ -67,15 +156,70 @@ func TestValidateReportFindsSemanticCorruption(t *testing.T) {
 	}
 }
 
+func TestValidateReportRejectsExcessiveLogLookback(t *testing.T) {
+	r := validContractReport()
+	r.LogSince = (MaxLogSince + time.Second).String()
+	if failures := ValidateReport(r); !strings.Contains(strings.Join(failures, "\n"), "invalid log_since") {
+		t.Fatalf("failures=%v", failures)
+	}
+}
+
 func TestValidateReportKeepsPre013ReasonCodesOptional(t *testing.T) {
 	r := validContractReport()
 	r.ToolVersion = "0.12.0"
+	r.Findings = findingsForVersion(r.Findings, 0, 12)
 	for i := range r.Findings {
 		r.Findings[i].ReasonCode = ""
 	}
+	r.Recount()
 	if failures := ValidateReport(r); len(failures) != 0 {
 		t.Fatalf("failures=%v", failures)
 	}
+}
+
+func TestValidateReportUsesTheContractPublishedByTheClaimedVersion(t *testing.T) {
+	r := validContractReport()
+	r.ToolVersion = "0.14.0"
+	r.Findings = findingsForVersion(r.Findings, 0, 14)
+	r.Recount()
+	if failures := ValidateReport(r); len(failures) != 0 {
+		t.Fatalf("authentic v0.14 contract rejected: %v", failures)
+	}
+	r.Findings = append(r.Findings, model.Finding{
+		ID: "NET-004", Category: "network", Status: model.Info,
+		ReasonCode: "net.004.observed",
+	})
+	r.Recount()
+	if failures := strings.Join(ValidateReport(r), "\n"); !strings.Contains(failures, `unexpected check ID "NET-004"`) {
+		t.Fatalf("post-v0.14 ID accepted in a v0.14 report: %s", failures)
+	}
+}
+
+func TestValidateReportKeepsPublishedV100ReleaseCandidateReadable(t *testing.T) {
+	r := validContractReport()
+	r.ToolVersion = "v1.0.0-rc.1"
+	r.Findings = findingsForVersion(r.Findings, 0, 14)
+	r.Recount()
+	if failures := ValidateReport(r); len(failures) != 0 {
+		t.Fatalf("authentic v1.0.0-rc.1 contract rejected: %v", failures)
+	}
+	if !versionNewerThan("v1.0.0", "v1.0.0-rc.1") {
+		t.Fatal("final v1.0.0 was not ordered after its release candidate")
+	}
+}
+
+func findingsForVersion(findings []model.Finding, major, minor int) []model.Finding {
+	wanted := make(map[string]bool)
+	for _, id := range contract.StableIDsForVersion(major, minor) {
+		wanted[id] = true
+	}
+	filtered := make([]model.Finding, 0, len(wanted))
+	for _, finding := range findings {
+		if wanted[finding.ID] {
+			filtered = append(filtered, finding)
+		}
+	}
+	return filtered
 }
 
 func TestValidateReportKeepsPre012PartialContractsReadable(t *testing.T) {
@@ -104,16 +248,16 @@ func TestValidateReportRequiresCurrentDevelopmentContract(t *testing.T) {
 
 func TestValidateReportAllowsAppendOnlyIDsFromNewerTools(t *testing.T) {
 	r := validContractReport()
-	r.ToolVersion = "0.15.0"
+	r.ToolVersion = "2.0.0"
 	r.Findings = append(r.Findings, model.Finding{
 		ID: "FUTURE-001", Category: "future", Status: model.Info,
 		ReasonCode: "future.001.observed",
 	})
 	r.Recount()
-	if failures := ValidateReport(r, "0.14.0"); len(failures) != 0 {
+	if failures := ValidateReport(r, "1.0.0"); len(failures) != 0 {
 		t.Fatalf("future append-only report rejected: %v", failures)
 	}
-	if failures := strings.Join(ValidateReport(r, "0.15.0"), "\n"); !strings.Contains(failures, "unexpected check ID") {
+	if failures := strings.Join(ValidateReport(r, "2.0.0"), "\n"); !strings.Contains(failures, "unexpected check ID") {
 		t.Fatalf("same-version unexpected ID was not rejected: %s", failures)
 	}
 }

@@ -34,6 +34,10 @@ type Commander interface {
 	Exists(name string) bool
 }
 
+type contextCommander interface {
+	RunContext(context.Context, time.Duration, string, ...string) CommandResult
+}
+
 type OSCommander struct{}
 
 // trustedCommander is deliberately optional so deterministic scenario
@@ -67,7 +71,11 @@ func (OSCommander) TrustedExecutable(name string) (string, error) {
 }
 
 func (OSCommander) Run(timeout time.Duration, name string, args ...string) CommandResult {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	return OSCommander{}.RunContext(context.Background(), timeout, name, args...)
+}
+
+func (OSCommander) RunContext(parent context.Context, timeout time.Duration, name string, args ...string) CommandResult {
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	path, lookupErr := resolveSystemExecutable(name)
 	if lookupErr != nil {
@@ -100,6 +108,11 @@ func (OSCommander) Run(timeout time.Duration, name string, args ...string) Comma
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		r.Err = ctx.Err()
 		r.Code = 124
+		return r
+	}
+	if errors.Is(ctx.Err(), context.Canceled) {
+		r.Err = ctx.Err()
+		r.Code = 130
 		return r
 	}
 	var exitErr *exec.ExitError

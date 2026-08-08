@@ -7,19 +7,23 @@ VPS Scope 1.x 将机器可读的审计格式视为公开接口。终端、文本
 ## Guaranteed throughout 1.x / 1.x 内的保证
 
 - `schema_version: "1.0"` reports remain readable by current 1.x commands. Existing required fields keep their meaning; new fields are optional unless a new report schema is introduced.
-- The 51 check IDs published at 1.0 are permanent and append-only. The current catalog has 55 IDs; an ID is never reused for another check, and a new check receives a new ID.
+- The 55 check IDs published at 1.0 are permanent and append-only. An ID is never reused for another check, and a new check receives a new ID.
 - Existing `reason_code` values keep their meaning. New reason codes may be added when evidence becomes more precise, without changing the meaning of an existing code.
+- The optional typed `deployment` view may add new optional component, endpoint, or relationship detail. Existing fields and enum values retain their meaning; older reports without this view remain readable.
 - Canonical statuses remain `PASS`, `RISK`, `INFO`, and `UNKNOWN`. Failed or incomplete collection does not become `PASS`.
 - JSON reports created before 1.0 remain accepted according to the contract available in their tool version. Baseline v1 remains readable with its weaker identity warning; baseline v2 is the stable 1.x baseline format.
+- Human-readable renderers may ignore optional fields produced by a newer schema-1.0 tool. Commands that emit another JSON report, redacted report, or support bundle reject fields they cannot preserve and sanitize rather than silently losing them.
 - Public commands and long flags documented in the README remain available during 1.x. A planned removal is deprecated for at least one minor release first.
 - Audit findings, including `RISK`, do not by themselves make `audit` fail. Process failure is reserved for invalid arguments, unsupported hosts, collection startup failure, or output-generation failure. Commands such as `baseline check` and `verify` fail when the requested comparison or validation fails.
 - Ubuntu and Debian on Linux amd64 and arm64 are the supported 1.x platform family. Unsupported distributions fail explicitly rather than receiving optimistic results.
 
 - `schema_version: "1.0"` 的报告在 1.x 中保持可读。既有必填字段不改变含义；除非引入新的报告 schema，否则新增字段必须是可选的。
-- 1.0 发布时已有的 51 个检查 ID 永久保留，只能追加，不能改作其他用途；当前目录共有 55 个检查 ID。
+- 1.0 发布时已有的 55 个检查 ID 永久保留，只能追加，不能改作其他用途。
 - 既有 `reason_code` 不改变含义。证据模型变得更精确时可以增加新原因码，但不能偷偷重定义旧原因码。
+- 可选的结构化 `deployment` 视图可以增加新的组件、端点或关系细节；既有字段和枚举值不改变含义，不包含该视图的旧报告继续可读。
 - 规范状态保持为 `PASS`、`RISK`、`INFO` 和 `UNKNOWN`；取证失败或证据不完整不能变成 `PASS`。
 - 1.0 以前生成的 JSON 按其工具版本已有的契约继续可读。baseline v1 继续以较弱身份提示方式兼容，baseline v2 是稳定的 1.x 基线格式。
+- 人类可读渲染可以忽略较新 schema-1.0 工具增加的可选字段；会重新生成 JSON、脱敏报告或支持包的命令如果无法保留并安全处理某个字段，则会拒绝执行，而不是静默丢失。
 - README 已公开的命令和长参数在 1.x 内保持可用；若确需移除，至少提前一个次版本标记弃用。
 - `RISK` 本身不会让 `audit` 进程失败。参数错误、不支持的系统、采集无法启动或报告生成失败才是执行失败；`baseline check`、`verify` 等验证命令在验证不通过时返回失败。
 - 1.x 正式支持 Ubuntu/Debian 的 Linux amd64、arm64；不支持的发行版会明确失败，不会得到乐观结果。

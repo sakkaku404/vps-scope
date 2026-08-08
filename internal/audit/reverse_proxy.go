@@ -31,22 +31,34 @@ var (
 	caddyProxyRE  = regexp.MustCompile(`(?i)^\s*reverse_proxy\s+([^\s{]+)`)
 )
 
-func discoverReverseProxyRoutes(cmd Commander) ([]reverseProxyRoute, error) {
+func discoverReverseProxyRoutes(cmd Commander, nativeSelfTest bool) ([]reverseProxyRoute, error) {
+	return discoverReverseProxyRoutesFromFiles(cmd, nativeSelfTest, newFileEvidenceSnapshot(osFileEvidenceSource{}))
+}
+
+func discoverReverseProxyRoutesFromFiles(cmd Commander, nativeSelfTest bool, files *fileEvidenceSnapshot) ([]reverseProxyRoute, error) {
 	var routes []reverseProxyRoute
 	var discoveryErr error
-	if cmd.Exists("nginx") {
-		result := cmd.Run(20*time.Second, "nginx", "-T")
-		if result.Err != nil || result.Truncated {
-			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("nginx -T: %s", commandError(result)))
+	nginxRuntimeLoaded := false
+	if nativeSelfTest && cmd.Exists("nginx") {
+		binary, trustErr := trustedExecutable(cmd, "nginx")
+		if trustErr != nil {
+			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("nginx -T skipped: %w", trustErr))
 		} else {
-			routes = append(routes, parseNginxRoutes("nginx -T (effective configuration)", result.Stdout+"\n"+result.Stderr)...)
-			discoveryErr = errors.Join(discoveryErr, reverseProxySyntaxGaps("nginx", result.Stdout+"\n"+result.Stderr))
+			nginxRuntimeLoaded = true
+			result := cmd.Run(20*time.Second, binary, "-T")
+			if result.Err != nil || result.Truncated {
+				discoveryErr = errors.Join(discoveryErr, fmt.Errorf("nginx -T: %s", commandError(result)))
+			} else {
+				routes = append(routes, parseNginxRoutes("nginx -T (effective configuration)", result.Stdout+"\n"+result.Stderr)...)
+				discoveryErr = errors.Join(discoveryErr, reverseProxySyntaxGaps("nginx", result.Stdout+"\n"+result.Stderr))
+			}
 		}
-	} else {
-		nginxPaths, err := discoverExistingFiles(512, "/etc/nginx/sites-enabled/*", "/etc/nginx/conf.d/*.conf")
+	}
+	if !nginxRuntimeLoaded {
+		nginxPaths, err := discoverExistingFilesFromSnapshot(files, 512, "/etc/nginx/sites-enabled/*", "/etc/nginx/conf.d/*.conf")
 		discoveryErr = errors.Join(discoveryErr, err)
 		for _, path := range nginxPaths {
-			data, readErr := readSmall(path, 4<<20)
+			data, readErr := files.ReadSmall(path, 4<<20)
 			if readErr != nil {
 				discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s: %w", path, readErr))
 				continue
@@ -55,10 +67,10 @@ func discoverReverseProxyRoutes(cmd Commander) ([]reverseProxyRoute, error) {
 			discoveryErr = errors.Join(discoveryErr, reverseProxySyntaxGaps("nginx", data))
 		}
 	}
-	caddyPaths, err := discoverExistingFiles(16, "/etc/caddy/Caddyfile", "/usr/local/etc/caddy/Caddyfile")
+	caddyPaths, err := discoverExistingFilesFromSnapshot(files, 16, "/etc/caddy/Caddyfile", "/usr/local/etc/caddy/Caddyfile")
 	discoveryErr = errors.Join(discoveryErr, err)
 	for _, path := range caddyPaths {
-		data, readErr := readSmall(path, 4<<20)
+		data, readErr := files.ReadSmall(path, 4<<20)
 		if readErr != nil {
 			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s: %w", path, readErr))
 			continue
@@ -66,10 +78,10 @@ func discoverReverseProxyRoutes(cmd Commander) ([]reverseProxyRoute, error) {
 		routes = append(routes, parseCaddyRoutes(path, data)...)
 		discoveryErr = errors.Join(discoveryErr, reverseProxySyntaxGaps("caddy", data))
 	}
-	haproxyPaths, err := discoverExistingFiles(512, "/etc/haproxy/haproxy.cfg", "/opt/hiddify-manager/haproxy/*.cfg")
+	haproxyPaths, err := discoverExistingFilesFromSnapshot(files, 512, "/etc/haproxy/haproxy.cfg", "/opt/hiddify-manager/haproxy/*.cfg")
 	discoveryErr = errors.Join(discoveryErr, err)
 	for _, path := range haproxyPaths {
-		data, readErr := readSmall(path, 4<<20)
+		data, readErr := files.ReadSmall(path, 4<<20)
 		if readErr != nil {
 			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s: %w", path, readErr))
 			continue
@@ -343,13 +355,26 @@ func uniqueReverseProxyRoutes(routes []reverseProxyRoute) []reverseProxyRoute {
 		out = append(out, route)
 	}
 	sort.Slice(out, func(i, j int) bool {
-		return out[i].FrontendPort+out[i].BackendPort < out[j].FrontendPort+out[j].BackendPort
+		left, right := out[i], out[j]
+		leftFrontend, _ := strconv.Atoi(left.FrontendPort)
+		rightFrontend, _ := strconv.Atoi(right.FrontendPort)
+		if leftFrontend != rightFrontend {
+			return leftFrontend < rightFrontend
+		}
+		leftBackend, _ := strconv.Atoi(left.BackendPort)
+		rightBackend, _ := strconv.Atoi(right.BackendPort)
+		if leftBackend != rightBackend {
+			return leftBackend < rightBackend
+		}
+		leftKey := strings.Join([]string{left.Product, left.FrontendAddress, left.BackendAddress, left.Access, left.Source}, "\x00")
+		rightKey := strings.Join([]string{right.Product, right.FrontendAddress, right.BackendAddress, right.Access, right.Source}, "\x00")
+		return leftKey < rightKey
 	})
 	return out
 }
 
 func checkReverseProxyRelations(ctx *Context) model.Finding {
-	routes, discoveryErr := discoverReverseProxyRoutes(ctx.Commander)
+	routes, discoveryErr := ctx.Facts.ReverseProxyRoutes()
 	if len(routes) == 0 {
 		if discoveryErr != nil {
 			return unknown("WORK-013", "workloads", "reverse-proxy configuration discovery", discoveryErr.Error())

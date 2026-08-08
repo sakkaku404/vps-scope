@@ -15,7 +15,7 @@ func TestFactStoreCachesListenerProcessConnectionAndSSHDSnapshots(t *testing.T) 
 		scenarioCommandKey("ps", "-eo", "pid=,user=,comm=,args="):       {Stdout: "1 root sshd /usr/sbin/sshd -D"},
 		scenarioCommandKey("sshd", "-T"):                                {Stdout: "passwordauthentication no\nkbdinteractiveauthentication no\npermitrootlogin prohibit-password\npubkeyauthentication yes"},
 	})
-	facts := NewFactStore(cmd)
+	facts := NewFactStore(cmd, false)
 	for i := 0; i < 2; i++ {
 		if _, err := facts.Listeners(); err != nil {
 			t.Fatal(err)
@@ -37,11 +37,66 @@ func TestFactStoreCachesListenerProcessConnectionAndSSHDSnapshots(t *testing.T) 
 	}
 }
 
+func TestFactStoreSharesRawFirewallProgramAcrossInputAndForwardViews(t *testing.T) {
+	key := scenarioCommandKey("nft", "list", "ruleset")
+	for _, order := range []string{"host-first", "docker-first"} {
+		t.Run(order, func(t *testing.T) {
+			cmd := newScenarioCommander([]string{"nft"}, map[string]CommandResult{
+				key: {Stdout: "table inet filter { chain input { type filter hook input priority 0; policy drop; } chain forward { type filter hook forward priority 0; policy drop; } }"},
+			})
+			facts := NewFactStore(cmd, false)
+			if order == "host-first" {
+				_ = facts.HostFirewall()
+				_ = facts.DockerFirewall()
+			} else {
+				_ = facts.DockerFirewall()
+				_ = facts.HostFirewall()
+			}
+			if got := cmd.calls[key]; got != 1 {
+				t.Fatalf("nft ruleset calls=%d, want one shared raw snapshot", got)
+			}
+		})
+	}
+}
+
+func TestFactStoreSharesWireGuardInterfaceAndPortInventory(t *testing.T) {
+	key := scenarioCommandKey("wg", "show", "all", "listen-port")
+	cmd := newScenarioCommander([]string{"wg"}, map[string]CommandResult{
+		key: {Stdout: "wg1\t0\nwg0\t51820"},
+	})
+	facts := NewFactStore(cmd, false)
+	for range 2 {
+		interfaces, installed, err := facts.WireGuardInterfaces()
+		if err != nil || !installed || len(interfaces) != 2 {
+			t.Fatalf("interfaces=%v installed=%t err=%v", interfaces, installed, err)
+		}
+		if interfaces[0].Name != "wg0" || interfaces[0].Port != "51820" || interfaces[1].Name != "wg1" {
+			t.Fatalf("interfaces are not deterministic: %+v", interfaces)
+		}
+		interfaces[0].Port = "1"
+	}
+	if got := cmd.calls[key]; got != 1 {
+		t.Fatalf("wg listen-port calls=%d, want one shared snapshot", got)
+	}
+}
+
+func TestWireGuardInterfaceInventoryRejectsMalformedOrDuplicateRows(t *testing.T) {
+	for _, output := range []string{"wg0", "bad/interface\t51820", "wg0\t51820\nwg0\t51821", "wg0\t70000"} {
+		cmd := newScenarioCommander([]string{"wg"}, map[string]CommandResult{
+			scenarioCommandKey("wg", "show", "all", "listen-port"): {Stdout: output},
+		})
+		interfaces, installed, err := NewFactStore(cmd, false).WireGuardInterfaces()
+		if !installed || err == nil || len(interfaces) != 0 {
+			t.Fatalf("output=%q interfaces=%v installed=%t err=%v", output, interfaces, installed, err)
+		}
+	}
+}
+
 func TestSSHDSettingsRejectsIncompleteEffectiveConfiguration(t *testing.T) {
 	cmd := newScenarioCommander([]string{"sshd"}, map[string]CommandResult{
 		scenarioCommandKey("sshd", "-T"): {Stdout: "passwordauthentication no\nkbdinteractiveauthentication no\npubkeyauthentication yes"},
 	})
-	if settings, err := NewFactStore(cmd).SSHDSettings(); err == nil || len(settings) != 0 {
+	if settings, err := NewFactStore(cmd, false).SSHDSettings(); err == nil || len(settings) != 0 {
 		t.Fatalf("settings=%v err=%v", settings, err)
 	}
 }
@@ -54,7 +109,7 @@ func TestFactStoreRejectsTruncatedSnapshots(t *testing.T) {
 		scenarioCommandKey("ps", "-eo", "pid=,user=,comm=,args="):       truncated,
 		scenarioCommandKey("sshd", "-T"):                                truncated,
 	})
-	facts := NewFactStore(cmd)
+	facts := NewFactStore(cmd, false)
 	if _, err := facts.Listeners(); err == nil {
 		t.Fatal("expected truncated listener snapshot error")
 	}
@@ -89,7 +144,7 @@ func TestFactStoreBatchesDockerInspectWithoutReturningPartialInventory(t *testin
 	results[scenarioCommandKey("docker", append([]string{"inspect"}, ids[:dockerInspectBatchSize]...)...)] = CommandResult{Stdout: "[]"}
 	results[scenarioCommandKey("docker", "inspect", ids[dockerInspectBatchSize])] = CommandResult{Stdout: "[]"}
 	cmd := newScenarioCommander([]string{"docker"}, results)
-	containers, err := NewFactStore(cmd).DockerContainers()
+	containers, err := NewFactStore(cmd, false).DockerContainers()
 	if err == nil || !strings.Contains(err.Error(), "returned 0 containers for 32 requested") {
 		t.Fatalf("DockerContainers error = %v, want incomplete batch error", err)
 	}
@@ -112,7 +167,7 @@ func TestFactStoreBatchesDockerInspect(t *testing.T) {
 	results[scenarioCommandKey("docker", append([]string{"inspect"}, ids[:dockerInspectBatchSize]...)...)] = CommandResult{Stdout: "[" + strings.Join(first, ",") + "]"}
 	results[scenarioCommandKey("docker", "inspect", ids[dockerInspectBatchSize])] = CommandResult{Stdout: `[{"Name":"/last"}]`}
 	cmd := newScenarioCommander([]string{"docker"}, results)
-	containers, err := NewFactStore(cmd).DockerContainers()
+	containers, err := NewFactStore(cmd, false).DockerContainers()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +220,7 @@ func TestDockerPanelDiscoveryFailureIsNotReportedAsNoPanel(t *testing.T) {
 }
 
 func TestPanelDiscoveryDoesNotRequireDocker(t *testing.T) {
-	panels, err := NewFactStore(newScenarioCommander(nil, nil)).Panels()
+	panels, err := NewFactStore(newScenarioCommander(nil, nil), false).Panels()
 	if err != nil {
 		t.Fatalf("Panels error = %v, want nil when Docker is absent", err)
 	}

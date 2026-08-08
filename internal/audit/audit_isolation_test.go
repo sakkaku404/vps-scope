@@ -75,3 +75,36 @@ func TestRecoveredCategoryStillProducesSemanticallyValidFullReport(t *testing.T)
 		t.Fatalf("unknown=%d, want all 17 workload checks unavailable", got)
 	}
 }
+
+func TestReconcileCategoryFindingsRepairsMissingDuplicateAndForeignResults(t *testing.T) {
+	findings, repairs := reconcileCategoryFindings("ssh", []model.Finding{
+		{ID: "SSH-001", Category: "ssh", Status: model.Pass},
+		{ID: "SSH-001", Category: "ssh", Status: model.Pass},
+		{ID: "FW-001", Category: "ssh", Status: model.Pass},
+	})
+	wantIDs := []string{"SSH-001", "SSH-002", "SSH-003", "SSH-004", "SSH-005"}
+	if len(findings) != len(wantIDs) || repairs != 6 {
+		t.Fatalf("findings=%+v repairs=%d", findings, repairs)
+	}
+	for index, finding := range findings {
+		if finding.ID != wantIDs[index] {
+			t.Fatalf("finding[%d]=%s want=%s", index, finding.ID, wantIDs[index])
+		}
+		if finding.Status != model.Unknown || !finding.Unavailable || !strings.Contains(finding.Error, "contract repair") {
+			t.Fatalf("finding[%d]=%+v", index, finding)
+		}
+	}
+}
+
+func TestReconcileCategoryFindingsPreservesValidResults(t *testing.T) {
+	input := unavailableCategoryFindings("ssh")
+	findings, repairs := reconcileCategoryFindings("ssh", input)
+	if repairs != 0 || len(findings) != len(input) {
+		t.Fatalf("repairs=%d findings=%d", repairs, len(findings))
+	}
+	for index := range input {
+		if findings[index].ID != input[index].ID || findings[index].Error != input[index].Error {
+			t.Fatalf("finding[%d]=%+v input=%+v", index, findings[index], input[index])
+		}
+	}
+}

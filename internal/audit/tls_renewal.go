@@ -32,9 +32,12 @@ func collectTLSRenewalFacts(ctx *Context) tlsRenewalFacts {
 
 type renewalFileDiscovery func(maxMatches int, patterns ...string) ([]string, error)
 
+const renewalServiceEvidenceMaxAge = 120 * 24 * time.Hour
+
 func collectTLSRenewalFactsWithDiscovery(ctx *Context, discover renewalFileDiscovery) tlsRenewalFacts {
 	f := tlsRenewalFacts{}
 	methods := map[string]bool{}
+	var serviceTimestampError error
 	if ctx.Commander.Exists("systemctl") {
 		for _, timer := range []string{"certbot.timer", "acme.timer", "acme-renew.timer", "lego.timer"} {
 			r := ctx.Commander.Run(6*time.Second, "systemctl", "is-enabled", timer)
@@ -79,27 +82,34 @@ func collectTLSRenewalFactsWithDiscovery(ctx *Context, discover renewalFileDisco
 			methods[renewalMethod(service)] = true
 			result := strings.TrimSpace(v["Result"])
 			exit := strings.TrimSpace(v["ExecMainStatus"])
+			lastActive := strings.TrimSpace(v["ActiveEnterTimestamp"])
 			// A running Caddy service is not, by itself, proof that an ACME
 			// renewal completed. Only explicit renewal journal signals count.
 			if service != "caddy.service" {
-				if result == "success" && (exit == "" || exit == "0") {
-					f.SuccessSignals++
-					f.LastOutcome = "success"
-				} else if result != "" && result != "success" {
-					f.FailureSignals++
-					f.LastOutcome = "failure"
+				resultIsSignal := result != "" && result != "n/a"
+				recent, timestampKnown := recentSystemdTimestamp(lastActive, ctx.evidenceTime(), renewalServiceEvidenceMaxAge)
+				if resultIsSignal && !timestampKnown {
+					serviceTimestampError = errors.Join(serviceTimestampError, fmt.Errorf("systemctl show %s: result timestamp is unavailable or invalid", service))
+				} else if resultIsSignal && recent {
+					if result == "success" && (exit == "" || exit == "0") {
+						f.SuccessSignals++
+						f.LastOutcome = "success"
+					} else if result != "success" {
+						f.FailureSignals++
+						f.LastOutcome = "failure"
+					}
 				}
 				if strings.TrimSpace(v["ExecReload"]) != "" && strings.TrimSpace(v["ExecReload"]) != "{}" {
 					f.ReloadHooks++
 				}
 			}
-			f.Evidence = append(f.Evidence, model.Evidence{Source: "systemctl", Key: service, Value: fmt.Sprintf("active=%s result=%s exit_status=%s last_active=%s reload_hook=%t", valueOrUnknown(v["ActiveState"]), valueOrUnknown(result), valueOrUnknown(exit), valueOrUnknown(v["ActiveEnterTimestamp"]), strings.TrimSpace(v["ExecReload"]) != "")})
+			f.Evidence = append(f.Evidence, model.Evidence{Source: "systemctl", Key: service, Value: fmt.Sprintf("active=%s result=%s exit_status=%s last_active=%s reload_hook=%t", valueOrUnknown(v["ActiveState"]), valueOrUnknown(result), valueOrUnknown(exit), valueOrUnknown(lastActive), strings.TrimSpace(v["ExecReload"]) != "")})
 		}
 	}
 	cronPaths, discoveryErr := discover(512, "/etc/cron.d/*", "/etc/cron.daily/*", "/var/spool/cron/crontabs/*")
 	f.DiscoveryError = errors.Join(f.DiscoveryError, discoveryErr)
 	for _, path := range cronPaths {
-		data, err := readSmall(path, 1<<20)
+		data, err := ctx.Facts.ReadSmall(path, 1<<20)
 		if err != nil {
 			f.DiscoveryError = errors.Join(f.DiscoveryError, fmt.Errorf("%s: %w", path, err))
 			continue
@@ -141,6 +151,13 @@ func collectTLSRenewalFactsWithDiscovery(ctx *Context, discover renewalFileDisco
 			f.Evidence = append(f.Evidence, model.Evidence{Source: "journalctl (30 days, content withheld)", Key: "unavailable", Value: commandError(r)})
 		}
 	}
+	// A recent journal outcome independently dates the renewal operation. Only
+	// surface a missing service timestamp when no such success/failure evidence
+	// exists; otherwise a weaker source would incorrectly downgrade a complete
+	// TLS renewal conclusion.
+	if serviceTimestampError != nil && f.SuccessSignals+f.FailureSignals == 0 {
+		f.DiscoveryError = errors.Join(f.DiscoveryError, serviceTimestampError)
+	}
 	for method := range methods {
 		if method != "" {
 			f.Methods = append(f.Methods, method)
@@ -148,6 +165,34 @@ func collectTLSRenewalFactsWithDiscovery(ctx *Context, discover renewalFileDisco
 	}
 	sort.Strings(f.Methods)
 	return f
+}
+
+func recentSystemdTimestamp(value string, now time.Time, maxAge time.Duration) (recent, known bool) {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.EqualFold(value, "n/a") {
+		return false, false
+	}
+	var parsed time.Time
+	var err error
+	for _, layout := range []string{
+		time.RFC3339Nano,
+		"Mon 2006-01-02 15:04:05 MST",
+		"Mon 2006-01-02 15:04:05 -0700",
+		"2006-01-02 15:04:05 MST",
+	} {
+		parsed, err = time.Parse(layout, value)
+		if err == nil {
+			break
+		}
+	}
+	if err != nil {
+		return false, false
+	}
+	age := now.Sub(parsed)
+	if age < -5*time.Minute {
+		return false, false
+	}
+	return age <= maxAge, true
 }
 
 func renewalMethod(name string) string {

@@ -1,3 +1,5 @@
+//lint:file-ignore ST1018 Persian text intentionally contains native shaping characters.
+
 package i18n
 
 import (
@@ -197,6 +199,58 @@ func normalizeExtraCatalogs() {
 	ExtraUI["ru-RU"]["%d checks could not reach a reliable conclusion; review UNKNOWN first."] = "%d проверок не позволили сделать надёжный вывод; сначала просмотрите результаты UNKNOWN."
 	ExtraUI["fa-IR"]["%d checks could not reach a reliable conclusion; review UNKNOWN first."] = "%d بررسی به نتیجه قابل\u200cاعتماد نرسید؛ ابتدا موارد UNKNOWN را بررسی کنید."
 	ExtraUI["fa-IR"]["SSH, account, firewall, update, and persistence checks triggered no risk; INFO items are inventory only."] = "بررسی\u200cهای SSH، حساب\u200cها، فایروال، به\u200cروزرسانی و ماندگاری هیچ خطری نشان ندادند؛ موارد INFO فقط فهرست وضعیت هستند."
+	for key, value := range map[string]string{
+		"unclassified process": "нераспознанный процесс", "proxies to": "проксирует на", "reverse proxy": "обратный прокси",
+		"panels": "панели", "live listeners": "активные прослушиватели", "Evidence coverage": "Полнота доказательств",
+		"host firewall": "брандмауэр сервера", "proxy configuration": "конфигурация прокси",
+		" · current TCP connections=%d": " · текущих TCP-соединений=%d",
+		"%d proxy ingress endpoints were identified; %d have a configuration, listener, or firewall mismatch.":                                                   "%d входов прокси обнаружено; у %d есть несоответствие конфигурации, прослушивания или брандмауэра.",
+		"%d proxy ingress endpoints were identified, but %d relationships lack enough evidence to confirm expected operation.":                                   "%d входов прокси обнаружено, но для %d связей недостаточно доказательств ожидаемой работы.",
+		"native workload self-test: disabled by default; audit --native-self-test executes local workload code with audit-process privileges after trust checks": "самопроверка локальных программ отключена по умолчанию; audit --native-self-test выполняет локальный код с правами процесса аудита после проверки доверия",
+		"proxy ingress": "вход прокси", "management": "управление", "subscription": "подписка", "control API": "управляющий API",
+		"reverse-proxy frontend": "внешний интерфейс обратного прокси", "reverse-proxy backend": "внутренний интерфейс обратного прокси",
+		"container publish": "публикация контейнера", "unclassified listener": "прослушиватель неизвестного назначения",
+		"unclassified proxy listener": "неклассифицированный прослушиватель прокси", "complete": "полно", "partial": "частично",
+		"unavailable": "недоступно", "not applicable": "не применимо", "root/default path": "корневой или стандартный путь", "non-default path": "нестандартный путь",
+		"active core has no matching listener": "у активного ядра нет соответствующего прослушивателя", "configured but not listening": "настроено, но не прослушивается",
+		"listener process does not match configured product": "процесс прослушивания не соответствует настроенному продукту", "blocked by host firewall": "заблокировано брандмауэром сервера",
+		"firewall relationship unknown": "связь с брандмауэром неизвестна", "internal only": "только внутри сервера", "public control API exposure": "управляющий API доступен из Интернета",
+		"control API restricted by firewall": "управляющий API ограничен брандмауэром", "control API not listening": "управляющий API не прослушивается",
+		"panel endpoint is internal": "конечная точка панели доступна только внутри", "management restricted by firewall": "управление ограничено брандмауэром",
+		"public subscription endpoint": "публичная конечная точка подписки", "subscription restricted by firewall": "подписка ограничена брандмауэром",
+		"panel endpoint not listening": "конечная точка панели не прослушивается", "reverse-proxy frontend is live": "внешний интерфейс обратного прокси работает",
+		"reverse-proxy backend is live": "внутренний интерфейс обратного прокси работает", "reverse-proxy frontend not listening": "внешний интерфейс обратного прокси не прослушивается",
+		"reverse-proxy backend not listening": "внутренний интерфейс обратного прокси не прослушивается", "external upstream not verified locally": "внешний upstream не проверен локально",
+		"Docker-published port": "порт, опубликованный Docker", "listener purpose not classified": "назначение прослушивателя не определено",
+	} {
+		ExtraUI["ru-RU"][key] = value
+	}
+	for key, value := range map[string]string{
+		"unclassified process": "فرایند شناسایی‌نشده", "proxies to": "پراکسی به", "reverse proxy": "پراکسی معکوس",
+		"panels": "پنل‌ها", "live listeners": "شنونده‌های فعال", "Evidence coverage": "پوشش شواهد",
+		"host firewall": "فایروال میزبان", "proxy configuration": "پیکربندی پروکسی",
+		" · current TCP connections=%d": " · اتصال‌های فعلی TCP=%d",
+		"%d proxy ingress endpoints were identified; %d have a configuration, listener, or firewall mismatch.":                                                   "%d ورودی پروکسی شناسایی شد؛ %d مورد با پیکربندی، شنونده یا فایروال ناسازگار است.",
+		"%d proxy ingress endpoints were identified, but %d relationships lack enough evidence to confirm expected operation.":                                   "%d ورودی پروکسی شناسایی شد، اما برای تأیید عملکرد مورد انتظار %d رابطه شواهد کافی ندارد.",
+		"native workload self-test: disabled by default; audit --native-self-test executes local workload code with audit-process privileges after trust checks": "خودآزمایی برنامه محلی به‌طور پیش‌فرض غیرفعال است؛ audit --native-self-test پس از بررسی اعتماد، کد محلی را با سطح دسترسی فرایند ممیزی اجرا می‌کند",
+		"proxy ingress": "ورودی پروکسی", "management": "مدیریت", "subscription": "اشتراک", "control API": "API کنترلی",
+		"reverse-proxy frontend": "سمت عمومی پراکسی معکوس", "reverse-proxy backend": "سمت داخلی پراکسی معکوس",
+		"container publish": "انتشار پورت کانتینر", "unclassified listener": "شنونده با کاربرد ناشناخته",
+		"unclassified proxy listener": "شنونده پروکسی دسته‌بندی‌نشده", "complete": "کامل", "partial": "ناقص",
+		"unavailable": "در دسترس نیست", "not applicable": "نامرتبط", "root/default path": "مسیر ریشه یا پیش‌فرض", "non-default path": "مسیر غیرپیش‌فرض",
+		"active core has no matching listener": "هسته فعال شنونده متناظر ندارد", "configured but not listening": "پیکربندی شده ولی شنونده فعال نیست",
+		"listener process does not match configured product": "فرایند شنونده با محصول پیکربندی‌شده مطابقت ندارد", "blocked by host firewall": "توسط فایروال میزبان مسدود است",
+		"firewall relationship unknown": "رابطه فایروال نامشخص است", "internal only": "فقط داخلی", "public control API exposure": "API کنترلی در اینترنت در دسترس است",
+		"control API restricted by firewall": "API کنترلی با فایروال محدود شده است", "control API not listening": "API کنترلی شنونده فعال ندارد",
+		"panel endpoint is internal": "نقطه پایانی پنل فقط داخلی است", "management restricted by firewall": "مدیریت با فایروال محدود شده است",
+		"public subscription endpoint": "نقطه پایانی عمومی اشتراک", "subscription restricted by firewall": "اشتراک با فایروال محدود شده است",
+		"panel endpoint not listening": "نقطه پایانی پنل شنونده فعال ندارد", "reverse-proxy frontend is live": "سمت عمومی پراکسی معکوس فعال است",
+		"reverse-proxy backend is live": "سمت داخلی پراکسی معکوس فعال است", "reverse-proxy frontend not listening": "سمت عمومی پراکسی معکوس شنونده ندارد",
+		"reverse-proxy backend not listening": "سمت داخلی پراکسی معکوس شنونده ندارد", "external upstream not verified locally": "بالادست خارجی در این میزبان تأیید نشده است",
+		"Docker-published port": "پورت منتشرشده Docker", "listener purpose not classified": "کاربرد شنونده دسته‌بندی نشده است",
+	} {
+		ExtraUI["fa-IR"][key] = value
+	}
 	ruTLS := ExtraRules["ru-RU"]["TLS-002"]
 	ruTLS.Recommendation = "Проверьте срок действия сертификата через безопасный интерфейс приложения, который не экспортирует закрытые ключи; до этого оставьте результат UNKNOWN."
 	ExtraRules["ru-RU"]["TLS-002"] = ruTLS

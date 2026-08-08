@@ -3,6 +3,7 @@ package audit
 import (
 	"fmt"
 	"testing"
+	"time"
 )
 
 func TestRenewalJournalSignals(t *testing.T) {
@@ -53,7 +54,7 @@ func TestCollectTLSRenewalFactsSeparatesScheduleSuccessAndReload(t *testing.T) {
 	results := map[string]CommandResult{
 		scenarioCommandKey("systemctl", "is-enabled", "certbot.timer"):                                                                                                                                                {Stdout: "enabled\n"},
 		scenarioCommandKey("systemctl", "show", "certbot.timer", "--property=LastTriggerUSec,NextElapseUSecRealtime"):                                                                                                 {Stdout: "LastTriggerUSec=Mon 2026-07-13\nNextElapseUSecRealtime=Tue 2026-07-14\n"},
-		scenarioCommandKey("systemctl", "show", "certbot.service", "--property=LoadState,ActiveState,Result,ExecMainStatus,ActiveEnterTimestamp,ExecReload"):                                                          {Stdout: "LoadState=loaded\nActiveState=inactive\nResult=success\nExecMainStatus=0\nExecReload={ path=/bin/systemctl ; argv[]=systemctl reload nginx ; }\n"},
+		scenarioCommandKey("systemctl", "show", "certbot.service", "--property=LoadState,ActiveState,Result,ExecMainStatus,ActiveEnterTimestamp,ExecReload"):                                                          {Stdout: "LoadState=loaded\nActiveState=inactive\nResult=success\nExecMainStatus=0\nActiveEnterTimestamp=Mon 2026-07-13 00:00:00 UTC\nExecReload={ path=/bin/systemctl ; argv[]=systemctl reload nginx ; }\n"},
 		scenarioCommandKey("journalctl", "--since", "30 days ago", "-u", "certbot.service", "-u", "acme.service", "-u", "acme-renew.service", "-u", "lego.service", "-u", "caddy.service", "--no-pager", "-o", "cat"): {Stdout: "Successfully renewed certificate\n"},
 	}
 	f := collectTLSRenewalFactsWithDiscovery(scenarioContext(newScenarioCommander([]string{"systemctl", "journalctl"}, results)), noRenewalFiles)
@@ -62,6 +63,58 @@ func TestCollectTLSRenewalFactsSeparatesScheduleSuccessAndReload(t *testing.T) {
 	}
 	if len(f.Methods) != 1 || f.Methods[0] != "certbot" {
 		t.Fatalf("unexpected methods: %#v", f.Methods)
+	}
+}
+
+func TestCollectTLSRenewalFactsDoesNotTreatStaleServiceResultAsSuccess(t *testing.T) {
+	results := map[string]CommandResult{
+		scenarioCommandKey("systemctl", "show", "certbot.service", "--property=LoadState,ActiveState,Result,ExecMainStatus,ActiveEnterTimestamp,ExecReload"): {
+			Stdout: "LoadState=loaded\nActiveState=inactive\nResult=success\nExecMainStatus=0\nActiveEnterTimestamp=Mon 2025-01-01 00:00:00 UTC\n",
+		},
+	}
+	f := collectTLSRenewalFactsWithDiscovery(scenarioContext(newScenarioCommander([]string{"systemctl"}, results)), noRenewalFiles)
+	if f.SuccessSignals != 0 || f.FailureSignals != 0 {
+		t.Fatalf("stale service result became renewal evidence: %#v", f)
+	}
+}
+
+func TestCollectTLSRenewalFactsRequiresTimestampForServiceResult(t *testing.T) {
+	results := map[string]CommandResult{
+		scenarioCommandKey("systemctl", "show", "certbot.service", "--property=LoadState,ActiveState,Result,ExecMainStatus,ActiveEnterTimestamp,ExecReload"): {
+			Stdout: "LoadState=loaded\nActiveState=inactive\nResult=success\nExecMainStatus=0\n",
+		},
+	}
+	f := collectTLSRenewalFactsWithDiscovery(scenarioContext(newScenarioCommander([]string{"systemctl"}, results)), noRenewalFiles)
+	if f.SuccessSignals != 0 || f.DiscoveryError == nil {
+		t.Fatalf("timestamp-free service result became renewal evidence: %#v", f)
+	}
+}
+
+func TestRenewalJournalOutcomeClosesMissingServiceTimestampGap(t *testing.T) {
+	results := map[string]CommandResult{
+		scenarioCommandKey("systemctl", "show", "certbot.service", "--property=LoadState,ActiveState,Result,ExecMainStatus,ActiveEnterTimestamp,ExecReload"): {
+			Stdout: "LoadState=loaded\nActiveState=inactive\nResult=success\nExecMainStatus=0\n",
+		},
+		scenarioCommandKey("journalctl", "--since", "30 days ago", "-u", "certbot.service", "-u", "acme.service", "-u", "acme-renew.service", "-u", "lego.service", "-u", "caddy.service", "--no-pager", "-o", "cat"): {
+			Stdout: "Successfully renewed certificate\n",
+		},
+	}
+	f := collectTLSRenewalFactsWithDiscovery(scenarioContext(newScenarioCommander([]string{"systemctl", "journalctl"}, results)), noRenewalFiles)
+	if f.SuccessSignals != 1 || f.DiscoveryError != nil {
+		t.Fatalf("journal evidence did not close timestamp gap: %#v", f)
+	}
+}
+
+func TestRecentSystemdTimestamp(t *testing.T) {
+	now := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	if recent, known := recentSystemdTimestamp("Mon 2026-07-01 00:00:00 UTC", now, renewalServiceEvidenceMaxAge); !known || !recent {
+		t.Fatalf("recent=%t known=%t", recent, known)
+	}
+	if recent, known := recentSystemdTimestamp("Mon 2025-01-01 00:00:00 UTC", now, renewalServiceEvidenceMaxAge); !known || recent {
+		t.Fatalf("stale recent=%t known=%t", recent, known)
+	}
+	if _, known := recentSystemdTimestamp("n/a", now, renewalServiceEvidenceMaxAge); known {
+		t.Fatal("n/a timestamp was accepted")
 	}
 }
 

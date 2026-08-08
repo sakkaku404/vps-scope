@@ -17,12 +17,14 @@ VPS Scope 是一款运行在 Ubuntu 和 Debian 上的 VPS 审计工具。它会�
 它不是只识别代理软件名称，也不是把通用 Linux 审计简单附在端口扫描后面。对于普通 VPS，报告会保留完整的主机安全基线；对于代理 VPS，则会额外解释节点入口、管理面、订阅、控制 API、Docker 和反向代理之间的用途关系。
 
 ```bash
-curl -fsSL https://sakkaku404.github.io/vps-scope/run.sh | sudo bash
+curl -fsSL https://github.com/sakkaku404/vps-scope/releases/latest/download/run.sh | sudo bash
 ```
 
 运行后可以选择简体中文、English、Русский 或 فارسی。非交互运行可使用 `--lang zh-CN`、`--lang en`、`--lang ru-RU` 或 `--lang fa-IR`。
 
 默认会在终端显示结论，并在 VPS 上保存完整报告。VPS Scope 没有修复功能，不会更改 SSH、防火墙、服务、账户或软件包。
+
+默认审计也不会执行 S-UI、3x-ui、sing-box、Xray、Nginx 等被审计工作负载自带的二进制，只读取配置、数据库和系统运行态。只有明确使用 `--native-self-test` 时，才会在所有权和权限检查通过后执行这些本地程序；该模式会以审计进程的权限运行服务器上的第三方代码，使用 `sudo` 审计时即为 root 权限。
 
 [![CI](https://github.com/sakkaku404/vps-scope/actions/workflows/ci.yml/badge.svg)](https://github.com/sakkaku404/vps-scope/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/sakkaku404/vps-scope/actions/workflows/codeql.yml/badge.svg)](https://github.com/sakkaku404/vps-scope/actions/workflows/codeql.yml)
@@ -46,8 +48,8 @@ curl -fsSL https://sakkaku404.github.io/vps-scope/run.sh | sudo bash
 管理面         RISK/HIGH
   S-UI 56709/tcp · 公网通配 · 防火墙允许 · TLS启用 · 非默认路径
   判断：管理面仍可由整个公网访问
-配置与运行     PASS
-  配置自检和面板运行态关系未发现异常。
+配置与运行     INFO
+  配置已完成静态解析；默认未执行代理核心或面板程序。
 
 代理入口:
   443/tcp    sing-box/vless (reality)       公网通配 · 防火墙允许 · PASS
@@ -73,6 +75,8 @@ manifest.json       上面四份报告的 SHA-256 校验清单
 ```
 
 也就是说，目录里共有 **4 份相同检测结果的不同格式，加 1 份校验清单**，不是进行了四次检测。
+
+其中 `report.json` 是所有格式共同使用的审计底稿。它不仅保存 55 个稳定检查 ID、状态、严重度和原因代码，还包含结构化的部署视图：识别到的组件、服务端点、代理/反代关系以及各类证据的覆盖程度。HTML、Markdown、历史对比和基线检查都读取这份结构化数据，而不是反过来解析终端文案。旧版 `schema 1.0` 报告仍可读取；当前报告可以用 `vps-scope verify` 同时检查文件完整性和语义完整性。
 
 运行结束时，程序会显示五个文件的完整路径，并给出一条 `scp` 下载命令。HTML 文件保存在远程 VPS 上，无法在普通 SSH 终端里像网页链接一样直接打开；请把它下载到自己的电脑，再双击查看：
 
@@ -102,7 +106,7 @@ HTML 报告会先回答“节点入口、管理面、配置与运行、服务可
 
 ### 配置和运行状态
 
-- 执行 sing-box、Xray 的原生只读配置校验
+- 默认静态解析 sing-box、Xray 配置；可显式启用原生配置自检
 - 对照 S-UI、3x-ui/x-ui 数据库、生成配置与实际监听
 - 检查 Reality、Hysteria2、TUIC、Trojan、Shadowsocks、WireGuard 和 OpenVPN 的关键运行关系
 - 分类统计认证、握手、DNS、TLS、路由和面板登录错误，不复制原始日志和用户数据
@@ -147,6 +151,12 @@ HTML 报告会先回答“节点入口、管理面、配置与运行、服务可
 
 具体版本、部署方式和已经验证的语义见[代理兼容性](docs/PROXY-COMPATIBILITY.md)和[兼容矩阵](docs/COMPATIBILITY-MATRIX.md)。遇到未知数据库结构、动态反代目标或无法完整读取的证据时，结果会显示 `UNKNOWN`，不会假装已经确认安全。
 
+### 当前验证方式
+
+项目不把“能编译”当成完成。当前候选版本使用五台独立实验 VPS 做回归：Debian 13 上的 S-UI、Debian 12 上的 3x-ui/Xray、Ubuntu 24.04 上的 Docker/Nginx、一台接近原生安装的 Debian 13，以及一台 512 MB 内存的 Debian 13。每台都会执行标准审计、深度审计、报告包验证和脱敏支持包；Docker 主机还会增加 32 容器清单、DOCKER-USER/转发路径和自定义 INPUT 链场景，机器之间再完成 TCP/UDP 可达性矩阵。
+
+最近一次候选版本连续运行两轮：五台机器每次都生成 55 项结果，检查状态、严重度、原因代码、组件和端点关系在两轮之间没有漂移；16/16 个跨机 TCP/UDP 探针通过，实验规则和辅助进程均完成清理。实际审计耗时约 25–51 秒，512 MB 主机可以完成深度审计。这里记录的是受控实验室结果，不是对所有发行版、面板版本或云网络的性能保证。完整的可重复测试契约见[测试说明](docs/TESTING.md)和[发布准备度](docs/READINESS.md)。
+
 ## 如何理解结果
 
 报告不提供一个看似精确但无法解释的安全分数，只使用四种状态：
@@ -170,7 +180,7 @@ HTML 报告会先回答“节点入口、管理面、配置与运行、服务可
 如果需要定期检查，可以安装：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sakkaku404/vps-scope/main/install.sh | sudo bash
+curl -fsSL https://github.com/sakkaku404/vps-scope/releases/latest/download/install.sh | sudo bash
 sudo vps-scope
 ```
 
@@ -180,6 +190,8 @@ sudo vps-scope
 sudo vps-scope audit --lang zh-CN --profile proxy
 sudo vps-scope audit --profile custom --expect-public 22/tcp,443/tcp
 sudo vps-scope audit --deep
+# 可选：在信任检查通过后执行本地工作负载程序进行原生自检
+sudo vps-scope audit --native-self-test
 ```
 
 交互模式和网页上的临时运行命令默认都会显示终端摘要并保存完整报告。手动指定位置：
@@ -267,9 +279,9 @@ VPS Scope 能检查 VPS 内部看到的配置和运行状态，但不能：
 
 ## 下载与安全验证
 
-临时运行和安装脚本都会下载 GitHub Release 并核对 SHA-256。如果系统已有 `cosign`，还会验证 GitHub Actions 的无密钥签名。
+临时运行和安装脚本本身也是带 Sigstore bundle 的 Release 产物；启动后，它们会核对所下载二进制的 SHA-256，并在系统已有 `cosign` 时验证 GitHub Actions 无密钥签名。没有 `cosign` 时，交互终端会要求输入 `continue` 才能仅凭校验和继续；非交互运行默认停止。自动化只有在明确接受这一取舍后才应设置 `VPS_SCOPE_ALLOW_UNSIGNED=1`，需要禁止二进制无签名运行时可设置 `VPS_SCOPE_REQUIRE_SIGNATURE=1`。
 
-不想使用 `curl | bash` 时，可以从 [Releases](https://github.com/sakkaku404/vps-scope/releases) 手动下载二进制和 `SHA256SUMS`。签名、provenance 和第三方许可证说明见[供应链文档](docs/SUPPLY-CHAIN.md)。
+一行 `curl | bash` 无法在执行前验证引导脚本本身。需要完整验证时，请从固定标签下载脚本和 bundle，先验证脚本，再让脚本验证二进制；完整命令、provenance 和第三方许可证说明见[供应链文档](docs/SUPPLY-CHAIN.md)。
 
 ## 为什么做 VPS Scope
 
@@ -285,11 +297,16 @@ VPS Scope 不是 vps-audit 的分支，代码与检测实现均为独立实现�
 
 ```bash
 go build -trimpath -o vps-scope ./cmd/vps-scope
-go test ./...
+go test -count=1 ./...
 go vet ./...
+staticcheck ./...
+gosec -quiet ./...
+govulncheck ./...
 ```
 
 欢迎提交可复现的 Ubuntu、Debian 和代理部署样本。公开 issue 不要附上未经脱敏的服务器报告；安全问题请使用 GitHub 私密漏洞报告，详见 [SECURITY.md](SECURITY.md)。
+
+当前开发分支的安全边界与修复验证记录见 [2026-08-07 安全审计](docs/SECURITY-AUDIT-2026-08-07.md)。
 
 ## 许可证
 

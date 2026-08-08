@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/sakkaku404/vps-scope/internal/i18n"
 	"github.com/sakkaku404/vps-scope/internal/model"
 )
 
@@ -27,6 +28,9 @@ func (o proxyOverview) HasContent() bool {
 // collected by the proxy checks. It is intentionally an inventory: findings
 // remain the source of truth for status and severity in every renderer.
 func collectProxyOverview(r model.Report, locale string) proxyOverview {
+	if r.Deployment != nil {
+		return collectTopologyOverview(r, locale)
+	}
 	panels, panelOK := findingByID(r, "WORK-002")
 	inventory, inventoryOK := findingByID(r, "WORK-003")
 	relations, relationsOK := findingByID(r, "WORK-009")
@@ -50,12 +54,12 @@ func collectProxyOverview(r model.Report, locale string) proxyOverview {
 		return proxyOverview{}
 	}
 	groups := []proxyOverviewGroup{
-		{Title: choose(locale, "管理面板", "Management panels"), Lines: panelLines},
-		{Title: choose(locale, "代理入口", "Proxy ingress"), Lines: endpointLines},
-		{Title: choose(locale, "控制接口", "Control APIs"), Lines: controlLines},
+		{Title: i18n.Message(locale, i18n.MessageManagementPanels), Lines: panelLines},
+		{Title: i18n.Message(locale, i18n.MessageProxyIngress), Lines: endpointLines},
+		{Title: i18n.Message(locale, i18n.MessageControlAPIs), Lines: controlLines},
 		{Title: choose(locale, "运行态异常", "Runtime mismatches"), Lines: runtimeLines},
 		{Title: choose(locale, "运行与攻击日志信号", "Operational and attack log signals"), Lines: activityLines},
-		{Title: choose(locale, "部署关系", "Deployment relationships"), Lines: deploymentLines},
+		{Title: i18n.Message(locale, i18n.MessageDeploymentRelationships), Lines: deploymentLines},
 	}
 	filtered := make([]proxyOverviewGroup, 0, len(groups))
 	for _, group := range groups {

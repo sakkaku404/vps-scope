@@ -2,16 +2,18 @@ package app
 
 import (
 	"bufio"
+	"context"
+	"crypto/sha256"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
+	"os/signal"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/sakkaku404/vps-scope/internal/audit"
@@ -89,9 +91,15 @@ func Run(args []string, in io.Reader, out, errOut io.Writer, build BuildInfo) er
 	case "verify":
 		err = e.verify(args[1:])
 	case "version", "--version", "-v":
+		if len(args) != 1 {
+			return errors.New("version does not accept arguments")
+		}
 		fmt.Fprintf(out, "vps-scope %s commit=%s built=%s go=%s\n", build.Version, build.Commit, build.Date, runtime.Version())
 		return nil
 	case "help", "--help", "-h":
+		if len(args) != 1 {
+			return errors.New("help does not accept arguments; use COMMAND --help")
+		}
 		e.usage()
 		return nil
 	default:
@@ -197,6 +205,8 @@ func (e environment) audit(args []string) error {
 	noColor := fs.Bool("no-color", false, "disable color output")
 	redacted := fs.Bool("redact", false, "redact public IPs, domains, and host identifiers")
 	deep := fs.Bool("deep", false, "run slower filesystem and package-integrity checks")
+	nativeSelfTest := fs.Bool("native-self-test", false, "execute trusted local workload binaries with the audit process privileges")
+	auditTimeout := fs.Duration("audit-timeout", 5*time.Minute, "overall audit deadline for commands and collectors (30s to 30m)")
 	alsoTerminal := fs.Bool("also-terminal", false, "print terminal report before saving a bundle")
 	expectPublic := fs.String("expect-public", "", "expected public listeners, e.g. 22/tcp,443/tcp")
 	externalDomains := fs.String("external-domain", "", "comma-separated domains for opt-in DNS and TLS observation")
@@ -205,6 +215,9 @@ func (e environment) audit(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("audit does not accept positional arguments: %q", fs.Args())
+	}
 	if err := validateProfile(*profile); err != nil {
 		return err
 	}
@@ -212,7 +225,13 @@ func (e environment) audit(args []string) error {
 	if err != nil {
 		return fmt.Errorf("invalid --log-since: %w", err)
 	}
-	locale := i18n.Locale(*lang)
+	locale, err := parseLocaleFlag(*lang)
+	if err != nil {
+		return err
+	}
+	if *alsoTerminal && *format != "bundle" {
+		return errors.New("--also-terminal is only valid with --format bundle")
+	}
 	progress := audit.ProgressFunc(nil)
 	if !*quiet && (*format == "terminal" || *format == "text" || *format == "bundle") {
 		progress = func(index, total int, category string) {
@@ -237,7 +256,9 @@ func (e environment) audit(args []string) error {
 			return err
 		}
 	}
-	r, err := audit.Run(audit.Options{Locale: locale, Profile: *profile, ExpectedPublic: expected, LogSince: duration, Deep: *deep, ExternalDomains: domains, ExpectCDN: *expectCDN, Policy: policy, Build: audit.Build{Version: e.build.Version, Commit: e.build.Commit}, Progress: progress})
+	auditContext, stopAudit := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopAudit()
+	r, err := audit.Run(audit.Options{Context: auditContext, Locale: locale, Profile: *profile, ExpectedPublic: expected, LogSince: duration, Deep: *deep, NativeSelfTest: *nativeSelfTest, AuditTimeout: *auditTimeout, ExternalDomains: domains, ExpectCDN: *expectCDN, Policy: policy, Build: audit.Build{Version: e.build.Version, Commit: e.build.Commit}, Progress: progress})
 	if err != nil {
 		return err
 	}
@@ -248,222 +269,6 @@ func (e environment) audit(args []string) error {
 	return e.writeReport(*format, *output, r, opts, *alsoTerminal)
 }
 
-func (e environment) doctor(args []string) error {
-	fs := e.newFlagSet("doctor")
-	lang := fs.String("lang", "auto", "language")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	locale := i18n.Locale(*lang)
-	fmt.Fprintf(e.out, "VPS Scope doctor\nOS=%s ARCH=%s GO=%s\n", runtime.GOOS, runtime.GOARCH, runtime.Version())
-	fmt.Fprintf(e.out, "%s=%t\n", choose(locale, "支持完整审计", "full_audit_supported"), runtime.GOOS == "linux")
-	if runtime.GOOS == "linux" {
-		fmt.Fprintln(e.out, choose(locale, "命令状态: TRUSTED=可安全执行  UNTRUSTED=存在但权限链不可信  MISSING=未找到", "command status: TRUSTED=safe to execute  UNTRUSTED=unsafe ownership or writable path  MISSING=not found"))
-	}
-	commander := audit.OSCommander{}
-	for _, name := range []string{"sshd", "ss", "journalctl", "ufw", "firewall-cmd", "nft", "iptables", "fail2ban-client", "cscli", "apt-get", "dpkg", "systemctl", "docker", "coredumpctl", "getcap"} {
-		status := "MISSING"
-		if runtime.GOOS == "linux" {
-			status = doctorCommandStatus(commander, name)
-		} else if _, err := findCommand(name); err == nil {
-			status = "FOUND"
-		}
-		fmt.Fprintf(e.out, "%-18s %s\n", name, status)
-	}
-	return nil
-}
-
-type trustedExecutableInspector interface {
-	TrustedExecutable(string) (string, error)
-}
-
-func doctorCommandStatus(cmd audit.Commander, name string) string {
-	if !cmd.Exists(name) {
-		return "MISSING"
-	}
-	trusted, ok := cmd.(trustedExecutableInspector)
-	if !ok {
-		return "FOUND"
-	}
-	if _, err := trusted.TrustedExecutable(name); err != nil {
-		return "UNTRUSTED"
-	}
-	return "TRUSTED"
-}
-
-func (e environment) checks(args []string) error {
-	fs := e.newFlagSet("checks")
-	lang := fs.String("lang", "auto", "language")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	locale := i18n.Locale(*lang)
-	for index, category := range audit.CategoryOrder {
-		fmt.Fprintf(e.out, "%02d. %s\n", index+1, i18n.Category(category, locale))
-		var ids []string
-		for id := range i18n.Rules {
-			if categoryForID(id) == category {
-				ids = append(ids, id)
-			}
-		}
-		sort.Strings(ids)
-		for _, id := range ids {
-			fmt.Fprintf(e.out, "    %-12s %s\n", id, i18n.Pick(i18n.RuleForLocale(id, locale).Title, locale))
-		}
-	}
-	return nil
-}
-
-func (e environment) explain(args []string) error {
-	fs := e.newFlagSet("explain")
-	lang := fs.String("lang", "auto", "language")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if fs.NArg() != 1 {
-		return errors.New("usage: vps-scope explain CHECK-ID")
-	}
-	id := strings.ToUpper(fs.Arg(0))
-	if _, ok := i18n.Rules[id]; !ok {
-		return fmt.Errorf("unknown check ID %q", id)
-	}
-	locale := i18n.Locale(*lang)
-	rule := i18n.RuleForLocale(id, locale)
-	fmt.Fprintf(e.out, "%s — %s\n\n%s: %s\n\n%s: %s\n", id, i18n.Pick(rule.Title, locale), choose(locale, "风险解释", "Why it matters"), i18n.Pick(rule.Why, locale), choose(locale, "建议", "Suggestion"), i18n.Pick(rule.Recommendation, locale))
-	return nil
-}
-
-func (e environment) render(args []string) error {
-	fs := e.newFlagSet("render")
-	lang := fs.String("lang", "auto", "language")
-	format := fs.String("format", "markdown", "text, markdown, html, json, bundle")
-	output := fs.String("output", "", "output path")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if fs.NArg() != 1 {
-		return errors.New("usage: vps-scope render REPORT.json")
-	}
-	r, err := readReport(fs.Arg(0))
-	if err != nil {
-		return err
-	}
-	locale := i18n.Locale(*lang)
-	r.Locale = locale
-	return e.writeReport(*format, *output, r, report.Options{Locale: locale})
-}
-
-func (e environment) redact(args []string) error {
-	fs := e.newFlagSet("redact")
-	lang := fs.String("lang", "auto", "language")
-	format := fs.String("format", "json", "output format")
-	output := fs.String("output", "", "output path")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if fs.NArg() != 1 {
-		return errors.New("usage: vps-scope redact REPORT.json")
-	}
-	r, err := readReport(fs.Arg(0))
-	if err != nil {
-		return err
-	}
-	r = redact.New().Report(r)
-	locale := i18n.Locale(*lang)
-	r.Locale = locale
-	return e.writeReport(*format, *output, r, report.Options{Locale: locale})
-}
-
-func (e environment) support(args []string) error {
-	fs := e.newFlagSet("support")
-	output := fs.String("output", "", "new output directory")
-	input := ""
-	// Accept both common CLI styles: `support report.json --output dir`
-	// and the Go flag package's native `support --output dir report.json`.
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		input, args = args[0], args[1:]
-	}
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if input == "" && fs.NArg() == 1 {
-		input = fs.Arg(0)
-	} else if fs.NArg() != 0 {
-		return errors.New("usage: vps-scope support REPORT.json [--output DIR]")
-	}
-	if input == "" {
-		return errors.New("usage: vps-scope support REPORT.json [--output DIR]")
-	}
-	r, err := readReport(input)
-	if err != nil {
-		return err
-	}
-	if *output == "" {
-		*output = "vps-scope-support-" + time.Now().UTC().Format("20060102T150405Z")
-	}
-	manifest, err := report.SupportBundle(*output, r)
-	if err != nil {
-		return fmt.Errorf("create support bundle: %w", err)
-	}
-	fmt.Fprintf(e.out, "support bundle: %s (%d files)\n", *output, len(manifest.Files))
-	fmt.Fprintln(e.out, "Review every file before sharing. Raw configuration, databases, credentials, keys, UUIDs and host addresses are not included.")
-	return nil
-}
-
-func (e environment) verify(args []string) error {
-	if len(args) != 1 {
-		return errors.New("usage: vps-scope verify REPORT.json|BUNDLE_DIR")
-	}
-	info, err := os.Stat(args[0])
-	if err != nil {
-		return err
-	}
-	if !info.IsDir() {
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("verify input is not a regular report file or bundle directory")
-		}
-		return e.verifyReport(args[0])
-	}
-	manifest, failures, err := report.VerifyBundle(args[0])
-	if err != nil {
-		return err
-	}
-	fmt.Fprintf(e.out, "manifest schema=%s files=%d\n", manifest.SchemaVersion, len(manifest.Files))
-	if len(failures) > 0 {
-		for _, failure := range failures {
-			fmt.Fprintln(e.out, "FAIL", failure)
-		}
-		return fmt.Errorf("bundle verification failed for %d file(s)", len(failures))
-	}
-	fmt.Fprintln(e.out, "PASS all report files match the complete manifest")
-	reportName := "report.json"
-	if manifest.SchemaVersion == report.SupportSchema {
-		reportName = "report.redacted.json"
-	}
-	return e.verifyReport(filepath.Join(args[0], reportName))
-}
-
-func (e environment) verifyReport(path string) error {
-	r, err := readReport(path)
-	if err != nil {
-		return err
-	}
-	failures := audit.ValidateReport(r, e.build.Version)
-	fmt.Fprintf(e.out, "report schema=%s tool=%s findings=%d\n", r.SchemaVersion, r.ToolVersion, len(r.Findings))
-	if len(failures) > 0 {
-		for _, failure := range failures {
-			fmt.Fprintln(e.out, "FAIL", failure)
-		}
-		return fmt.Errorf("report semantic verification failed for %d condition(s)", len(failures))
-	}
-	fmt.Fprintln(e.out, "PASS report structure and semantic contract are valid")
-	return nil
-}
-
-func categoryForID(id string) string {
-	prefix, _, _ := strings.Cut(id, "-")
-	return map[string]string{"SYS": "system", "ACC": "accounts", "SSH": "ssh", "PRIV": "privileges", "NET": "network", "FW": "firewall", "AUTH": "auth", "UPD": "updates", "PKG": "packages", "PROC": "processes", "DOCKER": "docker", "TLS": "tls", "WORK": "workloads", "FS": "filesystem", "PERSIST": "persistence", "REL": "reliability"}[prefix]
-}
 func validateProfile(value string) error {
 	for _, allowed := range []string{"auto", "general", "proxy", "web", "docker", "mixed", "custom"} {
 		if value == allowed {
@@ -474,15 +279,21 @@ func validateProfile(value string) error {
 }
 func parseDuration(value string) (time.Duration, error) {
 	if strings.HasSuffix(value, "d") {
-		days, err := strconv.Atoi(strings.TrimSuffix(value, "d"))
-		if err != nil || days <= 0 {
+		days, err := strconv.ParseInt(strings.TrimSuffix(value, "d"), 10, 64)
+		maxDays := int64(audit.MaxLogSince / (24 * time.Hour))
+		if err != nil || days <= 0 || days > maxDays {
 			return 0, fmt.Errorf("invalid day duration")
 		}
 		return time.Duration(days) * 24 * time.Hour, nil
 	}
-	return time.ParseDuration(value)
+	duration, err := time.ParseDuration(value)
+	if err != nil || duration <= 0 || duration > audit.MaxLogSince {
+		return 0, fmt.Errorf("duration must be greater than zero and no longer than %s", audit.MaxLogSince)
+	}
+	return duration, nil
 }
 func parseExternalDomains(value string) ([]string, error) {
+	const maxExternalDomains = 16
 	seen := map[string]bool{}
 	var domains []string
 	for _, item := range strings.Split(value, ",") {
@@ -506,6 +317,9 @@ func parseExternalDomains(value string) ([]string, error) {
 		if !seen[domain] {
 			seen[domain] = true
 			domains = append(domains, domain)
+			if len(domains) > maxExternalDomains {
+				return nil, fmt.Errorf("--external-domain accepts at most %d unique domains", maxExternalDomains)
+			}
 		}
 	}
 	return domains, nil
@@ -529,22 +343,48 @@ func parseExpectedPublic(value string) (map[string]bool, error) {
 	}
 	return out, nil
 }
+
+func parseLocaleFlag(value string) (string, error) {
+	normalized := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(value)), "_", "-")
+	switch normalized {
+	case "", "auto", "zh", "zh-cn", "cn", "en", "en-us", "en-gb", "ru", "ru-ru", "fa", "fa-ir", "persian", "farsi":
+		return i18n.Locale(value), nil
+	default:
+		return "", fmt.Errorf("unsupported language %q; use auto, zh-CN, en, ru-RU, or fa-IR", value)
+	}
+}
 func safeName(value string) string {
+	original := value
 	value = strings.Map(func(r rune) rune {
 		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' {
 			return r
 		}
 		return '-'
 	}, value)
-	return strings.Trim(value, "-")
+	value = strings.Trim(value, "-")
+	if value != "" {
+		return value
+	}
+	// Linux hostnames are normally ASCII, but offline rendering accepts reports
+	// from other producers. Never let an all-non-ASCII name collapse the host
+	// directory and move the `latest` link one level above the report root.
+	sum := sha256.Sum256([]byte(original))
+	return fmt.Sprintf("host-%x", sum[:6])
 }
 func choose(locale, chinese, english string) string {
 	return i18n.UI(locale, chinese, english)
 }
 func truncateDisplay(value string, n int) string {
-	if len(value) <= n {
+	if n <= 0 {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= n {
 		return value
 	}
-	return value[:n-1] + "…"
+	if n == 1 {
+		return "…"
+	}
+	return string(runes[:n-1]) + "…"
 }
 func findCommand(name string) (string, error) { return findExecutable(name) }

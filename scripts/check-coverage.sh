@@ -28,7 +28,7 @@ check_package() {
 
 # These floors are a ratchet, not a target. Raise them as collectors are split
 # behind typed interfaces and gain deterministic fixtures.
-check_package app 56
-check_package audit 54
-check_package redact 86
-check_package report 82
+check_package app 66
+check_package audit 68
+check_package redact 92
+check_package report 85

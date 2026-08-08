@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -18,7 +17,7 @@ import (
 func checkSystem(ctx *Context) []model.Finding {
 	priv := model.Finding{ID: "SYS-001", Category: "system", Status: model.Pass,
 		Facts:    map[string]string{"is_root": strconv.FormatBool(ctx.Host.IsRoot)},
-		Evidence: []model.Evidence{{Source: "geteuid", Key: "euid", Value: strconv.Itoa(os.Geteuid())}}}
+		Evidence: []model.Evidence{{Source: "geteuid", Key: "euid", Value: strconv.Itoa(ctx.EffectiveUID)}}}
 	if !ctx.Host.IsRoot {
 		priv.Status = model.Info
 		priv.Evidence = append(priv.Evidence, model.Evidence{Source: "coverage", Value: "some privileged evidence may be unavailable"})
@@ -48,7 +47,7 @@ func checkNetworkKernelContext(ctx *Context) model.Finding {
 		"tcp_available_controls": "/proc/sys/net/ipv4/tcp_available_congestion_control",
 	}
 	for key, path := range paths {
-		if value, err := readSmall(path, 4096); err == nil {
+		if value, err := ctx.Facts.ReadSmall(path, 4096); err == nil {
 			value = strings.TrimSpace(value)
 			f.Facts[key] = value
 			f.Evidence = append(f.Evidence, model.Evidence{Source: path, Key: key, Value: value})
@@ -61,7 +60,7 @@ func checkNetworkKernelContext(ctx *Context) model.Finding {
 }
 
 func checkAccounts(ctx *Context) []model.Finding {
-	entries, err := readPasswd()
+	entries, err := readPasswdSnapshot(ctx.Facts)
 	if err != nil {
 		return []model.Finding{unknown("ACC-001", "accounts", "/etc/passwd", err.Error()), unknown("ACC-002", "accounts", "/etc/passwd", err.Error()), unknown("ACC-003", "accounts", "/etc/passwd", err.Error())}
 	}
@@ -107,7 +106,7 @@ func checkSSH(ctx *Context) []model.Finding {
 	}
 	effective, err := ctx.Facts.SSHDSettings()
 	if err != nil {
-		return []model.Finding{unknown("SSH-001", "ssh", "sshd -T", err.Error()), unknown("SSH-002", "ssh", "sshd -T", err.Error()), unknown("SSH-003", "ssh", "sshd -T", err.Error()), checkSSHPermissions(), checkSSHKeyInventory(ctx)}
+		return []model.Finding{unknown("SSH-001", "ssh", "sshd -T", err.Error()), unknown("SSH-002", "ssh", "sshd -T", err.Error()), unknown("SSH-003", "ssh", "sshd -T", err.Error()), checkSSHPermissions(ctx), checkSSHKeyInventory(ctx)}
 	}
 	password := strings.ToLower(effective["passwordauthentication"])
 	keyboard := strings.ToLower(effective["kbdinteractiveauthentication"])
@@ -130,11 +129,11 @@ func checkSSH(ctx *Context) []model.Finding {
 	if pubkey != "yes" {
 		fPub.Status, fPub.Severity = model.Risk, model.High
 	}
-	return []model.Finding{fPassword, fRoot, fPub, checkSSHPermissions(), checkSSHKeyInventory(ctx)}
+	return []model.Finding{fPassword, fRoot, fPub, checkSSHPermissions(ctx), checkSSHKeyInventory(ctx)}
 }
 
-func checkSSHPermissions() model.Finding {
-	entries, err := readPasswd()
+func checkSSHPermissions(ctx *Context) model.Finding {
+	entries, err := readPasswdSnapshot(ctx.Facts)
 	if err != nil {
 		return unknown("SSH-004", "ssh", "/etc/passwd", err.Error())
 	}
@@ -147,7 +146,7 @@ func checkSSHPermissions() model.Finding {
 			continue
 		}
 		sshDir := filepath.Join(e.Home, ".ssh")
-		if info, err := os.Stat(sshDir); err == nil {
+		if info, err := ctx.Facts.Stat(sshDir); err == nil {
 			if tooOpen(info, 0o022) {
 				problems = append(problems, fmt.Sprintf("%s mode=%s", sshDir, modeString(info)))
 			}
@@ -161,12 +160,12 @@ func checkSSHPermissions() model.Finding {
 		}
 		for _, name := range []string{"authorized_keys", "authorized_keys2"} {
 			path := filepath.Join(sshDir, name)
-			if info, err := os.Stat(path); err == nil {
+			if info, err := ctx.Facts.Stat(path); err == nil {
 				keyCount++
 				if tooOpen(info, 0o022) {
 					problems = append(problems, fmt.Sprintf("%s mode=%s", path, modeString(info)))
 				}
-				if data, err := readSmall(path, 2<<20); err == nil {
+				if data, err := ctx.Facts.ReadSmall(path, 2<<20); err == nil {
 					for _, line := range lines(data) {
 						if strings.HasPrefix(strings.TrimSpace(line), "#") {
 							continue
@@ -188,10 +187,10 @@ func checkSSHPermissions() model.Finding {
 			}
 		}
 	}
-	hostKeyPaths, hostKeyDiscoveryErr := discoverExistingFiles(64, "/etc/ssh/ssh_host_*_key")
+	hostKeyPaths, hostKeyDiscoveryErr := discoverExistingFilesFromSnapshot(ctx.Facts.files, 64, "/etc/ssh/ssh_host_*_key")
 	discoveryErr = errors.Join(discoveryErr, hostKeyDiscoveryErr)
 	for _, path := range hostKeyPaths {
-		if info, err := os.Stat(path); err != nil {
+		if info, err := ctx.Facts.Stat(path); err != nil {
 			discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s: %w", path, err))
 		} else if tooOpen(info, fs.FileMode(0o077)) {
 			problems = append(problems, fmt.Sprintf("%s mode=%s", path, modeString(info)))
@@ -212,7 +211,7 @@ func checkSSHKeyInventory(ctx *Context) model.Finding {
 	if !ctx.Commander.Exists("ssh-keygen") {
 		return unknown("SSH-005", "ssh", "ssh-keygen", "command not found")
 	}
-	entries, err := readPasswd()
+	entries, err := readPasswdSnapshot(ctx.Facts)
 	if err != nil {
 		return unknown("SSH-005", "ssh", "/etc/passwd", err.Error())
 	}
@@ -225,7 +224,7 @@ func checkSSHKeyInventory(ctx *Context) model.Finding {
 		}
 		for _, name := range []string{"authorized_keys", "authorized_keys2"} {
 			path := filepath.Join(entry.Home, ".ssh", name)
-			info, statErr := os.Stat(path)
+			info, statErr := ctx.Facts.Stat(path)
 			if errors.Is(statErr, fs.ErrNotExist) {
 				continue
 			}
@@ -240,7 +239,7 @@ func checkSSHKeyInventory(ctx *Context) model.Finding {
 				continue
 			}
 			files++
-			data, readErr := readSmall(path, 2<<20)
+			data, readErr := ctx.Facts.ReadSmall(path, 2<<20)
 			if readErr != nil {
 				parseFailures++
 				f.Evidence = append(f.Evidence, model.Evidence{Source: "authorized_keys", Key: "unreadable", Value: path})
@@ -405,7 +404,7 @@ func splitAuthorizedKeyOptions(value string) []string {
 
 func checkPrivileges(ctx *Context) []model.Finding {
 	sudo := model.Finding{ID: "PRIV-001", Category: "privileges", Status: model.Pass}
-	dropIns, discoveryErr := discoverExistingFiles(256, "/etc/sudoers.d/*")
+	dropIns, discoveryErr := discoverExistingFilesFromSnapshot(ctx.Facts.files, 256, "/etc/sudoers.d/*")
 	paths := append([]string{"/etc/sudoers"}, dropIns...)
 	discovered := make(map[string]bool, len(dropIns))
 	for _, path := range dropIns {
@@ -413,7 +412,7 @@ func checkPrivileges(ctx *Context) []model.Finding {
 	}
 	readable := 0
 	for _, path := range paths {
-		data, err := readSmall(path, 2<<20)
+		data, err := ctx.Facts.ReadSmall(path, 2<<20)
 		if err != nil {
 			if discovered[path] || !errors.Is(err, fs.ErrNotExist) {
 				discoveryErr = errors.Join(discoveryErr, fmt.Errorf("%s: %w", path, err))
@@ -507,6 +506,8 @@ func checkPrivileges(ctx *Context) []model.Finding {
 				}
 			}
 		}
+	} else {
+		privilegeDiscoveryErr = errors.Join(privilegeDiscoveryErr, fmt.Errorf("getcap capability inventory: command not found"))
 	}
 	return []model.Finding{sudo, withIncompleteEvidence(privileged, "privileged-file discovery", privilegeDiscoveryErr)}
 }

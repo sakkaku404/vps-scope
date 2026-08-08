@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/sakkaku404/vps-scope/internal/contract"
 	"github.com/sakkaku404/vps-scope/internal/model"
 )
 
@@ -37,7 +38,17 @@ func overallVerdictFor(r model.Report, locale string) overallVerdict {
 	if confirmed == 0 {
 		return overallVerdict{choose(locale, "没有明确风险，但存在证据缺口", "No confirmed risks, with evidence gaps"), fmt.Sprintf(choose(locale, "%d 项检查无法形成可靠结论，应先查看 UNKNOWN。", "%d checks could not reach a reliable conclusion; review UNKNOWN first."), gaps)}
 	}
-	return overallVerdict{fmt.Sprintf(choose(locale, "发现 %d 项需要处理的问题", "%d findings need attention"), confirmed), fmt.Sprintf(choose(locale, "其中 %d 项优先处理，%d 项可能影响可用性，另有 %d 项证据不足。", "%d urgent, %d availability-related, and %d evidence gaps."), len(actions.Urgent), len(actions.Availability), gaps)}
+	detail := fmt.Sprintf("%s: %d · %s: %d · %s: %d · %s: %d",
+		choose(locale, "现在优先处理", "Handle now"), len(actions.Urgent),
+		choose(locale, "可能影响可用性", "May affect availability"), len(actions.Availability),
+		choose(locale, "例行维护与复核", "Maintenance and review"), len(actions.Maintenance),
+		choose(locale, "证据不足，需要人工确认", "Evidence gaps requiring manual confirmation"), gaps,
+	)
+	headline := fmt.Sprintf(choose(locale, "发现 %d 项明确风险", "%d confirmed risks need attention"), confirmed)
+	if gaps > 0 {
+		headline = fmt.Sprintf(choose(locale, "发现 %d 项明确风险，另有 %d 项证据不足", "%d confirmed risks, plus %d evidence gaps"), confirmed, gaps)
+	}
+	return overallVerdict{headline, detail}
 }
 
 func summarizeActions(r model.Report, locale string) actionSummary {
@@ -73,7 +84,7 @@ func actionBandForFinding(f model.Finding) string {
 	if f.Status != model.Risk {
 		return ""
 	}
-	if f.ID == "WORK-009" || f.ID == "TLS-001" {
+	if contract.SpecialActionBand(f.ID) == contract.ActionBandAvailability {
 		return "availability"
 	}
 	if f.Severity == model.Critical || f.Severity == model.High {
@@ -84,7 +95,7 @@ func actionBandForFinding(f model.Finding) string {
 
 func actionRank(f model.Finding) int {
 	ranks := map[model.Severity]int{model.Critical: 0, model.High: 1, model.Medium: 2, model.Low: 3}
-	return ranks[f.Severity]*10000 + int(f.ID[0])
+	return ranks[f.Severity]*10000 + contract.Order(f.ID)
 }
 
 func verdictForFinding(f model.Finding, locale string) string {
@@ -113,6 +124,9 @@ func verdictForFinding(f model.Finding, locale string) string {
 		if evidenceContains(f, "disabled_inbound_still_listening") {
 			return choose(locale, "明确风险：面板中已禁用的代理入口仍在监听，旧入口可能继续被使用。", "Confirmed risk: an ingress disabled in the panel is still listening, so stale access may remain usable.")
 		}
+		if evidenceContains(f, "plaintext_public_subscription") {
+			return choose(locale, "明确风险：订阅端点从公网明文开放，带有访问凭据的订阅链接可能在传输中泄露。", "Confirmed risk: a subscription endpoint is publicly reachable over plaintext, so bearer-like subscription links may leak in transit.")
+		}
 		return choose(locale, "需要核对：面板数据库、生成配置和实际监听之间存在无法解释的差异。", "Review needed: the panel database, generated configuration, and live listeners do not agree.")
 	case "WORK-009":
 		if blocked {
@@ -124,6 +138,9 @@ func verdictForFinding(f model.Finding, locale string) string {
 	case "FW-002":
 		return choose(locale, "维护问题：防火墙允许范围需要与当前服务重新核对。", "Maintenance issue: firewall allowances should be reconciled with current services.")
 	case "UPD-001":
+		if f.Facts["pending_total"] == "0" && evidenceContains(f, "reboot-required") {
+			return choose(locale, "维护问题：当前没有待安装更新，但系统需要重启才能完成已经安装的更新。", "Maintenance issue: no updates are pending, but a reboot is required to finish applying installed updates.")
+		}
 		return choose(locale, "维护问题：待安装更新需要按安全更新和普通更新分别处理。", "Maintenance issue: pending updates need separate security and routine-update handling.")
 	}
 	if f.Status == model.Unknown {
@@ -135,7 +152,7 @@ func verdictForFinding(f model.Finding, locale string) string {
 func evidenceContains(f model.Finding, phrase string) bool {
 	phrase = strings.ToLower(phrase)
 	for _, item := range f.Evidence {
-		if strings.Contains(strings.ToLower(item.Key+"="+item.Value), phrase) {
+		if strings.Contains(strings.ToLower(item.Source+" "+item.Key+"="+item.Value), phrase) {
 			return true
 		}
 	}
@@ -153,7 +170,7 @@ func keyEvidence(f model.Finding) []model.Evidence {
 			if len(out) == 2 {
 				return out
 			}
-			if strings.Contains(strings.ToLower(item.Key+"="+item.Value), word) && !containsEvidence(out, item) {
+			if strings.Contains(strings.ToLower(item.Source+" "+item.Key+"="+item.Value), word) && !containsEvidence(out, item) {
 				out = append(out, item)
 			}
 		}

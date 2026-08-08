@@ -52,6 +52,14 @@ func TestSupportBundleIsRedactedAndVerifiable(t *testing.T) {
 	if len(snapshot.Panels) != 1 || snapshot.Panels[0].Product != "S-UI" || snapshot.Panels[0].SchemaFingerprint != "abc" {
 		t.Fatalf("snapshot=%#v", snapshot)
 	}
+	readme, err := os.ReadFile(filepath.Join(dir, "README.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	readmeText := strings.ToLower(string(readme))
+	if strings.Contains(readmeText, "contains no") || !strings.Contains(readmeText, "automated redaction has limits") || !strings.Contains(string(readme), "自动脱敏存在边界") {
+		t.Fatalf("support README does not describe the privacy boundary accurately: %s", readme)
+	}
 }
 
 func TestSupportBundleRefusesOverwrite(t *testing.T) {
@@ -61,5 +69,25 @@ func TestSupportBundleRefusesOverwrite(t *testing.T) {
 	}
 	if _, err := SupportBundle(dir, model.Report{}); err == nil {
 		t.Fatal("expected existing directory to be rejected")
+	}
+}
+
+func TestSupportBundleRejectsResidualCredentialPatternBeforeWriting(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "rejected-support")
+	report := model.Report{Findings: []model.Finding{{
+		ID:       "WORK-006",
+		Status:   model.Info,
+		Evidence: []model.Evidence{{Value: "truncated material: -----BEGIN PRIVATE KEY-----"}},
+	}}}
+	_, err := SupportBundle(dir, report)
+	if err == nil {
+		t.Fatal("expected support bundle to reject residual private-key material")
+	}
+	message := strings.ToLower(err.Error())
+	if !strings.Contains(message, "refused") || !strings.Contains(message, "manually review") || strings.Contains(message, "truncated material") {
+		t.Fatalf("unexpected privacy rejection: %v", err)
+	}
+	if _, statErr := os.Stat(dir); !os.IsNotExist(statErr) {
+		t.Fatalf("rejected support bundle created output directory: %v", statErr)
 	}
 }

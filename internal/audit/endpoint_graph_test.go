@@ -33,7 +33,7 @@ func TestEndpointGraphPolicyMatrix(t *testing.T) {
 }
 
 func TestEndpointGraphKeepsTCPAndUDPSeparate(t *testing.T) {
-	inbound := configuredProxyInbound{Path: "fixture", proxyInbound: proxyInbound{Product: "Shadowsocks", Protocol: "shadowsocks", Port: "8388", Transports: []string{"tcp", "udp"}}}
+	inbound := configuredProxyInbound{Path: "fixture", proxyInbound: proxyInbound{Product: "Shadowsocks", Protocol: "shadowsocks", Listen: "127.0.0.1", Port: "8388", Transports: []string{"tcp", "udp"}}}
 	listeners := []Listener{{Protocol: "tcp", Address: "127.0.0.1", Port: "8388", Scope: "loopback", Process: "ss-server"}}
 	got := assessProxyEndpointGraph(buildProxyEndpointGraph([]configuredProxyInbound{inbound}, listeners, hostFirewallSnapshot{}), map[string]bool{"shadowsocks": true})
 	if len(got) != 2 || got[0].Node.Transport == got[1].Node.Transport {
@@ -47,6 +47,26 @@ func TestEndpointGraphKeepsTCPAndUDPSeparate(t *testing.T) {
 	}
 	if missing != 1 {
 		t.Fatalf("missing=%d, want 1", missing)
+	}
+}
+
+func TestEndpointGraphDoesNotCrossIPv4AndIPv6Wildcards(t *testing.T) {
+	inbound := configuredProxyInbound{Path: "fixture", proxyInbound: proxyInbound{Product: "sing-box", Protocol: "vless", Listen: "::", Port: "443", Transports: []string{"tcp"}}}
+	listeners := []Listener{{Protocol: "tcp4", Address: "0.0.0.0", Port: "443", Scope: "public-wildcard", Process: "sing-box"}}
+	got := assessProxyEndpointGraph(buildProxyEndpointGraph([]configuredProxyInbound{inbound}, listeners, hostFirewallSnapshot{}), map[string]bool{"sing-box": true})
+	if len(got) != 1 || !got[0].Missing || got[0].Judgment != "active_product_but_not_listening" {
+		t.Fatalf("cross-family listener satisfied IPv6 configuration: %+v", got)
+	}
+}
+
+func TestUniqueProxyInboundsPreservesAddressFamily(t *testing.T) {
+	summaries := []proxyConfigSummary{{Path: "fixture", Inbounds: []proxyInbound{
+		{Product: "sing-box", Protocol: "vless", Listen: "0.0.0.0", Port: "443", Transports: []string{"tcp"}},
+		{Product: "sing-box", Protocol: "vless", Listen: "::", Port: "443", Transports: []string{"tcp"}},
+	}}}
+	got := uniqueProxyInbounds(summaries)
+	if len(got) != 2 {
+		t.Fatalf("IPv4 and IPv6 wildcard inbounds were collapsed: %+v", got)
 	}
 }
 

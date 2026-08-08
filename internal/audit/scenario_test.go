@@ -59,7 +59,7 @@ func scenarioContext(cmd Commander) *Context {
 		Options: Options{Locale: "en", Profile: "proxy", LogSince: 24 * time.Hour, Commander: cmd, Now: func() time.Time { return time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC) }},
 		Host:    model.Host{OS: "ubuntu", OSVersion: "24.04", IsRoot: true},
 		Profile: model.Profile{Requested: "proxy", Detected: "proxy", Effective: "proxy"},
-		Facts:   NewFactStore(cmd),
+		Facts:   NewFactStore(cmd, false),
 	}
 }
 
@@ -132,7 +132,7 @@ func TestScenarioPanelAndDockerRiskRelations(t *testing.T) {
 	ctx.Facts.hostFirewallOnce.Do(func() {
 		ctx.Facts.hostFirewall = parsePanelUFW("Status: active\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n2053/tcp ALLOW IN Anywhere\n31001/tcp ALLOW IN Anywhere")
 	})
-	panel := panelSnapshot{Product: "3x-ui", Database: "/etc/x-ui/x-ui.db", DatabaseAvailable: true, Endpoints: []panelEndpoint{{Role: "management", Listen: "::", Port: "2053", Source: "fixture", TLSKnown: true, TLS: true}}, Inbounds: []panelInboundFact{{Enabled: true, Listen: "::", Port: "31001", Protocol: "vless", Network: "tcp", Security: "reality", RealityKeySet: true, RealityTargets: 1, RealityIDs: 1}}}
+	panel := panelSnapshot{Product: "3x-ui", Database: "/etc/x-ui/x-ui.db", DatabaseAvailable: true, Endpoints: []panelEndpoint{{Role: "management", Listen: "*", Port: "2053", Source: "fixture", TLSKnown: true, TLS: true}}, Inbounds: []panelInboundFact{{Enabled: true, Listen: "*", Port: "31001", Protocol: "vless", Network: "tcp", Security: "reality", RealityKeySet: true, RealityTargets: 1, RealityIDs: 1}}}
 	ctx.Facts.panelsOnce.Do(func() { ctx.Facts.panels = []panelSnapshot{panel} })
 	container := dockerInspect{Name: "risky"}
 	container.HostConfig.Privileged = true
@@ -362,10 +362,26 @@ func TestScenarioUnreadableFirewallIsUnknownForBothFirewallFindings(t *testing.T
 	}
 }
 
+func TestFirewallMissingIPv6ConfigurationCannotBecomePass(t *testing.T) {
+	f := evaluateFirewallExposure(firewallAuditSnapshot{
+		Host: hostFirewallSnapshot{
+			available: true, active: true, defaultDeny: true, backend: "ufw",
+			defaultDenyByFamily: map[string]bool{"ipv4": true},
+		},
+		Listeners:        []Listener{{Protocol: "tcp6", Address: "::", Port: "443", Scope: "public-wildcard", Process: "sing-box"}},
+		UFWIPv6ConfigErr: fmt.Errorf("permission denied"),
+	})
+	if f.Status != model.Unknown || !f.Unavailable {
+		t.Fatalf("missing UFW IPv6 evidence became %s unavailable=%t: %+v", f.Status, f.Unavailable, f)
+	}
+	if f.Facts["evidence_discovery_incomplete"] != "true" {
+		t.Fatalf("missing UFW IPv6 evidence was not recorded: %+v", f.Facts)
+	}
+}
+
 func TestScenarioIncompleteFirewallFactsPropagateToWorkloadFindings(t *testing.T) {
 	cmd := newScenarioCommander([]string{"wg"}, map[string]CommandResult{
-		scenarioCommandKey("wg", "show", "interfaces"):               {Stdout: "wg0"},
-		scenarioCommandKey("wg", "show", "wg0", "listen-port"):       {Stdout: "51820"},
+		scenarioCommandKey("wg", "show", "all", "listen-port"):       {Stdout: "wg0\t51820"},
 		scenarioCommandKey("wg", "show", "wg0", "peers"):             {},
 		scenarioCommandKey("wg", "show", "wg0", "latest-handshakes"): {},
 	})
@@ -494,7 +510,7 @@ func TestScenarioPublicPlaintextSubscriptionIsHighRisk(t *testing.T) {
 	})
 	panel := panelSnapshot{
 		Product: "3x-ui", Database: "/etc/x-ui/x-ui.db", DatabaseAvailable: true,
-		Endpoints: []panelEndpoint{{Role: "subscription", Port: "2096", Listen: "::", Source: "fixture", TLSKnown: true, TLS: false}},
+		Endpoints: []panelEndpoint{{Role: "subscription", Port: "2096", Listen: "*", Source: "fixture", TLSKnown: true, TLS: false}},
 	}
 	ctx.Facts.panelsOnce.Do(func() { ctx.Facts.panels = []panelSnapshot{panel} })
 	f := checkPanelRuntimeConsistency(ctx, nil)
@@ -580,8 +596,7 @@ func TestScenarioProxyServiceDiscoveryFailureIsUnknown(t *testing.T) {
 
 func TestScenarioWireGuardPartialRuntimeIsUnknown(t *testing.T) {
 	results := map[string]CommandResult{
-		scenarioCommandKey("wg", "show", "interfaces"):               {Stdout: "wg0"},
-		scenarioCommandKey("wg", "show", "wg0", "listen-port"):       {Stdout: "51820"},
+		scenarioCommandKey("wg", "show", "all", "listen-port"):       {Stdout: "wg0\t51820"},
 		scenarioCommandKey("wg", "show", "wg0", "peers"):             {Stdout: "withheld-public-key", Err: fmt.Errorf("peer inventory interrupted")},
 		scenarioCommandKey("wg", "show", "wg0", "latest-handshakes"): {Stdout: "withheld-public-key 1783900800"},
 	}
@@ -648,6 +663,28 @@ func TestScenarioAutomaticProfileFailureInvalidatesPolicyPass(t *testing.T) {
 	}
 }
 
+func TestScenarioNetworkCollectionFailureKeepsIndependentFindings(t *testing.T) {
+	cmd := newScenarioCommander([]string{"ss"}, map[string]CommandResult{
+		scenarioCommandKey("ss", "-H", "-lntup"):                        {Err: fmt.Errorf("listener denied")},
+		scenarioCommandKey("ss", "-H", "-lntu"):                         {Err: fmt.Errorf("listener denied")},
+		scenarioCommandKey("ss", "-H", "-ntup", "state", "established"): {Stdout: "tcp ESTAB 0 0 10.0.0.2:22 198.51.100.10:40000\n"},
+	})
+	findings := checkNetwork(scenarioContext(cmd))
+	if len(findings) != 4 {
+		t.Fatalf("network category returned %d findings, want 4", len(findings))
+	}
+	requireStatus(t, findings, "NET-001", model.Unknown)
+	requireStatus(t, findings, "NET-002", model.Unknown)
+	requireStatus(t, findings, "NET-003", model.Info)
+	requireStatus(t, findings, "NET-004", model.Info)
+	if got := findingByID(t, findings, "NET-003").Facts["total"]; got != "1" {
+		t.Fatalf("independent connection evidence was lost: total=%q", got)
+	}
+	if cmd.calls[scenarioCommandKey("ss", "-H", "-ntup", "state", "established")] != 1 {
+		t.Fatalf("established connection inventory was not collected exactly once: calls=%v", cmd.calls)
+	}
+}
+
 func TestScenarioPanelCapabilityFailuresDoNotBecomePass(t *testing.T) {
 	ctx := scenarioContext(newScenarioCommander(nil, nil))
 	ctx.Facts.listenersOnce.Do(func() {
@@ -688,6 +725,17 @@ func TestScenarioUnavailableReliabilityEvidenceNeverPasses(t *testing.T) {
 	f := findingByID(t, checkReliability(ctx), "REL-001")
 	if f.Status != model.Unknown || !f.Unavailable || f.Facts["evidence_discovery_incomplete"] != "true" {
 		t.Fatalf("finding=%+v", f)
+	}
+}
+
+func TestScenarioMissingReliabilityCommandsNeverPasses(t *testing.T) {
+	ctx := scenarioContext(newScenarioCommander(nil, nil))
+	f := findingByID(t, checkReliability(ctx), "REL-001")
+	if f.Status != model.Unknown || !f.Unavailable || f.Facts["evidence_discovery_incomplete"] != "true" {
+		t.Fatalf("finding=%+v", f)
+	}
+	if !strings.Contains(f.Error, "journalctl") || !strings.Contains(f.Error, "coredumpctl") {
+		t.Fatalf("missing-command evidence not retained: %q", f.Error)
 	}
 }
 

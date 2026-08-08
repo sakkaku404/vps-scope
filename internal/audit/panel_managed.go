@@ -1,23 +1,16 @@
 package audit
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 )
 
-func directoryExists(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.IsDir()
-}
-
-func collectMarzbanFacts(_ Commander) panelSnapshot {
+func collectMarzbanFactsFromFiles(files *fileEvidenceSnapshot) panelSnapshot {
 	s := panelSnapshot{Product: "Marzban", Binary: "container or Python service", Database: "/opt/marzban/.env", SchemaVersion: "marzban-config-v1", SchemaSupported: true, SchemaCapabilities: []string{"management-endpoint", "generated-xray", "container-context"}, SensitiveFiles: []string{"/opt/marzban/.env"}}
-	values, err := readEnvWhitelist("/opt/marzban/.env", map[string]bool{
+	values, err := readEnvWhitelistFromFiles(files, "/opt/marzban/.env", map[string]bool{
 		"UVICORN_HOST": true, "UVICORN_PORT": true, "UVICORN_UDS": true,
 		"UVICORN_SSL_CERTFILE": true, "UVICORN_SSL_KEYFILE": true,
 		"XRAY_JSON": true, "XRAY_EXECUTABLE_PATH": true, "XRAY_SUBSCRIPTION_URL_PREFIX": true,
@@ -45,22 +38,22 @@ func collectMarzbanFacts(_ Commander) panelSnapshot {
 	} else if !filepath.IsAbs(xrayPath) {
 		xrayPath = filepath.Join("/var/lib/marzban", xrayPath)
 	}
-	applyManagedProxyConfig(&s, xrayPath, "Xray")
+	applyManagedProxyConfigFromFiles(files, &s, xrayPath, "Xray")
 	sortPanelFacts(&s)
 	return s
 }
 
-func collectHiddifyFacts(_ Commander) panelSnapshot {
+func collectHiddifyFactsFromFiles(files *fileEvidenceSnapshot) panelSnapshot {
 	s := panelSnapshot{Product: "Hiddify", Binary: "/opt/hiddify-manager", Database: "/opt/hiddify-manager", SchemaVersion: "hiddify-config-v1", SchemaSupported: true, SchemaCapabilities: []string{"management-endpoint", "generated-xray", "generated-sing-box", "reverse-proxy-context"}, DatabaseAvailable: true}
-	if data, err := readSmall("/opt/hiddify-manager/VERSION", 1024); err == nil {
+	if data, err := files.ReadSmall("/opt/hiddify-manager/VERSION", 1024); err == nil {
 		s.Version = strings.TrimSpace(data)
 	}
-	if values, err := readKeyValueWhitelist("/opt/hiddify-manager/hiddify-panel/app.cfg", map[string]bool{"RUN_PORT": true}); err == nil {
+	if values, err := readKeyValueWhitelistFromFiles(files, "/opt/hiddify-manager/hiddify-panel/app.cfg", map[string]bool{"RUN_PORT": true}); err == nil {
 		if port := values["RUN_PORT"]; validPort(port) {
 			s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "management", Listen: "127.0.0.1", Port: port, TLSKnown: true, TLS: false, Source: "/opt/hiddify-manager/hiddify-panel/app.cfg", PathKnown: false})
 		}
 	}
-	paths, discoveryErr := discoverExistingFiles(64,
+	paths, discoveryErr := discoverExistingFilesFromSnapshot(files, 64,
 		"/opt/hiddify-manager/*xray*.json", "/opt/hiddify-manager/*sing-box*.json",
 		"/opt/hiddify-manager/*/*xray*.json", "/opt/hiddify-manager/*/*sing-box*.json",
 		"/opt/hiddify-manager/*/*/xray*.json", "/opt/hiddify-manager/*/*/sing-box*.json",
@@ -74,7 +67,7 @@ func collectHiddifyFacts(_ Commander) panelSnapshot {
 		if strings.Contains(strings.ToLower(filepath.ToSlash(path)), "/singbox/") || strings.Contains(strings.ToLower(filepath.Base(path)), "sing") {
 			product = "sing-box"
 		}
-		applyManagedProxyConfig(&s, path, product)
+		applyManagedProxyConfigFromFiles(files, &s, path, product)
 	}
 	for _, path := range paths {
 		// Generated routing, DNS, logging, and outbound fragments generally do
@@ -92,33 +85,33 @@ func collectHiddifyFacts(_ Commander) panelSnapshot {
 	return s
 }
 
-func collectContainerPanelSnapshots(containers []dockerInspect) []panelSnapshot {
+func collectContainerPanelSnapshotsFromFiles(containers []dockerInspect, files *fileEvidenceSnapshot) []panelSnapshot {
 	var out []panelSnapshot
 	for _, container := range containers {
 		image := strings.ToLower(container.Config.Image)
 		if strings.Contains(image, "quay.io/outline/shadowbox") {
-			out = append(out, collectOutlineFacts(container))
+			out = append(out, collectOutlineFactsFromFiles(container, files))
 		}
 	}
 	return out
 }
 
-func collectOutlineFacts(container dockerInspect) panelSnapshot {
+func collectOutlineFactsFromFiles(container dockerInspect, files *fileEvidenceSnapshot) panelSnapshot {
 	name := strings.TrimPrefix(container.Name, "/")
 	s := panelSnapshot{Product: "Outline", Binary: name, Adapter: "outline/container-v1", SchemaVersion: "outline-shadowbox-v1", SchemaSupported: true, SchemaCapabilities: []string{"management-endpoint", "shadowsocks-ingress", "container-context"}}
 	values := outlineEnvValues(container.Config.Env)
 	apiPort := values["SB_API_PORT"]
 	if validPort(apiPort) {
-		s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "management", Listen: "::", Port: apiPort, TLSKnown: true, TLS: true, Source: "docker inspect allowlisted Outline environment", PathKnown: true, PathIsDefault: false})
+		s.Endpoints = append(s.Endpoints, panelEndpoint{Role: "management", Listen: "*", Port: apiPort, TLSKnown: true, TLS: true, Source: "docker inspect allowlisted Outline environment", PathKnown: true, PathIsDefault: false})
 	}
 	stateDir := filepath.Clean(values["SB_STATE_DIR"])
 	if filepath.IsAbs(stateDir) && (strings.HasPrefix(stateDir, "/opt/") || strings.HasPrefix(stateDir, "/var/lib/")) {
 		s.Database = filepath.Join(stateDir, "shadowbox_server_config.json")
 		s.SensitiveFiles = append(s.SensitiveFiles, s.Database)
-		if data, err := readSmall(s.Database, 1<<20); err == nil {
+		if data, err := files.ReadSmall(s.Database, 1<<20); err == nil {
 			if port, ok := parseOutlineState([]byte(data)); ok {
 				s.DatabaseAvailable = true
-				s.Inbounds = append(s.Inbounds, panelInboundFact{Enabled: true, Listen: "::", Port: port, Protocol: "shadowsocks", Network: "tcp,udp"})
+				s.Inbounds = append(s.Inbounds, panelInboundFact{Enabled: true, Listen: "*", Port: port, Protocol: "shadowsocks", Network: "tcp,udp"})
 			} else {
 				s.DatabaseError = "Outline state did not contain a valid access-key port"
 			}
@@ -151,7 +144,7 @@ func parseOutlineState(data []byte) (string, bool) {
 	var config struct {
 		PortForNewAccessKeys int `json:"portForNewAccessKeys"`
 	}
-	if json.Unmarshal(data, &config) != nil {
+	if unmarshalProxyJSON(data, &config) != nil {
 		return "", false
 	}
 	port := strconv.Itoa(config.PortForNewAccessKeys)
@@ -159,7 +152,11 @@ func parseOutlineState(data []byte) (string, bool) {
 }
 
 func applyManagedProxyConfig(snapshot *panelSnapshot, path, product string) {
-	data, err := readSmall(path, 16<<20)
+	applyManagedProxyConfigFromFiles(newFileEvidenceSnapshot(osFileEvidenceSource{}), snapshot, path, product)
+}
+
+func applyManagedProxyConfigFromFiles(files *fileEvidenceSnapshot, snapshot *panelSnapshot, path, product string) {
+	data, err := files.ReadSmall(path, 16<<20)
 	if err != nil {
 		if snapshot.DatabaseError == "" {
 			snapshot.DatabaseError = fmt.Sprintf("%s: %v", path, err)
@@ -191,7 +188,11 @@ func applyManagedProxyConfig(snapshot *panelSnapshot, path, product string) {
 }
 
 func readEnvWhitelist(path string, allowed map[string]bool) (map[string]string, error) {
-	data, err := readSmall(path, 1<<20)
+	return readEnvWhitelistFromFiles(newFileEvidenceSnapshot(osFileEvidenceSource{}), path, allowed)
+}
+
+func readEnvWhitelistFromFiles(files *fileEvidenceSnapshot, path string, allowed map[string]bool) (map[string]string, error) {
+	data, err := files.ReadSmall(path, 1<<20)
 	if err != nil {
 		return nil, err
 	}
@@ -216,7 +217,11 @@ func readEnvWhitelist(path string, allowed map[string]bool) (map[string]string, 
 }
 
 func readKeyValueWhitelist(path string, allowed map[string]bool) (map[string]string, error) {
-	data, err := readSmall(path, 1<<20)
+	return readKeyValueWhitelistFromFiles(newFileEvidenceSnapshot(osFileEvidenceSource{}), path, allowed)
+}
+
+func readKeyValueWhitelistFromFiles(files *fileEvidenceSnapshot, path string, allowed map[string]bool) (map[string]string, error) {
+	data, err := files.ReadSmall(path, 1<<20)
 	if err != nil {
 		return nil, err
 	}
@@ -237,9 +242,27 @@ func readKeyValueWhitelist(path string, allowed map[string]bool) (map[string]str
 
 func sortPanelFacts(snapshot *panelSnapshot) {
 	sort.Slice(snapshot.Endpoints, func(i, j int) bool {
-		return snapshot.Endpoints[i].Role+snapshot.Endpoints[i].Port < snapshot.Endpoints[j].Role+snapshot.Endpoints[j].Port
+		left, right := snapshot.Endpoints[i], snapshot.Endpoints[j]
+		if left.Role != right.Role {
+			return left.Role < right.Role
+		}
+		leftPort, _ := strconv.Atoi(left.Port)
+		rightPort, _ := strconv.Atoi(right.Port)
+		if leftPort != rightPort {
+			return leftPort < rightPort
+		}
+		return left.Listen < right.Listen
 	})
 	sort.Slice(snapshot.Inbounds, func(i, j int) bool {
-		return snapshot.Inbounds[i].Port+snapshot.Inbounds[i].Protocol < snapshot.Inbounds[j].Port+snapshot.Inbounds[j].Protocol
+		left, right := snapshot.Inbounds[i], snapshot.Inbounds[j]
+		leftPort, _ := strconv.Atoi(left.Port)
+		rightPort, _ := strconv.Atoi(right.Port)
+		if leftPort != rightPort {
+			return leftPort < rightPort
+		}
+		if left.Protocol != right.Protocol {
+			return left.Protocol < right.Protocol
+		}
+		return left.Listen < right.Listen
 	})
 }

@@ -49,3 +49,14 @@ func TestBaselineV1AndV2Compatibility(t *testing.T) {
 		}
 	}
 }
+
+func TestBaselineRejectsDuplicateMembers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "duplicate.json")
+	body := `{"schema_version":"vps-scope-baseline/v2","schema_version":"vps-scope-baseline/v2","host":"fixture","stable_id":"machine-1","created_at":"2026-01-01T00:00:00Z","items":[]}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readBaseline(path); err == nil || !strings.Contains(err.Error(), "duplicate JSON object member") {
+		t.Fatalf("err=%v", err)
+	}
+}
