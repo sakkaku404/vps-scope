@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -45,7 +46,11 @@ func (e environment) writeReport(format, output string, r model.Report, opts rep
 				return fmt.Errorf("update latest report link: %w", err)
 			}
 		}
-		e.printBundleHelp(output, opts.Locale, len(manifest.Files))
+		convenientDir := output
+		if useDefault {
+			convenientDir = filepath.Join(filepath.Dir(filepath.Dir(output)), "latest")
+		}
+		e.printBundleHelp(output, convenientDir, opts.Locale, len(manifest.Files))
 		return nil
 	}
 	var write func(io.Writer) error
@@ -161,7 +166,7 @@ func updateLatest(root, bundle string) error {
 	return os.Rename(tmp, latest)
 }
 
-func (e environment) printBundleHelp(dir, locale string, reportFiles int) {
+func (e environment) printBundleHelp(dir, convenientDir, locale string, reportFiles int) {
 	ext := map[string]string{
 		"html":     choose(locale, "用浏览器查看", "Open in a browser"),
 		"text":     choose(locale, "在终端查看", "Read in a terminal"),
@@ -171,21 +176,33 @@ func (e environment) printBundleHelp(dir, locale string, reportFiles int) {
 	}
 	localeName := locale
 	fileSummary := fmt.Sprintf(choose(locale, "本次只执行了 1 次审计，生成 %d 种报告格式和 1 份校验清单，共 %d 个文件。", "One audit produced %d report formats and one integrity manifest: %d files total."), reportFiles, reportFiles+1)
-	fmt.Fprintf(e.out, "\n%s\n%s\n\n%s:\n  %s\n\n", choose(locale, "完整报告已经保存", "Full report saved"), fileSummary, choose(locale, "报告目录", "Report directory"), dir)
-	fmt.Fprintf(e.out, "  [1] %s   %s\n", filepath.Join(dir, "report."+localeName+".html"), choose(locale, "推荐：下载后用浏览器打开", "Recommended: download and open in a browser"))
-	fmt.Fprintf(e.out, "  [2] %s    %s\n", filepath.Join(dir, "report."+localeName+".txt"), ext["text"])
-	fmt.Fprintf(e.out, "  [3] %s     %s\n", filepath.Join(dir, "report."+localeName+".md"), ext["markdown"])
-	fmt.Fprintf(e.out, "  [4] %s         %s\n", filepath.Join(dir, "report.json"), ext["json"])
-	fmt.Fprintf(e.out, "  [5] %s       %s\n", filepath.Join(dir, "manifest.json"), ext["manifest"])
-	fmt.Fprintf(e.out, "\n%s:\n  sudo vps-scope report show\n", choose(locale, "再次在终端查看最近报告", "Show the latest report in the terminal"))
-	htmlPath := filepath.Join(dir, "report."+localeName+".html")
+	htmlName := "report." + localeName + ".html"
+	htmlPath := filepath.Join(convenientDir, htmlName)
+	fmt.Fprintf(e.out, "\n%s\n%s\n", choose(locale, "完整报告已经保存", "Full report saved"), fileSummary)
+	fmt.Fprintf(e.out, "\n%s:\n  %s\n", choose(locale, "推荐查看", "Recommended report"), htmlPath)
 	if runtime.GOOS == "windows" {
 		fmt.Fprintf(e.out, "\n%s:\n  %s\n", choose(locale, "HTML 已保存在这台电脑，可点击下面的本地链接或双击文件查看", "The HTML report is on this computer; open the local link or double-click the file"), localFileURL(htmlPath))
 	} else {
-		fmt.Fprintf(e.out, "\n%s\n", choose(locale, "HTML 保存在远程 VPS 上，SSH 终端不能直接把它当网页打开；请在自己的电脑执行下面的命令，下载后双击查看：", "The HTML file is on the remote VPS and cannot open as a web page inside an SSH terminal. Run this on your own computer, then open the downloaded file:"))
-		fmt.Fprintf(e.out, "\n%s:\n  %s\n", choose(locale, "下载 HTML 到电脑（请在你自己的电脑上运行）", "Download HTML (run this on your own computer)"), downloadCommand(htmlPath))
+		e.printRemoteDownloadHelp(convenientDir, htmlName, locale)
 	}
-	fmt.Fprintf(e.out, "\n%s:\n  sudo vps-scope verify %s\n", choose(locale, "需要时校验完整性", "Verify integrity when needed"), shellQuote(dir))
+	fmt.Fprintf(e.out, "\n%s:\n  %s\n\n%s:\n", choose(locale, "报告历史目录", "Saved history directory"), dir, choose(locale, "本次报告包含", "Files in this bundle"))
+	fmt.Fprintf(e.out, "  [1] %s   %s\n", htmlName, choose(locale, "推荐：下载后用浏览器打开", "Recommended: download and open in a browser"))
+	fmt.Fprintf(e.out, "  [2] %s    %s\n", "report."+localeName+".txt", ext["text"])
+	fmt.Fprintf(e.out, "  [3] %s     %s\n", "report."+localeName+".md", ext["markdown"])
+	fmt.Fprintf(e.out, "  [4] %s         %s\n", "report.json", ext["json"])
+	fmt.Fprintf(e.out, "  [5] %s       %s\n", "manifest.json", ext["manifest"])
+	fmt.Fprintf(e.out, "\n%s\n", choose(locale, "以下命令仅适用于已经安装 VPS Scope 的服务器；一行临时运行不会保留程序本身。", "The following commands require an installed copy of VPS Scope; the one-line temporary runner does not keep the program."))
+	fmt.Fprintf(e.out, "\n%s:\n  sudo vps-scope report show\n", choose(locale, "再次在终端查看最近报告", "Show the latest report in the terminal"))
+	fmt.Fprintf(e.out, "\n%s:\n  sudo vps-scope verify %s\n", choose(locale, "需要时校验完整性", "Verify integrity when needed"), shellQuote(convenientDir))
+}
+
+func (e environment) printRemoteDownloadHelp(dir, htmlName, locale string) {
+	htmlPath := path.Join(filepath.ToSlash(dir), htmlName)
+	fmt.Fprintf(e.out, "\n%s:\n", choose(locale, "下载到自己的电脑", "Download to your computer"))
+	fmt.Fprintf(e.out, "  %s:\n    %s\n", choose(locale, "最简单：在 SSH 软件中打开 SFTP，进入下面的目录并下载 HTML 文件", "Easiest: open SFTP in your SSH client, enter this directory, and download the HTML file"), dir)
+	fmt.Fprintf(e.out, "    %s\n", htmlName)
+	fmt.Fprintf(e.out, "\n  %s:\n    scp <SSH_HOST>:%s .\n", choose(locale, "也可以在自己的电脑运行命令", "Or run this command on your own computer"), shellQuote(htmlPath))
+	fmt.Fprintf(e.out, "  %s\n", choose(locale, "<SSH_HOST> 是你平时使用的 IP、域名或 SSH 别名；端口、私钥或 ssh-agent 设置也要与平时登录时相同。", "<SSH_HOST> is the IP address, domain, or SSH alias you normally use; reuse the same port, identity file, or ssh-agent settings as your SSH login."))
 }
 
 func localFileURL(path string) string {
@@ -194,26 +211,6 @@ func localFileURL(path string) string {
 		path = "/" + path
 	}
 	return (&url.URL{Scheme: "file", Path: path}).String()
-}
-
-func downloadCommand(path string) string {
-	parts := strings.Fields(os.Getenv("SSH_CONNECTION"))
-	if len(parts) >= 4 {
-		host, port := parts[2], parts[3]
-		if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
-			host = "[" + host + "]"
-		}
-		user := strings.TrimSpace(os.Getenv("USER"))
-		if user == "" {
-			user = "root"
-		}
-		portArg := ""
-		if port != "22" {
-			portArg = "-P " + port + " "
-		}
-		return fmt.Sprintf("scp %s%s@%s:%s .", portArg, user, host, shellQuote(path))
-	}
-	return fmt.Sprintf("scp <SSH_HOST>:%s .", shellQuote(path))
 }
 
 func shellQuote(value string) string {

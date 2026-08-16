@@ -10,6 +10,42 @@ not presented as such.
 
 ## Unreleased
 
+### Fixed
+
+- The temporary runner restores the caller's working directory before starting
+  the binary, so relative policy and output paths no longer point into a
+  temporary directory that is deleted on exit. Explicit commands no longer
+  depend on `/dev/tty`, while no-argument interactive mode opens the controlling
+  terminal only after proving it is available.
+- Leading flags passed through `bash -s --` are treated as `audit` flags. The
+  interactive wizard rejects invalid numbered choices and requires at least one
+  valid listener for the custom profile.
+- Audit output formats and explicit destinations are validated before evidence
+  collection. The audit help now lists the custom profile, and support bundles
+  report all four files including `manifest.json`.
+- Saved report guidance now leads with the stable `latest` HTML path and an
+  SFTP workflow. The `scp` fallback is an explicit `<SSH_HOST>` template rather
+  than a guessed `root@IP` command that may ignore the user's SSH alias, port,
+  identity file, or agent; timestamped history and the five-file inventory are
+  retained as secondary detail. The terminal now makes clear that `report show`
+  and `verify` require an installed copy; the one-line runner keeps report files
+  but removes its temporary executable.
+- The four README languages now share the same user-facing contract: a real
+  proxy-host example, support levels, profile behavior, report download flow,
+  result semantics, and execution boundary. Russian and Persian terminology
+  was rewritten to remove literal mistranslations, and tests now guard required
+  sections, commands, local links, code fences, and known-bad terminology.
+- `doctor`, `fleet`, semantic diff labels, support-bundle output, and report
+  verification now retain localized user-facing text in Russian and Persian;
+  stable machine tokens such as PASS, RISK, INFO, UNKNOWN and schema names stay
+  unchanged. `explain` accepts `--lang` either before or after the check ID.
+- Dated audit documents are explicitly marked as historical snapshots so old
+  check counts, runner prompts, and laboratory claims are not mistaken for the
+  current release contract.
+- Release builds now require Go 1.25.13 or newer in the 1.25 maintenance line,
+  closing the standard-library vulnerabilities that affected HTML rendering,
+  TLS post-handshake processing, and certificate ASN.1 parsing.
+
 ## 1.1.0 - 2026-08-08
 
 This is one consolidated architecture, correctness, report, and release-chain

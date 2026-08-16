@@ -6,7 +6,8 @@ go mod verify
 go vet ./...
 go test -count=1 ./...
 bash "$(dirname "$0")/check-coverage.sh"
-bash -n install.sh run.sh scripts/check-coverage.sh scripts/regression.sh scripts/lab/scenario.sh scripts/lab/run-docker-inventory-stress.sh
+bash -n install.sh run.sh scripts/check-coverage.sh scripts/regression.sh scripts/test-runner.sh scripts/lab/scenario.sh scripts/lab/run-docker-inventory-stress.sh
+bash scripts/test-runner.sh
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT

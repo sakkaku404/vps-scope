@@ -103,9 +103,10 @@ else
   if [[ "$ALLOW_UNSIGNED" != "1" ]]; then
     echo "Publisher signature was not verified because cosign is not installed." >&2
     echo "SHA-256 from the same Release detects corruption but does not authenticate the publisher." >&2
-    if [[ -r /dev/tty && -w /dev/tty ]]; then
-      printf 'Type continue to accept checksum-only installation, or press Enter to stop: ' >/dev/tty
-      IFS= read -r approval </dev/tty || true
+    if { exec 3<>/dev/tty; } 2>/dev/null; then
+      printf 'Type continue to accept checksum-only installation, or press Enter to stop: ' >&3
+      IFS= read -r approval <&3 || true
+      exec 3>&-
       if [[ "$approval" != "continue" ]]; then
         echo "Installation stopped without publisher verification." >&2
         exit 1

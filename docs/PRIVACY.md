@@ -2,7 +2,7 @@
 
 ## 中文
 
-VPS Scope 完全在本机运行，不上传报告，也不连接遥测服务。只有在用户选择输出格式或接受交互模式的默认选项时，工具才会写入报告。
+VPS Scope 完全在本机运行，不上传报告，也不连接遥测服务。交互模式默认只在终端显示结果；只有用户选择保存输出，或显式指定输出文件或报告包时，工具才会写入报告。
 
 以下内容不会作为证据收集：
 
@@ -24,7 +24,7 @@ SSH 授权只保留账户、算法、位数和 SHA-256 指纹。代理配置只�
 
 ## English
 
-VPS Scope runs locally and does not upload reports or contact a telemetry service. Audit reports are written only when the user selects an output format or accepts the interactive default.
+VPS Scope runs locally and does not upload reports or contact a telemetry service. Interactive mode shows terminal output by default; report files are written only when the user chooses a saved output or explicitly names an output file or bundle.
 
 ## Never collected as evidence
 

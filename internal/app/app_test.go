@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"io"
@@ -60,6 +61,21 @@ func TestAuditHelpDocumentsNativeSelfTestOptIn(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "native-self-test") {
 		t.Fatalf("audit help does not document the native self-test opt-in: %q", out.String())
+	}
+}
+
+func TestExplainAcceptsLanguageBeforeOrAfterCheckID(t *testing.T) {
+	for _, args := range [][]string{
+		{"explain", "--lang", "ru-RU", "SSH-001"},
+		{"explain", "SSH-001", "--lang", "ru-RU"},
+	} {
+		var out bytes.Buffer
+		if err := Run(args, bytes.NewReader(nil), &out, &out, BuildInfo{Version: "test"}); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		if !strings.Contains(out.String(), "SSH-001") {
+			t.Fatalf("%v did not explain the requested check: %q", args, out.String())
+		}
 	}
 }
 
@@ -126,30 +142,111 @@ func TestInteractiveProfilePromptUsesConfiguredWriter(t *testing.T) {
 	}
 }
 
-func TestDownloadCommandFromSSHConnection(t *testing.T) {
-	t.Setenv("SSH_CONNECTION", "192.0.2.10 50000 203.0.113.20 2222")
-	t.Setenv("USER", "root")
-	got := downloadCommand("/root/vps-scope-reports/latest/report.zh-CN.html")
-	want := "scp -P 2222 root@203.0.113.20:'/root/vps-scope-reports/latest/report.zh-CN.html' ."
-	if got != want {
-		t.Fatalf("got %q, want %q", got, want)
+func TestInteractiveEOFDoesNotSilentlyChooseDefaults(t *testing.T) {
+	var out bytes.Buffer
+	err := Run(nil, strings.NewReader(""), &out, &out, BuildInfo{Version: "test"})
+	if err == nil || !strings.Contains(err.Error(), "interactive input is unavailable") {
+		t.Fatalf("Run() error=%v, want explicit interactive-input error", err)
+	}
+	if strings.Contains(out.String(), "[01/16]") {
+		t.Fatalf("audit started after interactive EOF: %q", out.String())
+	}
+}
+
+func TestInteractiveOutputDefaultsToTerminalOnly(t *testing.T) {
+	for _, tc := range []struct {
+		choice       string
+		format       string
+		alsoTerminal bool
+	}{
+		{choice: "", format: "terminal"},
+		{choice: "1", format: "terminal"},
+		{choice: "2", format: "bundle", alsoTerminal: true},
+		{choice: "3", format: "bundle"},
+	} {
+		format, alsoTerminal := selectInteractiveOutput(tc.choice)
+		if format != tc.format || alsoTerminal != tc.alsoTerminal {
+			t.Errorf("selectInteractiveOutput(%q)=(%q,%t), want (%q,%t)", tc.choice, format, alsoTerminal, tc.format, tc.alsoTerminal)
+		}
+	}
+}
+
+func TestInteractiveChoiceRejectsInvalidValuesInsteadOfSilentlyDefaulting(t *testing.T) {
+	var out bytes.Buffer
+	choice, err := readInteractiveChoice(bufio.NewReader(strings.NewReader("9\n2\n")), &out, "Select [1]: ", "1", 1, 4, "en")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if choice != "2" {
+		t.Fatalf("choice=%q, want 2", choice)
+	}
+	if !strings.Contains(out.String(), "Enter a number from 1 to 4.") {
+		t.Fatalf("invalid choice was not explained: %q", out.String())
+	}
+}
+
+func TestInteractiveCustomProfileRequiresAValidListener(t *testing.T) {
+	var out bytes.Buffer
+	err := Run(nil, strings.NewReader("1\n7\n\ninvalid\n22/tcp\n1\n"), &out, &out, BuildInfo{Version: "test"})
+	if runtime.GOOS != "linux" && (err == nil || !strings.Contains(err.Error(), "supported only")) {
+		t.Fatalf("Run() error=%v, want platform error after completing prompts", err)
+	}
+	if count := strings.Count(out.String(), "请输入至少一个有效端口"); count != 2 {
+		t.Fatalf("invalid custom listeners were not retried twice (count=%d): %q", count, out.String())
+	}
+}
+
+func TestAuditRejectsInvalidOutputBeforeCollection(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "format", args: []string{"audit", "--format", "unknown"}, want: `unsupported format "unknown"`},
+		{name: "empty custom", args: []string{"audit", "--profile", "custom"}, want: "--profile custom requires"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			err := Run(tc.args, bytes.NewReader(nil), &out, &out, BuildInfo{Version: "test"})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Run(%v) error=%v, want %q", tc.args, err, tc.want)
+			}
+			if strings.Contains(out.String(), "[01/16]") {
+				t.Fatalf("collection started before validation: %q", out.String())
+			}
+		})
+	}
+}
+
+func TestAuditRejectsExistingOutputBeforeCollection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "existing.json")
+	if err := os.WriteFile(path, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	err := Run([]string{"audit", "--format", "json", "--output", path}, bytes.NewReader(nil), &out, &out, BuildInfo{Version: "test"})
+	if err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
+		t.Fatalf("Run() error=%v, want early overwrite refusal", err)
+	}
+	if strings.Contains(out.String(), "[01/16]") {
+		t.Fatalf("collection started before output preflight: %q", out.String())
 	}
 }
 
 func TestBundleHelpExplainsOneAuditAndFiveFiles(t *testing.T) {
-	// The output contract under test is the non-SSH fallback. CI and real-VPS
-	// runners may themselves execute over SSH, so seal that ambient input.
-	t.Setenv("SSH_CONNECTION", "")
 	var out bytes.Buffer
 	e := environment{out: &out}
-	dir := filepath.Join(string(filepath.Separator), "root", "vps-scope-reports", "latest")
-	e.printBundleHelp(dir, "zh-CN", 4)
+	dir := filepath.Join(string(filepath.Separator), "root", "vps-scope-reports", "host", "timestamp")
+	latest := filepath.Join(string(filepath.Separator), "root", "vps-scope-reports", "latest")
+	e.printBundleHelp(dir, latest, "zh-CN", 4)
 	text := out.String()
 	for _, expected := range []string{
 		"本次只执行了 1 次审计",
 		"4 种报告格式和 1 份校验清单，共 5 个文件",
-		"[1] " + filepath.Join(dir, "report.zh-CN.html"),
-		"[5] " + filepath.Join(dir, "manifest.json"),
+		"推荐查看:\n  " + filepath.Join(latest, "report.zh-CN.html"),
+		"报告历史目录:\n  " + dir,
+		"[1] report.zh-CN.html",
+		"[5] manifest.json",
 	} {
 		if !strings.Contains(text, expected) {
 			t.Errorf("bundle help missing %q:\n%s", expected, text)
@@ -160,11 +257,33 @@ func TestBundleHelpExplainsOneAuditAndFiveFiles(t *testing.T) {
 			t.Fatalf("Windows bundle help is missing a local HTML link:\n%s", text)
 		}
 	} else {
-		for _, expected := range []string{"SSH 终端不能直接把它当网页打开", "scp <SSH_HOST>:" + shellQuote(filepath.Join(dir, "report.zh-CN.html")) + " ."} {
+		for _, expected := range []string{"在 SSH 软件中打开 SFTP", "scp <SSH_HOST>:" + shellQuote(filepath.Join(latest, "report.zh-CN.html")) + " .", "IP、域名或 SSH 别名"} {
 			if !strings.Contains(text, expected) {
 				t.Errorf("Linux bundle help missing %q:\n%s", expected, text)
 			}
 		}
+	}
+}
+
+func TestRemoteDownloadHelpDoesNotGuessClientCredentials(t *testing.T) {
+	t.Setenv("SSH_CONNECTION", "192.0.2.10 50000 203.0.113.20 2222")
+	var out bytes.Buffer
+	e := environment{out: &out}
+	dir := "/root/vps-scope-reports/latest"
+	e.printRemoteDownloadHelp(dir, "report.zh-CN.html", "zh-CN")
+	text := out.String()
+	for _, expected := range []string{
+		"在 SSH 软件中打开 SFTP",
+		dir,
+		"scp <SSH_HOST>:'" + dir + "/report.zh-CN.html' .",
+		"IP、域名或 SSH 别名",
+	} {
+		if !strings.Contains(text, expected) {
+			t.Errorf("remote download help missing %q:\n%s", expected, text)
+		}
+	}
+	if strings.Contains(text, "root@203.0.113.20") {
+		t.Fatalf("remote download help guessed unusable client credentials:\n%s", text)
 	}
 }
 
@@ -344,6 +463,40 @@ func TestVerifyAcceptsReportAndCompleteBundle(t *testing.T) {
 		if !strings.Contains(out.String(), "PASS report structure and semantic contract are valid") {
 			t.Fatalf("input=%s output=%s", input, out.String())
 		}
+	}
+}
+
+func TestBundleHelpClarifiesInstalledCommandRequirement(t *testing.T) {
+	var out bytes.Buffer
+	environment{out: &out}.printBundleHelp("/tmp/history", "/tmp/latest", "en", 4)
+	if !strings.Contains(out.String(), "require an installed copy of VPS Scope") {
+		t.Fatalf("bundle help can mislead temporary-runner users: %q", out.String())
+	}
+}
+
+func TestAuxiliaryCommandLabelsAreLocalized(t *testing.T) {
+	for _, test := range []struct {
+		locale, kind, want string
+	}{
+		{"zh-CN", "REGRESSION", "退化"},
+		{"ru-RU", "CHANGED", "ИЗМЕНЕНО"},
+		{"fa-IR", "IMPROVEMENT", "بهبود"},
+	} {
+		if got := diffKindLabel(test.kind, test.locale); got != test.want {
+			t.Errorf("diffKindLabel(%q, %q)=%q want %q", test.kind, test.locale, got, test.want)
+		}
+	}
+
+	r := appContractReport()
+	r.Locale = "fa-IR"
+	path := filepath.Join(t.TempDir(), "report.json")
+	writeJSONReport(t, path, r)
+	var out bytes.Buffer
+	if err := Run([]string{"verify", path}, bytes.NewReader(nil), &out, &out, BuildInfo{Version: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "ساختار گزارش") {
+		t.Fatalf("Persian verify output was not localized: %q", out.String())
 	}
 }
 

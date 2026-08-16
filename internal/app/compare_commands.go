@@ -50,7 +50,7 @@ func (e environment) diff(args []string) error {
 	oldMap, newMap := findingMap(oldReport), findingMap(newReport)
 	semantic, covered := semanticDiff(oldReport, newReport)
 	for _, change := range semantic {
-		fmt.Fprintf(e.out, "%-11s %-12s %s\n", change.Kind, change.ID, change.message(locale))
+		fmt.Fprintf(e.out, "%-11s %-12s %s\n", diffKindLabel(change.Kind, locale), change.ID, change.message(locale))
 	}
 	var ids []string
 	seen := map[string]bool{}
@@ -72,14 +72,40 @@ func (e environment) diff(args []string) error {
 		n, okNew := newMap[id]
 		switch {
 		case !okOld:
-			fmt.Fprintf(e.out, "NEW      %-12s %-8s %s\n", id, n.Status, i18n.Pick(i18n.RuleForLocale(id, locale).Title, locale))
+			fmt.Fprintf(e.out, "%-8s %-12s %-8s %s\n", diffKindLabel("NEW", locale), id, n.Status, i18n.Pick(i18n.RuleForLocale(id, locale).Title, locale))
 		case !okNew:
-			fmt.Fprintf(e.out, "REMOVED  %-12s %-8s %s\n", id, o.Status, i18n.Pick(i18n.RuleForLocale(id, locale).Title, locale))
+			fmt.Fprintf(e.out, "%-8s %-12s %-8s %s\n", diffKindLabel("REMOVED", locale), id, o.Status, i18n.Pick(i18n.RuleForLocale(id, locale).Title, locale))
 		case o.Status != n.Status || (*all && evidenceFingerprint(o) != evidenceFingerprint(n)):
-			fmt.Fprintf(e.out, "CHANGED  %-12s %s -> %s  %s\n", id, o.Status, n.Status, i18n.Pick(i18n.RuleForLocale(id, locale).Title, locale))
+			fmt.Fprintf(e.out, "%-8s %-12s %s -> %s  %s\n", diffKindLabel("CHANGED", locale), id, o.Status, n.Status, i18n.Pick(i18n.RuleForLocale(id, locale).Title, locale))
 		}
 	}
 	return nil
+}
+
+func diffKindLabel(kind, locale string) string {
+	labels := map[string][4]string{
+		"NEW":         {"新增", "NEW", "ДОБАВЛЕНО", "افزوده"},
+		"REMOVED":     {"移除", "REMOVED", "УДАЛЕНО", "حذف"},
+		"CHANGED":     {"变更", "CHANGED", "ИЗМЕНЕНО", "تغییر"},
+		"CHANGE":      {"变更", "CHANGE", "ИЗМЕНЕНИЕ", "تغییر"},
+		"CONTEXT":     {"上下文", "CONTEXT", "КОНТЕКСТ", "زمینه"},
+		"REGRESSION":  {"退化", "REGRESSION", "УХУДШЕНИЕ", "پسرفت"},
+		"IMPROVEMENT": {"改善", "IMPROVEMENT", "УЛУЧШЕНИЕ", "بهبود"},
+	}
+	value, ok := labels[kind]
+	if !ok {
+		return kind
+	}
+	switch locale {
+	case "zh-CN":
+		return value[0]
+	case "ru-RU":
+		return value[2]
+	case "fa-IR":
+		return value[3]
+	default:
+		return value[1]
+	}
 }
 
 var legacyRedactedStableIDPattern = regexp.MustCompile(`^HOST_ID_[0-9]+$`)
@@ -104,7 +130,7 @@ func (e environment) fleet(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(e.out, "%-24s %5s %5s %5s %8s %10s  %s\n", strings.ToUpper(i18n.UI(locale, "主机", "Host")), "RISK", "PASS", "INFO", "UNKNOWN", "PROFILE", i18n.UI(locale, "最高优先级结果", "TOP FINDING"))
+	fmt.Fprintf(e.out, "%-24s %5s %5s %5s %8s %10s  %s\n", strings.ToUpper(i18n.UI(locale, "主机", "Host")), "RISK", "PASS", "INFO", "UNKNOWN", strings.ToUpper(i18n.UI(locale, "用途", "Profile")), i18n.UI(locale, "最高优先级结果", "Top finding"))
 	for _, path := range fs.Args() {
 		r, err := e.readReport(path)
 		if err != nil {

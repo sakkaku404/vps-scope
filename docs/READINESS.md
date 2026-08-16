@@ -1,18 +1,19 @@
-# Release readiness and fixed laboratory
+# Release readiness and disposable laboratory
 
-The current fixed laboratory uses five disposable amd64 hosts: Debian 13 with
+The v1.1.0 release laboratory used five disposable amd64 hosts: Debian 13 with
 S-UI, Debian 12 with 3x-ui/Xray, Ubuntu 24.04 with Docker/Nginx, a near-stock
 Debian 13 host, and a constrained Debian 13 host with 512 MiB of memory. The
-first four have 1 vCPU / 1 GiB; the constrained role has 1 vCPU / 512 MiB.
-Addresses and credentials are intentionally not recorded here. Every release
-candidate must record its newly assigned disposable inventory and must not
-carry an old address or host forward as current. A small laboratory is not
+first four had 1 vCPU / 1 GiB; the constrained role had 1 vCPU / 512 MiB. They
+were destroyed after validation, so there is no current live inventory.
+Addresses and credentials are intentionally not recorded here. Every future
+release candidate must record its newly assigned disposable inventory and must
+not carry an old address or host forward as current. A small laboratory is not
 proof that every provider, distribution release, architecture, panel fork, or
 proxy protocol behaves identically.
 
 ## Required matrix
 
-- Standard audit on every host assigned to the current disposable inventory;
+- Standard audit on every host assigned to that release candidate's disposable inventory;
   deep audit on every host before a release candidate.
 - Every newly generated report must record zero category-contract repairs and
   zero command/file snapshot or topology budget rejections under the ordinary matrix. Its
@@ -59,7 +60,7 @@ The project used three consecutive pre-1.0 releases satisfying this contract wit
 ## 1.0 evidence ledger
 
 - The August 2026 evidence-architecture candidate completed two consecutive
-  standard/deep/bundle/support rounds on the current five-host laboratory. Each
+  standard/deep/bundle/support rounds on the then-current five-host laboratory. Each
   host produced all 55 findings with zero status, severity, reason-code,
   component, or endpoint drift between rounds; all reports passed manifest and
   semantic verification, all command/file/topology budget rejection counters

@@ -77,7 +77,9 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o dist/vps-scope-linux
 
 Real-host tests must use disposable release candidates and explicitly chosen report paths. Read the resulting JSON and human report; a successful exit code alone is not acceptance.
 
-The current fixed live laboratory consists of five disposable amd64 VPS roles:
+The v1.1.0 release laboratory consisted of five disposable amd64 VPS roles.
+Those hosts were destroyed after validation; no live inventory is current
+unless a future candidate records a newly assigned disposable set:
 Debian 13 with S-UI 1.5.3, Debian 12 with 3x-ui 3.4.2 and its embedded Xray,
 Ubuntu 24.04 with Docker and Nginx, a near-stock Debian 13 role, and a
 constrained Debian 13 role with 512 MiB of memory. It includes public and

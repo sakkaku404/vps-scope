@@ -312,6 +312,35 @@ func TestHTMLIsSelfContainedAndUsable(t *testing.T) {
 	}
 }
 
+func TestHTMLUsesApprovedDOSSlateCGATheme(t *testing.T) {
+	var out bytes.Buffer
+	if err := HTML(&out, sampleReport(), Options{Locale: "zh-CN"}); err != nil {
+		t.Fatal(err)
+	}
+	html := out.String()
+	for _, required := range []string{
+		`--report-theme:dos-slate-cga`,
+		`--bg:#050605`,
+		`--risk:#a95f55`,
+		`--pass:#77966f`,
+		`--info:#668b8c`,
+		`--unknown:#a58a58`,
+		`max-width:920px`,
+		`"Courier New"`,
+		`border-radius:0`,
+		`VPS SCOPE / TTY1 / AUDIT / 80x25`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Errorf("HTML DOS Slate theme missing %q", required)
+		}
+	}
+	for _, obsolete := range []string{"radial-gradient", "backdrop-filter:blur", "prefers-color-scheme:light"} {
+		if strings.Contains(html, obsolete) {
+			t.Errorf("HTML still contains obsolete modern-theme styling %q", obsolete)
+		}
+	}
+}
+
 func TestActionLinksResolveToExactlyOneFinding(t *testing.T) {
 	r := sampleReport()
 	r.Findings = append(r.Findings,

@@ -14,8 +14,8 @@ This matrix distinguishes recognized software from evidence exercised on a repro
 | Marzban | `marzban/managed-v1`, `marzban-config-v1` | allowlisted environment, Uvicorn management, generated Xray, Docker and host-network context | Ubuntu 26.04 official Docker deployment |
 | Hiddify | `hiddify/managed-v1`, `hiddify-config-v1` | loopback controls, split Xray/sing-box configs, Mieru TCP/UDP, HAProxy relation | Ubuntu 22.04 managed install |
 | Outline | `outline/container-v1`, `outline-shadowbox-v1` | management API vs Shadowsocks TCP/UDP ingress, container/network/firewall relation | Ubuntu 26.04 official container |
-| sing-box | config/native-check v1 | inbound protocol/transport, Reality/Hysteria2/TUIC/Trojan/Shadowsocks, control API, `sing-box check` | Debian 12, sing-box 1.13.14 |
-| Xray | config/native-check v1 | ingress/API, Reality/Trojan/VMess, `xray run -test`, panel-generated config | 3x-ui 3.4.2 deployment |
+| sing-box | config/native-check v1 | inbound protocol/transport, Reality/Hysteria2/TUIC/Trojan/Shadowsocks, control API, and opt-in `sing-box check` through `--native-self-test` | Debian 12, sing-box 1.13.14 |
+| Xray | config/native-check v1 | ingress/API, Reality/Trojan/VMess, panel-generated config, and opt-in `xray run -test` through `--native-self-test` | 3x-ui 3.4.2 deployment |
 | WireGuard | kernel/config v1 | interface, UDP listener, peer/handshake counts, private-key file posture | Debian 12 to Ubuntu 26.04 lab tunnel |
 | OpenVPN | config/runtime v1 | server protocol/port/listen and runtime/firewall relation | Debian 12, OpenVPN 2.6 |
 | Nginx/Caddy/HAProxy | reverse-proxy v1 | public frontend to local/external backend, panel route, TLS/front-door relationship | Marzban, S-UI and Hiddify lab chains |

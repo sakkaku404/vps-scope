@@ -40,6 +40,7 @@ jobs:
       - name: Check shell scripts and third-party notices
         run: |
           bash -n install.sh run.sh scripts/*.sh scripts/lab/*.sh
+          bash scripts/test-runner.sh
           bash scripts/generate-third-party-notices.sh /tmp/THIRD_PARTY_NOTICES.1.txt
           bash scripts/generate-third-party-notices.sh /tmp/THIRD_PARTY_NOTICES.2.txt
           cmp /tmp/THIRD_PARTY_NOTICES.1.txt /tmp/THIRD_PARTY_NOTICES.2.txt
