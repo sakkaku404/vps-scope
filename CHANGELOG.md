@@ -10,6 +10,8 @@ not presented as such.
 
 ## Unreleased
 
+## 1.2.0 - 2026-08-17
+
 ### Fixed
 
 - The temporary runner restores the caller's working directory before starting
