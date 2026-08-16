@@ -2,7 +2,7 @@
 
 > A security and runtime auditor for VPS hosts running self-hosted proxies, tunnels, and privacy networks.
 
-VPS Scope runs on Ubuntu and Debian. It begins with a complete host review covering accounts and SSH, sudo, firewalls, intrusion protection, system updates, packages, systemd services, Docker, TLS certificates, logs, resource reliability, and suspicious persistence. Those results remain useful even when the server does not run a proxy.
+VPS Scope runs on Ubuntu and Debian. It begins with a broad host-security baseline covering accounts and SSH, sudo, firewalls, intrusion protection, system updates, packages, systemd services, Docker, TLS certificates, logs, resource reliability, and suspicious persistence. Those results remain useful even when the server does not run a proxy.
 
 On a proxy host, that Linux baseline is only the start. A public port may be an expected Reality, Hysteria2, or Shadowsocks ingress, or it may be a management panel, subscription endpoint, or internal API that should not be open to the entire internet.
 
@@ -20,9 +20,17 @@ It is not just product detection and it is not a port scan with a Linux checklis
 curl -fsSL https://github.com/sakkaku404/vps-scope/releases/latest/download/run.sh | sudo bash
 ```
 
+This command verifies the downloaded file's SHA-256 and then runs it. If `cosign` is not installed, it prints one short warning that the publisher signature was not verified; it no longer asks for `continue`.
+
 The prompt supports Simplified Chinese, English, Russian, and Persian. Non-interactive runs can use `--lang zh-CN`, `--lang en`, `--lang ru-RU`, or `--lang fa-IR`.
 
-By default, the terminal shows the conclusion and the VPS keeps a complete report bundle. VPS Scope has no repair mode and does not change SSH, firewall rules, services, accounts, or packages.
+To skip the prompts, put audit flags after `bash -s --`. Leading flags are automatically treated as `audit` arguments:
+
+```bash
+curl -fsSL https://github.com/sakkaku404/vps-scope/releases/latest/download/run.sh | sudo bash -s -- --lang en --profile proxy
+```
+
+By default, the result is shown only in the terminal and no report files are written. Choose output option 2 or 3 to save HTML, Markdown, and JSON reports. VPS Scope has no repair mode and does not change SSH, firewall rules, services, accounts, or packages.
 
 The default audit also does not execute binaries belonging to S-UI, 3x-ui, sing-box, Xray, Nginx, or other audited workloads. It reads configuration, databases, and system runtime state. Only an explicit `--native-self-test` runs those local programs after ownership and permission checks; this executes third-party code with the audit process's privileges, which means root when the audit uses `sudo`.
 
@@ -35,42 +43,115 @@ The default audit also does not execute binaries belonging to S-UI, 3x-ui, sing-
 
 [Proxy compatibility](PROXY-COMPATIBILITY.md) · [Compatibility matrix](COMPATIBILITY-MATRIX.md) · [Privacy](PRIVACY.md) · [Checks](CHECKS.md) · [Design notes](DESIGN.md) · [Testing](TESTING.md)
 
-## What it looks at
+## A real example
 
-The audit covers the parts of a small VPS that are easy to overlook: system resources, account and password context, effective SSH settings, listeners and active connections, firewall rules, Fail2ban/CrowdSec, login activity, pending updates, systemd services, Docker isolation, TLS certificates, file permissions, and common persistence locations.
+This excerpt comes from a test VPS running S-UI 1.5.3 and sing-box. Addresses and unrelated details have been removed:
 
-Proxy hosts get additional context for:
+```text
+Proxy VPS assessment
+────────────────────────────────────────────────────────────────────
+Detected: S-UI, sing-box
+Proxy ingress     PASS
+  4 proxy ingresses confirmed; configuration, listeners, and firewall agree.
+Management plane  RISK/HIGH
+  S-UI 56709/tcp · public wildcard · firewall allows · TLS enabled
+  non-default path · still reachable from the whole internet
+Configuration     INFO
+  Configuration was parsed statically; no panel or proxy binary was executed.
 
-- sing-box, Xray, Hysteria2, TUIC, Trojan, and Shadowsocks cores and ingress
-- S-UI, 3x-ui/x-ui, Marzban, Hiddify, and Outline management/ingress relations
-- direct and reverse-proxied panel exposure, including root/default paths and plaintext panel endpoints; a hidden URL path is not treated as access control
-- native read-only configuration checks for sing-box and Xray
-- publicly bound Clash API, V2Ray API, and similar control endpoints
-- permissions on panel databases and proxy configuration
-- systemd identity, capabilities, isolation, and file-descriptor limits
-- UDP buffer and error-counter context for Hysteria2 and TUIC workloads
-- config-to-listener relations across TCP/UDP transport, process ownership, exposure scope, merged UFW/effective nftables INPUT policy, and stale allows left without a live listener
-- management/subscription ports reused by proxy ingress, disabled inbounds that remain live, and unexplained public listeners owned by a panel or core
-- Reality semantic completeness without exporting private keys, SNI values, targets, or short IDs
-- privacy-safe category counts for authentication, handshake, DNS, TLS, routing, panel login, API/subscription abuse, web probes, and fatal log signals
-- per-ingress established TCP connection snapshots for comparison and baselines, without generic attack-count thresholds
-- WireGuard interface, UDP listener, firewall, and recent-handshake counts without peer keys or endpoints
-- Nginx, Caddy, and HAProxy chains from public frontends to panel or proxy backends, including public management routes and over-broad backend listeners
-- Docker Compose project/service context, effective mounts, Docker socket access, privileged/host namespaces, added capabilities, and published paths across INPUT, FORWARD, and DOCKER-USER
-- optional external DNS/TLS observation, disabled by default and enabled only when domains are explicitly supplied, with CDN-origin address comparison
+Proxy ingress:
+  443/tcp    sing-box/vless (reality)       public · allowed · PASS
+  443/udp    sing-box/hysteria2             public · allowed · PASS
+  32003/tcp  sing-box/shadowsocks           public · allowed · PASS
+  32003/udp  sing-box/shadowsocks           public · allowed · PASS
+```
 
-Detecting a product is not the same as proving which port is its management plane. Container networking, reverse proxies, and unknown panel layouts remain `UNKNOWN` when the evidence cannot support a safe conclusion. See [proxy compatibility](PROXY-COMPATIBILITY.md) for the tested scope.
+One panel and core process can own several public ports. A general VPS audit may describe all of them simply as open ports. VPS Scope relates the panel database, proxy configuration, live processes, listeners, and firewall so that expected proxy ingress is not confused with a management panel that should be restricted.
 
-Results are based on the state the system is actually using where possible. For example, SSH settings come from `sshd -T`, not from grepping one configuration file. Network listeners are separated into public, private, loopback, IPv4, IPv6, and container-published endpoints.
+## Saving and opening a full report
 
-VPS Scope uses four result states:
+The default run writes no report files. Choose output option 2 or 3, or use `--format bundle`, to save one audit in four formats plus an integrity manifest:
 
-- `PASS` — the check ran and the expected condition was met
-- `RISK` — the collected evidence needs attention
-- `INFO` — useful context or inventory, but not a problem by itself
-- `UNKNOWN` — the check could not reach a reliable conclusion
+```text
+report.en.html   recommended; download and open in a browser
+report.en.txt    terminal text
+report.en.md     complete Markdown report
+report.json      canonical machine-readable data for comparison and baselines
+manifest.json    SHA-256 manifest for the four report files
+```
 
-There is no security score, and the tool does not make changes or offer an automatic fix mode.
+After saving, the program shows a stable `vps-scope-reports/latest/report.en.html` path first. For root this is normally `/root/vps-scope-reports/latest/report.en.html`; other users should use the absolute path printed by the program. The easiest download method is the SFTP browser in your SSH client. You can also run this on your own computer:
+
+```bash
+scp <SSH_HOST>:'/root/vps-scope-reports/latest/report.en.html' .
+```
+
+Replace `<SSH_HOST>` with the IP address, domain, or SSH alias you normally use, including the same port, identity file, or ssh-agent settings. The VPS cannot discover where your private key is stored. Report files remain after a one-line temporary run, but the downloaded program is removed when that run exits. Only installed copies can use `sudo vps-scope report show`, `report path`, `report list`, or `verify` later.
+
+## What VPS Scope checks
+
+### Proxy ingress and management planes
+
+- distinguishes proxy ingress, management panels, subscription endpoints, and control APIs
+- relates protocol configuration to TCP/UDP listeners, process ownership, and IPv4/IPv6 firewall evidence
+- finds configured-but-missing listeners, blocked ingress, process mismatches, and disabled ingress that remains live
+- identifies panels that listen publicly, stay on loopback, or are exposed through Nginx, Caddy, or HAProxy
+- reports root/default paths and TLS posture without treating a hidden path as access control
+
+### Configuration and runtime
+
+- parses sing-box and Xray configuration statically by default; native self-tests are explicit opt-in
+- compares S-UI and 3x-ui/x-ui databases, generated configuration, processes, and listeners
+- checks the runtime relationships of Reality, Hysteria2, TUIC, Trojan, Shadowsocks, WireGuard, and OpenVPN
+- counts authentication, handshake, DNS, TLS, routing, and panel-login signals without copying raw logs or user data
+- checks certificate validity, renewal scheduling, recent renewal results, and reload closure
+
+### Docker and the host baseline
+
+- checks privileged mode, host networking, dangerous capabilities, Docker socket mounts, and published ports
+- relates container publication to INPUT, FORWARD, and DOCKER-USER
+- reviews SSH, accounts, sudo, Fail2ban/CrowdSec, updates, packages, and systemd services
+- reviews OOM, core dumps, disk and inode pressure, journal persistence, and suspicious startup entries
+- finds extra UID-0 accounts, unusual authorized keys, executables in temporary directories, and deleted executables that remain running
+
+## Support levels
+
+Recognition is not a promise that every release, fork, or deployment layout is fully understood.
+
+### Most extensively validated
+
+- S-UI
+- 3x-ui / x-ui
+- sing-box
+- Xray-core
+
+These components have been exercised together with real panel databases, configuration, listeners, firewall rules, and protocol ingress on disposable VPS hosts.
+
+### Dedicated adapters or checks
+
+- Hiddify, Marzban, and Outline
+- WireGuard and OpenVPN
+- Hysteria2, TUIC, Trojan, and Shadowsocks
+
+### Deployment-relationship discovery
+
+- Docker and Docker Compose
+- Nginx, Caddy, and HAProxy
+
+Exact versions and tested semantics are recorded in [Proxy compatibility](PROXY-COMPATIBILITY.md) and the [Compatibility matrix](COMPATIBILITY-MATRIX.md). Unknown database schemas, dynamic reverse-proxy targets, and incomplete evidence remain `UNKNOWN` rather than being reported as safe.
+
+Before v1.1.0, five disposable VPS roles completed two consecutive standard/deep audit, bundle verification, support-bundle, and cross-host probe rounds. Every host produced all 55 findings without status, severity, reason-code, or endpoint-relation drift; the 512 MiB host also completed a deep audit. The hosts and temporary test state were removed afterwards. This is historical controlled evidence, not a guarantee for every platform. See [Testing](TESTING.md) and [Release readiness](READINESS.md).
+
+## Understanding results
+
+VPS Scope does not produce an unexplained security score. It uses four states:
+
+- `PASS` — evidence supports the current conclusion; it is not a permanent safety guarantee
+- `RISK` — a confirmed issue or a condition that needs review
+- `INFO` — inventory or context that is not a problem by itself
+- `UNKNOWN` — evidence was missing or collection failed; it is never treated as `PASS`
+
+Start with the proxy assessment, priority actions, availability risks, and evidence gaps. The final 55-check index is a directory of results, not the whole report.
 
 ## Install
 
@@ -82,9 +163,9 @@ curl -fsSL https://github.com/sakkaku404/vps-scope/releases/latest/download/run.
 
 The prompt supports Simplified Chinese, English, Russian, and Persian. For non-interactive use, pass `--lang zh-CN`, `--lang en`, `--lang ru-RU`, or `--lang fa-IR`.
 
-That one command downloads the current release, verifies its SHA-256, runs the audit, and removes the temporary binary. There is no second command.
+That one command downloads the current release, verifies its SHA-256, runs the audit, and removes the temporary binary. If `cosign` is unavailable, it prints a short publisher-signature warning and continues without another prompt. There is no second command.
 
-The runner and installer are themselves signed Release assets. Once started, they always verify the downloaded binary's checksum and, when `cosign` is available, its GitHub Actions keyless signature. Without `cosign`, an interactive terminal must type `continue` before falling back to checksum-only mode, while non-interactive use stops by default. Automation should set `VPS_SCOPE_ALLOW_UNSIGNED=1` only after accepting that trade-off; set `VPS_SCOPE_REQUIRE_SIGNATURE=1` to forbid an unsigned binary fallback.
+The runner and installer are themselves signed Release assets. Once started, they always verify the downloaded binary's checksum and, when `cosign` is available, its GitHub Actions keyless signature. Without `cosign`, the temporary runner warns and continues automatically; set `VPS_SCOPE_REQUIRE_SIGNATURE=1` to require signature verification and stop otherwise. The persistent installer still requires interactive approval, while automation must explicitly use `--allow-unsigned` or `VPS_SCOPE_ALLOW_UNSIGNED=1` to accept checksum-only installation.
 
 To install `vps-scope` for repeated use:
 
@@ -134,21 +215,27 @@ sudo ./vps-scope audit --native-self-test
 
 The standard audit is suitable for routine use and avoids recursive filesystem scans. Use `sudo vps-scope audit --deep` to add SUID/SGID, file-capability, and installed-package integrity checks. Deep-only checks that were not run are shown as skipped, never as `PASS`.
 
-Profiles give the audit some context about the server's job. Built-in choices include `general`, `web`, `proxy`, `docker`, and `mixed`. Custom public listeners can be declared as `PORT/tcp` or `PORT/udp`; this affects exposure checks, not the rest of the audit.
+### What the server profile changes
+
+The profile does not remove any host-baseline checks and never changes the server. It only gives the evaluator context for deciding whether a public listener is expected for this host.
+
+| Profile | Use it for | Effect on interpretation |
+|---|---|---|
+| `auto` | Recommended when unsure | Detects `general`, `proxy`, `web`, `docker`, or `mixed` from processes, systemd, Docker, and known configuration paths |
+| `general` | An ordinary Linux VPS | Does not assume a proxy, web, or container ingress |
+| `proxy` | sing-box, Xray, S-UI, 3x-ui, Hysteria2, and similar hosts | Treats evidence-backed proxy ingress as expected candidates while still auditing panels, subscriptions, and control APIs separately |
+| `web` | Nginx, Caddy, HAProxy, Apache, and similar frontends | Adds web-frontend context to public listeners |
+| `docker` | Hosts that primarily publish Docker services | Interprets exposure through container publication, FORWARD, and DOCKER-USER |
+| `mixed` | Hosts combining proxy, web, and container roles | Combines the relevant contexts |
+| `custom` | Operators who know the exact intended public ports | Requires `--expect-public PORT/tcp,PORT/udp` |
+
+Choosing `proxy` never makes a public management panel safe. If the selected profile is wrong, the audit may ask for review of a legitimate listener, but it will not modify anything. Use `auto` when unsure; the report records both the selected and detected roles.
 
 External DNS/TLS observation is disabled by default. `--external-domain` explicitly enables network access, while `--expect-cdn` declares that those domains should sit behind a CDN. The audit compares DNS results with local global addresses and observes TLS on port 443; historical DNS, cloud firewalls, and true off-host reachability still require a second vantage point.
 
-## Reports
+## Report verification and sharing
 
-Interactive mode defaults to showing the result in the terminal and saving a full report bundle. Saved reports go to `~/vps-scope-reports/HOST/TIMESTAMP/`; `~/vps-scope-reports/latest` points to the newest one. Each run uses a distinct directory and refuses to overwrite an existing bundle. The completion message explains each file and prints a copy-paste download command.
-
-Start with the action summary rather than the raw count: it separates confirmed high-priority risks, likely availability problems, routine maintenance, and evidence gaps. This is a reading aid only; it never changes a finding's `PASS` / `RISK` / `INFO` / `UNKNOWN` state. Terminal and Markdown reports show a small set of key evidence first, while the full evidence remains available in verbose output, JSON, and collapsible Markdown sections.
-
-```bash
-sudo vps-scope report show  # show the latest report again
-sudo vps-scope report list  # list saved reports
-sudo vps-scope report path  # print the latest report directory
-```
+Start with the action summary rather than the raw count: it separates confirmed high-priority risks, likely availability problems, routine maintenance, and evidence gaps. This is a reading aid only; it never changes a finding's `PASS` / `RISK` / `INFO` / `UNKNOWN` state.
 
 Reports can also be written to an explicit location as JSON, plain text, Markdown, HTML, or a full bundle:
 
@@ -158,7 +245,7 @@ sudo ./vps-scope audit --format bundle --output ./reports/sgp
 
 A bundle contains the canonical JSON report, human-readable formats, and a SHA-256 manifest. The HTML report is a self-contained offline page with status filters, search, and collapsible evidence; it loads no external scripts or fonts. Report files are created with restrictive permissions on Linux.
 
-`report.json` is the common audit record behind every renderer. It contains the 55 stable check IDs, statuses, severities, and reason codes, plus a typed deployment view of components, service endpoints, proxy/reverse-proxy links, and evidence coverage. HTML, Markdown, history comparison, and baselines consume that structure instead of parsing terminal prose. Older schema-1.0 reports remain readable, while `vps-scope verify` checks both integrity and the semantic contract of current reports.
+`report.json` is the common audit record behind every renderer. It contains the 55 stable check IDs, statuses, severities, and reason codes, plus a typed deployment view of components, service endpoints, proxy/reverse-proxy links, and evidence coverage. HTML, Markdown, history comparison, and baselines consume that structure instead of parsing terminal prose. Older schema-1.0 reports remain readable. `vps-scope verify report.json` checks the semantic contract; verifying a complete bundle also checks its declared file set and SHA-256 values against `manifest.json`.
 
 JSON reports can be rendered again without reconnecting to the server:
 
@@ -262,9 +349,9 @@ The 1.x guarantees for report schemas, check IDs, reason codes, public commands,
 
 ### How release candidates are validated
 
-Compilation is not the acceptance criterion. The current laboratory uses five independent VPS roles: Debian 13 with S-UI, Debian 12 with 3x-ui/Xray, Ubuntu 24.04 with Docker/Nginx, a near-stock Debian 13 host, and a constrained Debian 13 host with 512 MiB of memory. Every role runs a standard audit, deep audit, bundle verification, and redacted support bundle. The Docker role also exercises a 32-container inventory, DOCKER-USER/forwarding semantics, and a custom INPUT chain; the hosts then run a TCP/UDP reachability matrix.
+Compilation is not the acceptance criterion. Before v1.1.0, five disposable VPS roles were used for release regression: Debian 13 with S-UI, Debian 12 with 3x-ui/Xray, Ubuntu 24.04 with Docker/Nginx, a near-stock Debian 13 host, and a constrained Debian 13 host with 512 MiB of memory. Every role ran a standard audit, deep audit, bundle verification, and redacted support bundle. The Docker role also exercised a 32-container inventory, DOCKER-USER/forwarding semantics, and a custom INPUT chain; the hosts then ran a TCP/UDP reachability matrix.
 
-The latest candidate completed two consecutive rounds with 55 findings per host and no drift in finding status, severity, reason code, components, or endpoint relationships. All 16 cross-host TCP/UDP probes passed and the laboratory left no tagged firewall rules or helper processes behind. Deep audits took about 25–51 seconds, including the 512 MiB host. These are controlled laboratory observations, not performance guarantees for every distribution, panel version, or cloud network. See [Testing](TESTING.md) and [Release readiness](READINESS.md) for the reproducible contract.
+That candidate completed two consecutive rounds with 55 findings per host and no drift in finding status, severity, reason code, components, or endpoint relationships. All 16 cross-host TCP/UDP probes passed and the laboratory left no tagged firewall rules or helper processes behind. Deep audits took about 25–51 seconds, including the 512 MiB host. The VPS instances were destroyed after validation; there is no current permanent lab. These are historical controlled observations, not performance guarantees for every distribution, panel version, or cloud network. See [Testing](TESTING.md) and [Release readiness](READINESS.md) for the reproducible contract.
 
 ## Why VPS Scope exists
 

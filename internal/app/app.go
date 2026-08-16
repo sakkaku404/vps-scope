@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -145,20 +146,22 @@ func (e environment) interactive() error {
 	reader := bufio.NewReader(e.in)
 	fmt.Fprintln(e.out, "VPS Scope — Proxy VPS security and runtime audit")
 	fmt.Fprintln(e.out, "\n请选择语言 / Choose language:\n  1. 简体中文\n  2. English\n  3. Русский\n  4. فارسی")
-	fmt.Fprint(e.out, "选择 / Select [1]: ")
-	choice, _ := reader.ReadString('\n')
+	choice, err := readInteractiveChoice(reader, e.out, "选择 / Select [1]: ", "1", 1, 4, "zh-CN")
+	if err != nil {
+		return err
+	}
 	locale := map[string]string{"1": "zh-CN", "2": "en", "3": "ru-RU", "4": "fa-IR"}[strings.TrimSpace(choice)]
 	if locale == "" {
 		locale = "zh-CN"
 	}
 	fmt.Fprintln(e.out)
-	fmt.Fprintln(e.out, choose(locale, "本工具永不修改系统配置。它只读取证据，并在你明确选择的位置写入报告。", "This tool never changes system configuration. It reads evidence and writes only to a report path you choose."))
-	fmt.Fprintln(e.out)
 	fmt.Fprintln(e.out, strings.TrimPrefix(choose(locale,
 		"\n服务器用途（不确定就选 1）:\n  1. 自动识别（推荐）\n  2. 通用 VPS\n  3. 代理服务器\n  4. Web 服务器\n  5. Docker 主机\n  6. 混合用途\n  7. 自定义公网端口",
 		"\nServer role (choose 1 if unsure):\n  1. auto detect (recommended)\n  2. general VPS\n  3. proxy server\n  4. web server\n  5. Docker host\n  6. mixed workloads\n  7. custom public listeners"), "\n"))
-	fmt.Fprint(e.out, choose(locale, "选择 [1]: ", "Select [1]: "))
-	profileChoice, _ := reader.ReadString('\n')
+	profileChoice, err := readInteractiveChoice(reader, e.out, choose(locale, "选择 [1]: ", "Select [1]: "), "1", 1, 7, locale)
+	if err != nil {
+		return err
+	}
 	profiles := map[string]string{"1": "auto", "2": "general", "3": "proxy", "4": "web", "5": "docker", "6": "mixed"}
 	profiles["7"] = "custom"
 	profile := profiles[strings.TrimSpace(profileChoice)]
@@ -167,21 +170,27 @@ func (e environment) interactive() error {
 	}
 	expected := ""
 	if profile == "custom" {
-		fmt.Fprint(e.out, choose(locale, "预期公网端口（如 22/tcp,443/tcp）: ", "Expected public listeners (for example 22/tcp,443/tcp): "))
-		expected, _ = reader.ReadString('\n')
-		expected = strings.TrimSpace(expected)
+		for {
+			fmt.Fprint(e.out, choose(locale, "预期公网端口（如 22/tcp,443/tcp）: ", "Expected public listeners (for example 22/tcp,443/tcp): "))
+			expected, err = readInteractiveLine(reader)
+			if err != nil {
+				return err
+			}
+			expected = strings.TrimSpace(expected)
+			parsed, parseErr := parseExpectedPublic(expected)
+			if parseErr == nil && len(parsed) > 0 {
+				break
+			}
+			fmt.Fprintln(e.out, choose(locale, "请输入至少一个有效端口，例如 22/tcp,443/tcp。", "Enter at least one valid listener, for example 22/tcp,443/tcp."))
+		}
 	}
 	fmt.Fprintln(e.out)
-	fmt.Fprintln(e.out, strings.TrimPrefix(choose(locale, "\n输出方式:\n  1. 只在终端查看\n  2. 在终端查看，并保存完整报告（推荐）\n  3. 只保存完整报告", "\nOutput:\n  1. terminal only\n  2. terminal and full report bundle (recommended)\n  3. full report bundle only"), "\n"))
-	fmt.Fprint(e.out, choose(locale, "选择 [2]: ", "Select [2]: "))
-	outputChoice, _ := reader.ReadString('\n')
-	format, alsoTerminal := "bundle", true
-	switch strings.TrimSpace(outputChoice) {
-	case "1":
-		format, alsoTerminal = "terminal", false
-	case "3":
-		alsoTerminal = false
+	fmt.Fprintln(e.out, strings.TrimPrefix(choose(locale, "\n输出方式:\n  1. 只在终端查看（推荐）\n  2. 在终端查看，并保存完整报告\n  3. 只保存完整报告", "\nOutput:\n  1. terminal only (recommended)\n  2. terminal and full report bundle\n  3. full report bundle only"), "\n"))
+	outputChoice, err := readInteractiveChoice(reader, e.out, choose(locale, "选择 [1]: ", "Select [1]: "), "1", 1, 3, locale)
+	if err != nil {
+		return err
 	}
+	format, alsoTerminal := selectInteractiveOutput(outputChoice)
 	auditArgs := []string{"--lang", locale, "--profile", profile, "--format", format}
 	if alsoTerminal {
 		auditArgs = append(auditArgs, "--also-terminal")
@@ -192,11 +201,52 @@ func (e environment) interactive() error {
 	return e.audit(auditArgs)
 }
 
+func readInteractiveChoice(reader *bufio.Reader, out io.Writer, prompt, defaultChoice string, minimum, maximum int, locale string) (string, error) {
+	for {
+		fmt.Fprint(out, prompt)
+		value, err := readInteractiveLine(reader)
+		if err != nil {
+			return "", err
+		}
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return defaultChoice, nil
+		}
+		choice, parseErr := strconv.Atoi(value)
+		if parseErr == nil && choice >= minimum && choice <= maximum {
+			return value, nil
+		}
+		fmt.Fprintf(out, choose(locale, "请输入 %d 到 %d。\n", "Enter a number from %d to %d.\n"), minimum, maximum)
+	}
+}
+
+func selectInteractiveOutput(choice string) (format string, alsoTerminal bool) {
+	switch strings.TrimSpace(choice) {
+	case "2":
+		return "bundle", true
+	case "3":
+		return "bundle", false
+	default:
+		return "terminal", false
+	}
+}
+
+func readInteractiveLine(reader *bufio.Reader) (string, error) {
+	value, err := reader.ReadString('\n')
+	if err == nil || (errors.Is(err, io.EOF) && value != "") {
+		return value, nil
+	}
+	if errors.Is(err, io.EOF) {
+		return "", errors.New("无法读取交互输入 / interactive input is unavailable; run VPS Scope in a terminal or pass explicit audit flags")
+	}
+	return "", fmt.Errorf("read interactive input: %w", err)
+}
+
 func (e environment) audit(args []string) error {
 	fs := e.newFlagSet("audit")
 	fs.SetOutput(e.errOut)
 	lang := fs.String("lang", "auto", "zh-CN, en, ru-RU, fa-IR, or auto")
-	profile := fs.String("profile", "auto", "auto, general, proxy, web, docker, mixed")
+	profile := fs.String("profile", "auto", "auto, general, proxy, web, docker, mixed, custom")
 	format := fs.String("format", "terminal", "terminal, text, json, markdown, html, or bundle")
 	output := fs.String("output", "", "output file or bundle directory")
 	since := fs.String("log-since", "7d", "journal lookback, e.g. 24h or 7d")
@@ -221,6 +271,9 @@ func (e environment) audit(args []string) error {
 	if err := validateProfile(*profile); err != nil {
 		return err
 	}
+	if err := validateReportDestination(*format, *output); err != nil {
+		return err
+	}
 	duration, err := parseDuration(*since)
 	if err != nil {
 		return fmt.Errorf("invalid --log-since: %w", err)
@@ -241,6 +294,9 @@ func (e environment) audit(args []string) error {
 	expected, err := parseExpectedPublic(*expectPublic)
 	if err != nil {
 		return err
+	}
+	if *profile == "custom" && len(expected) == 0 {
+		return errors.New("--profile custom requires at least one --expect-public PORT/tcp or PORT/udp value")
 	}
 	domains, err := parseExternalDomains(*externalDomains)
 	if err != nil {
@@ -267,6 +323,34 @@ func (e environment) audit(args []string) error {
 	}
 	opts := report.Options{Locale: locale, Color: !*noColor && os.Getenv("NO_COLOR") == "", Verbose: *verbose}
 	return e.writeReport(*format, *output, r, opts, *alsoTerminal)
+}
+
+func validateReportDestination(format, output string) error {
+	switch format {
+	case "terminal", "text", "json", "markdown", "md", "html", "bundle":
+	default:
+		return fmt.Errorf("unsupported format %q", format)
+	}
+	if output == "" {
+		return nil
+	}
+	if _, err := os.Lstat(output); err == nil {
+		return fmt.Errorf("refusing to overwrite existing output %q", output)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect output %q: %w", output, err)
+	}
+	parent := filepath.Dir(output)
+	info, err := os.Stat(parent)
+	if err != nil {
+		if format == "bundle" && errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("output parent directory %q is unavailable: %w", parent, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("output parent %q is not a directory", parent)
+	}
+	return nil
 }
 
 func validateProfile(value string) error {

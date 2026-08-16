@@ -29,8 +29,9 @@ func (e environment) doctor(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(e.out, "VPS Scope doctor\nOS=%s ARCH=%s GO=%s\n", runtime.GOOS, runtime.GOARCH, runtime.Version())
-	fmt.Fprintf(e.out, "%s=%t\n", choose(locale, "支持完整审计", "full_audit_supported"), runtime.GOOS == "linux")
+	fmt.Fprintln(e.out, choose(locale, "VPS Scope 环境诊断", "VPS Scope doctor"))
+	fmt.Fprintf(e.out, "%s=%s %s=%s Go=%s\n", choose(locale, "系统", "OS"), runtime.GOOS, choose(locale, "架构", "Architecture"), runtime.GOARCH, runtime.Version())
+	fmt.Fprintf(e.out, "%s: %t\n", choose(locale, "支持完整审计", "Full audit supported"), runtime.GOOS == "linux")
 	if runtime.GOOS == "linux" {
 		fmt.Fprintln(e.out, choose(locale, "命令状态: TRUSTED=可安全执行  UNTRUSTED=存在但权限链不可信  MISSING=未找到", "command status: TRUSTED=safe to execute  UNTRUSTED=unsafe ownership or writable path  MISSING=not found"))
 	}
@@ -98,13 +99,25 @@ func (e environment) checks(args []string) error {
 func (e environment) explain(args []string) error {
 	fs := e.newFlagSet("explain")
 	lang := fs.String("lang", "auto", "language")
+	idArg := ""
+	// Accept both `explain --lang ru-RU SSH-001` and the more natural
+	// `explain SSH-001 --lang ru-RU` form. The standard flag package stops at
+	// the first positional argument, which is surprising for this command.
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		idArg, args = args[0], args[1:]
+	}
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if fs.NArg() != 1 {
+	if idArg == "" && fs.NArg() == 1 {
+		idArg = fs.Arg(0)
+	} else if fs.NArg() != 0 {
 		return errors.New("usage: vps-scope explain CHECK-ID")
 	}
-	id := strings.ToUpper(fs.Arg(0))
+	if idArg == "" {
+		return errors.New("usage: vps-scope explain CHECK-ID")
+	}
+	id := strings.ToUpper(idArg)
 	if _, ok := i18n.Rules[id]; !ok {
 		return fmt.Errorf("unknown check ID %q", id)
 	}
@@ -202,8 +215,12 @@ func (e environment) support(args []string) error {
 	if err != nil {
 		return fmt.Errorf("create support bundle: %w", err)
 	}
-	fmt.Fprintf(e.out, "support bundle: %s (%d files)\n", *output, len(manifest.Files))
-	fmt.Fprintln(e.out, "Review every file before sharing. Raw configuration, databases, credentials, keys, UUIDs and host addresses are not included.")
+	locale := r.Locale
+	if !i18n.Supported(locale) {
+		locale = "en"
+	}
+	fmt.Fprintf(e.out, choose(locale, "支持包: %s（共 %d 个文件：%d 个内容文件和 manifest.json）\n", "support bundle: %s (%d files total: %d content files plus manifest.json)\n"), *output, len(manifest.Files)+1, len(manifest.Files))
+	fmt.Fprintln(e.out, choose(locale, "分享前请人工检查每个文件。支持包不包含原始配置、数据库、凭据、密钥、UUID 或主机地址。", "Review every file before sharing. Raw configuration, databases, credentials, keys, UUIDs and host addresses are not included."))
 	return nil
 }
 
@@ -247,15 +264,19 @@ func (e environment) verifyReport(path string) error {
 	if err != nil {
 		return err
 	}
+	locale := r.Locale
+	if !i18n.Supported(locale) {
+		locale = "en"
+	}
 	failures := audit.ValidateReport(r, e.build.Version)
-	fmt.Fprintf(e.out, "report schema=%s tool=%s findings=%d\n", r.SchemaVersion, r.ToolVersion, len(r.Findings))
+	fmt.Fprintf(e.out, choose(locale, "报告 schema=%s 工具版本=%s 检查项=%d\n", "report schema=%s tool=%s findings=%d\n"), r.SchemaVersion, r.ToolVersion, len(r.Findings))
 	if len(failures) > 0 {
 		for _, failure := range failures {
 			fmt.Fprintln(e.out, "FAIL", failure)
 		}
 		return fmt.Errorf("report semantic verification failed for %d condition(s)", len(failures))
 	}
-	fmt.Fprintln(e.out, "PASS report structure and semantic contract are valid")
+	fmt.Fprintln(e.out, choose(locale, "PASS 报告结构和语义契约有效", "PASS report structure and semantic contract are valid"))
 	return nil
 }
 

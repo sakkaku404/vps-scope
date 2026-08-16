@@ -1,8 +1,8 @@
 module github.com/sakkaku404/vps-scope
 
-// Go 1.25.12 includes the standard-library security fixes required by the
-// HTML renderer, certificate inspection, URL parsing, and command runner.
-go 1.25.12
+// Go 1.25.13 includes standard-library security fixes required by the HTML
+// renderer, TLS observation, and certificate parsing paths used by VPS Scope.
+go 1.25.13
 
 require (
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3

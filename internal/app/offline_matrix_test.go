@@ -71,7 +71,10 @@ func TestOfflineReportCommandsAcrossLocalesAndSchemas(t *testing.T) {
 		}
 
 		support := filepath.Join(dir, schemaName+"-support")
-		runOfflineCommand(t, []string{"support", "--output", support, reportPath})
+		supportOutput := runOfflineCommand(t, []string{"support", "--output", support, reportPath})
+		if !strings.Contains(supportOutput, "4 files total: 3 content files plus manifest.json") {
+			t.Fatalf("support bundle reported the wrong file count: %q", supportOutput)
+		}
 		runOfflineCommand(t, []string{"verify", support})
 	}
 }

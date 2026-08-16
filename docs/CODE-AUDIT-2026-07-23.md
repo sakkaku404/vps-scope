@@ -1,5 +1,7 @@
 # Code audit — 2026-07-23
 
+> Historical snapshot: this document describes the code, laboratory, and conclusions at that date. It is not the status of the current source tree or latest Release; use the README, CHANGELOG, and release-readiness document for current claims.
+
 This review focused on false-safe firewall conclusions, command-execution trust,
 Docker publication semantics, localization completeness, dependency health, and
 whether the disposable laboratory actually exercises the production binary.

@@ -6,18 +6,26 @@ umask 022
 
 REPO="sakkaku404/vps-scope"
 VERSION="${VPS_SCOPE_VERSION:-latest}"
-ALLOW_UNSIGNED="${VPS_SCOPE_ALLOW_UNSIGNED:-0}"
+ORIGINAL_DIR="$PWD"
+TEST_RELEASE_DIR="${VPS_SCOPE_TEST_RELEASE_DIR:-}"
+
+if [[ -n "$TEST_RELEASE_DIR" && "${VPS_SCOPE_TEST_MODE:-0}" != "1" ]]; then
+  echo "VPS_SCOPE_TEST_RELEASE_DIR is available only with VPS_SCOPE_TEST_MODE=1." >&2
+  exit 2
+fi
 
 if [[ "$VERSION" != "latest" && ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "Version must be latest or a tag such as v0.11.0." >&2
   exit 2
 fi
-if [[ "$ALLOW_UNSIGNED" != "0" && "$ALLOW_UNSIGNED" != "1" ]]; then
-  echo "VPS_SCOPE_ALLOW_UNSIGNED must be 0 or 1." >&2
-  exit 2
-fi
 
-for command_name in curl sha256sum mktemp uname awk; do
+required_commands=(sha256sum mktemp uname awk)
+if [[ -z "$TEST_RELEASE_DIR" ]]; then
+  required_commands+=(curl)
+else
+  required_commands+=(cp)
+fi
+for command_name in "${required_commands[@]}"; do
   command -v "$command_name" >/dev/null 2>&1 || {
     echo "Required command not found: $command_name" >&2
     exit 1
@@ -42,8 +50,17 @@ trap 'rm -rf "$temp_dir"' EXIT
 cd "$temp_dir"
 
 curl_args=(--proto '=https' --proto-redir '=https' --tlsv1.2 --fail --location --silent --show-error --connect-timeout 10 --max-time 120 --retry 3 --retry-all-errors)
-curl "${curl_args[@]}" -o "$asset" "${base_url}/${asset}"
-curl "${curl_args[@]}" -o SHA256SUMS "${base_url}/SHA256SUMS"
+if [[ -n "$TEST_RELEASE_DIR" ]]; then
+  [[ "$TEST_RELEASE_DIR" == /* ]] || {
+    echo "VPS_SCOPE_TEST_RELEASE_DIR must be an absolute path." >&2
+    exit 2
+  }
+  cp -- "$TEST_RELEASE_DIR/$asset" "$asset"
+  cp -- "$TEST_RELEASE_DIR/SHA256SUMS" SHA256SUMS
+else
+  curl "${curl_args[@]}" -o "$asset" "${base_url}/${asset}"
+  curl "${curl_args[@]}" -o SHA256SUMS "${base_url}/SHA256SUMS"
+fi
 
 expected="$(awk -v name="$asset" '$2 == name {print $1}' SHA256SUMS)"
 if [[ -z "$expected" ]]; then
@@ -52,7 +69,7 @@ if [[ -z "$expected" ]]; then
 fi
 printf '%s  %s\n' "$expected" "$asset" | sha256sum -c -
 
-if command -v cosign >/dev/null 2>&1; then
+if [[ -z "$TEST_RELEASE_DIR" ]] && command -v cosign >/dev/null 2>&1; then
   curl "${curl_args[@]}" -o "${asset}.sigstore.json" "${base_url}/${asset}.sigstore.json"
   identity_args=(--certificate-identity-regexp '^https://github\.com/sakkaku404/vps-scope/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$')
   if [[ "$VERSION" != "latest" ]]; then
@@ -68,23 +85,27 @@ else
     echo "cosign is required because VPS_SCOPE_REQUIRE_SIGNATURE=1." >&2
     exit 1
   fi
-  if [[ "$ALLOW_UNSIGNED" != "1" ]]; then
-    echo "Publisher signature was not verified because cosign is not installed." >&2
-    echo "SHA-256 from the same Release detects corruption but does not authenticate the publisher." >&2
-    if [[ -r /dev/tty && -w /dev/tty ]]; then
-      printf 'Type continue to run with checksum-only verification, or press Enter to stop: ' >/dev/tty
-      IFS= read -r approval </dev/tty || true
-      if [[ "$approval" != "continue" ]]; then
-        echo "Run stopped without publisher verification." >&2
-        exit 1
-      fi
-    else
-      echo "Non-interactive run stopped. Install cosign, or explicitly set VPS_SCOPE_ALLOW_UNSIGNED=1." >&2
-      exit 1
-    fi
-  fi
-  echo "WARNING: continuing with checksum integrity only; publisher signature was not verified." >&2
+  echo "WARNING: cosign is not installed; SHA-256 passed, but the publisher signature was not verified." >&2
 fi
 chmod 0755 "$asset"
+asset_path="$temp_dir/$asset"
+cd "$ORIGINAL_DIR"
 
-"./$asset" "$@"
+# A leading flag is shorthand for the audit command. This makes
+# `bash -s -- --lang en --profile proxy` behave as users expect.
+if (($# > 0)) && [[ "$1" == -* ]]; then
+  set -- audit "$@"
+fi
+
+# Explicit commands are non-interactive and must keep ordinary stdin semantics.
+# With no arguments, the runner was itself read from stdin, so reconnect only
+# after proving that /dev/tty can actually be opened.
+if (($# > 0)); then
+  "$asset_path" "$@"
+elif { exec 3<>/dev/tty; } 2>/dev/null; then
+  "$asset_path" <&3
+  exec 3>&-
+else
+  echo "Interactive input is unavailable. Run this command in a terminal, or pass explicit audit flags." >&2
+  exit 2
+fi

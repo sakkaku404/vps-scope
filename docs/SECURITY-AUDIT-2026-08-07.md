@@ -1,5 +1,7 @@
 # Security audit — 2026-08-07
 
+> Historical snapshot: this document records the v1.1.0-era boundary. Later runner behavior, toolchain fixes, and localization changes are described by the current README and CHANGELOG.
+
 This review covers the development branch that follows `v1.0.0`. It records
 security boundaries and regression evidence; it is not a claim that any audit
 tool can prove a host uncompromised.

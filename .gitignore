@@ -5,6 +5,8 @@
 /.agents/
 /.codex/
 /.tmp-lab/
+# Prevent an accidentally nested checkout of this repository from being staged.
+/vps-scope/
 *.exe
 *.test
 coverage.out
